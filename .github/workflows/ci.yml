@@ -9,6 +9,22 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # A throwaway Postgres for the `*.integration.test.ts` suites that need a real database
+    # (providers/sql, and runtime's verify isolation test). They skip themselves when
+    # ARCHSTONE_TEST_PG_URL is unset, so this service is what makes them run here. The
+    # credentials are container-local and exist only for this job — not a secret.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: archstone-ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
     steps:
       - uses: actions/checkout@v4
 
@@ -29,6 +45,8 @@ jobs:
 
       - name: Test
         run: pnpm test
+        env:
+          ARCHSTONE_TEST_PG_URL: postgres://postgres:archstone-ci@localhost:5432/postgres
 
       # The repo-root release tooling uses Node's built-in runner, outside the Vitest workspace,
       # so `pnpm test` does not reach it. Before this ran on PRs, a broken release list or a

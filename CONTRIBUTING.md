@@ -33,6 +33,21 @@ Node 22+ · pnpm 11+. When running a single test file directly with `pnpm exec v
 5. Open a PR against `main`. CI runs typecheck, test and the release-script tests on every PR,
    plus the two changelog checks.
 
+### Tests against a real Postgres
+
+The `sql` provider's `*.integration.test.ts` suites (`providers/sql/test/`, and
+`packages/runtime/test/verify-sql-isolation.integration.test.ts`) run against a real database
+and skip themselves unless `ARCHSTONE_TEST_PG_URL` is set. CI sets it; to run them locally:
+
+```bash
+docker run -d --rm --name archstone-pg-it -e POSTGRES_PASSWORD=archstone -p 55432:5432 postgres:16
+ARCHSTONE_TEST_PG_URL=postgres://postgres:archstone@127.0.0.1:55432/postgres pnpm test
+docker stop archstone-pg-it
+```
+
+The URL must be an admin (superuser) role: it is used only to create, and drop afterwards, a
+per-run database and the roles the tests connect as — never to run a provider call.
+
 Small, focused PRs merge fastest. For anything larger (a new provider type, a change to the
 IR or CDL), open an issue first so the design can be discussed.
 
