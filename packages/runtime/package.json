@@ -1,6 +1,6 @@
 {
   "name": "@archstone/runtime",
-  "version": "0.26.0",
+  "version": "0.27.0",
   "private": false,
   "type": "module",
   "description": "Archstone runtime — a capability registry over compiled IR, and the MCP emitter that serves it as agent-callable tools over stdio or HTTP.",
