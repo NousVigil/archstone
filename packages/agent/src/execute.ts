@@ -14,6 +14,7 @@ import {
   Registry,
   applyResponseMapping,
   contractViolationMessage,
+  passThroughRefusal,
   evaluatePolicy,
   evaluateRateLimit,
   auditNow,
@@ -113,6 +114,12 @@ export interface ExecuteResult {
   data?: Record<string, unknown>; // present on ok/degraded
   missing?: string[]; // present on violation (ADD-12/19 semantics, verbatim)
   degraded?: string[]; // present on degraded
+  /** Origin-checked fields (`web-page`) whose value was outside the declared origins and was
+   *  therefore withheld — absent from `data`, never forwarded. Field names only, never values.
+   *  Present only when non-empty: on `degraded` (an optional field withheld) or `violation` (a
+   *  required one). Additive, and deliberately NOT folded into `degraded`, which keeps meaning
+   *  "the provider did not send an optional field". */
+  withheld?: string[];
   error?: string; // present on error — invokeRest returned ok:false (InvokeResult.error verbatim)
   /**
    * #43 (ADD-43 D-11): present iff this call was refused — by the policy evaluation point, OR
@@ -272,16 +279,24 @@ export async function executeCapability(
       // failure in two ways, which is exactly the drift one record builder exists to prevent.
       // ADD-44 Amendment 2: reachable only after `invokeRest` returned `ok: true` — a response
       // was, by construction, received.
-      audit({ phase: "failed", message: contractViolationMessage(tool.id, missing), reachedConnector: true });
-      return { status: "violation", missing };
+      audit({ phase: "failed", message: contractViolationMessage(tool.id, missing, mapped.withheld), reachedConnector: true });
+      return { status: "violation", missing, ...(mapped.withheld ? { withheld: mapped.withheld } : {}) };
     }
     if (mapped.status === "degraded") {
-      // `succeeded`: every required field was present; only an optional one was absent.
+      // `succeeded`: every required field was present; only an optional one was absent (or withheld).
       audit({ phase: "succeeded" });
-      return { status: "degraded", data: mapped.data, degraded: mapped.degraded ?? [] };
+      return { status: "degraded", data: mapped.data, degraded: mapped.degraded ?? [], ...(mapped.withheld ? { withheld: mapped.withheld } : {}) };
     }
     audit({ phase: "succeeded" });
     return { status: "ok", data: mapped.data };
+  }
+
+  // An origin-checked output on a pass-through tool (only a hand-written IR gets here — the
+  // compiler refuses it): the raw body would carry the unchecked link. Fail closed, as callTool does.
+  const refusal = passThroughRefusal(tool, registry.ir.resources);
+  if (refusal) {
+    audit({ phase: "failed", message: refusal, reachedConnector: true });
+    return { status: "error", error: refusal };
   }
 
   // Neither `response:` nor `extract:`: raw pass-through (mirrors server.ts's unbound-mapping
