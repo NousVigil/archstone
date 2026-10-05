@@ -12,7 +12,7 @@ Both directions of travel go through this package, and that is the point: a Reso
 Definition is the schema for a provider's response *and* for what a model must produce, so
 neither side can be mapped by a rule the other does not share.
 
-Part of [Archstone](https://github.com/Archstone-Romania/archstone), an open-source
+Part of [Archstone](https://github.com/NousVigil/archstone), an open-source
 Capability Platform — most users should install
 [`@archstone/cli`](https://www.npmjs.com/package/@archstone/cli) instead of depending on
 this package directly.
