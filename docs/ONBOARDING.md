@@ -422,6 +422,64 @@ property. Any other `oneOf` still skips the operation, under a code naming what 
 `oneof-error-fields-unresolved`, or `oneof-outside-collection` (the accepted form anywhere but
 the items of the collection being mapped, where there is no `onError` to carry it).
 
+#### Links a person opens: `web-page` and `origins:` (Experimental)
+
+A field typed `string` can carry any URL — whatever the provider's data says, including text a
+listing's owner typed in. When a field is *the page where a person sees this resource on your
+own site*, type it `web-page` instead (output only, CDL spec §4.7), and declare in the binding
+which origins those pages live on:
+
+```yaml
+# tourism.Accommodation.resource.yaml
+    listingUrl:
+      type: web-page
+      required: false        # recommended inside a collection — see below
+
+# bindings/tourism.search.binding.yaml — a sibling of response: and extract:
+  origins:
+    pages:
+      - https://www.example.com
+```
+
+Each entry is a bare `https` origin: `https://`, a host, an optional `:port`, nothing else.
+`https://www.example.com` and `https://www.example.com:8443` are valid;
+`https://www.example.com/stays`, `https://www.example.com/`, `http://www.example.com`,
+`https://*.example.com` and `${PAGES_ORIGIN}` are refused (`origins-malformed`), as is the same
+origin listed twice. The list belongs to the binding, so a provider with several capabilities
+repeats it in each binding — there is no provider-level origins file.
+
+At run time every `web-page` value — top-level, inside a nested resource, in every collection
+row, in an `onError` row, or read by `extract:` — must be an absolute `https` URL with no
+userinfo whose origin is one you declared. A value that passes is emitted in normalised form
+(`https://WWW.Example.com:443/stays/1` becomes `https://www.example.com/stays/1`). A value that
+does not — another host, a lookalike host, `http:`, a relative path, `javascript:` — is
+**withheld**, never forwarded, and the usual rules decide what that means:
+
+- an **optional** field is omitted and the result is **DEGRADED**; the result names it in a
+  separate `withheld` list (not in `degraded`), and the MCP response carries a
+  `note: field(s) withheld — value outside the declared origins: <fields>` line;
+- a **required** field makes the result a **VIOLATION**; the `_meta` contract-violation object
+  carries `withheld: [<fields>]`, and the message says the value was outside the declared
+  origins rather than missing.
+
+No message, result, audit record or `verify` line ever contains the withheld value — it is
+provider-controlled text. `archstone verify` reports any withheld value **red**
+(`value outside declared origins in: <fields>`), distinct from the yellow `degraded` text,
+because production would silently drop that link. Recording a contract (`archstone init`'s
+probe, `archstone adopt`) keeps nothing when a value is withheld.
+
+`apply` enforces the rest: `web-page` is refused in `input:` (`web-page-in-input`); an output
+that reaches one needs `origins.pages` (`web-page-no-origins`) and a `response:` or `extract:`
+mapping (`web-page-needs-mapping`) — a pass-through binding is never checked. It warns on
+origins nothing uses (`origins-unused`) and on a **required** `web-page` inside a collection
+with no `onError` (`web-page-required-in-collection`): there, one off-origin row fails the whole
+response, so make the field optional and that row just loses its link.
+
+What it does not do: a URL inside a `text` or `string` field is not checked; relative links are
+withheld rather than resolved; nothing fetches the page to see whether it exists.
+`archstone init` never infers `web-page` (an OpenAPI `format: uri` stays `string`) — the
+document cannot tell it which origins are yours.
+
 #### `rest.query` — renaming, list serialization, and query-alongside-body
 
 A REST connector's `rest.query` maps a CDL input field to its wire query-parameter name. The
@@ -1304,6 +1362,15 @@ You are not missing anything, either: unlike a remote MCP client, you are in-pro
 the registry, so the value is one lookup away —
 `archstone.registry.getCapability("tourism.search")?.effect`.
 
+**No output types here either.** These envelopes carry the input schema and the description
+only, so an output field's semantic type — a `web-page` link, for instance — is not expressed in
+any of them: the definition for a capability returning a `web-page` field is byte-for-byte the
+one it would be with that field typed `string`. Nothing is lost at run time: `execute()` checks
+every `web-page` value against the binding's declared origins exactly as `archstone serve` does,
+and returns the normalised link, or withholds it and names the field in `withheld`. The marker
+itself stays in the artifact (`archstone.registry`). Over MCP, the tool's `outputSchema` does
+carry it, as `{ "type": "string", "format": "uri" }`.
+
 ### Invoke capabilities with fail-closed semantics
 
 Execute a capability just as you would in `archstone serve`, but directly in your code:
@@ -1332,6 +1399,9 @@ The result mirrors the same **OK/DEGRADED/VIOLATION/ERROR** semantics from
 [Step 4's fail-closed mapping](#step-4--bind-it-to-a-real-endpoint-bindings):
 - **OK** — all required fields present, returned as `data`.
 - **DEGRADED** — optional fields missing, returned as `data` with `degraded` listing the missing names.
+  An optional `web-page` value outside the binding's declared origins is omitted the same way,
+  but named in `withheld` instead (field names only, never the value); a required one is a
+  **VIOLATION** with `withheld` set.
 - **VIOLATION** — a required field missing; `missing` lists it (structured, not prose), so agents
   can branch deterministically.
 - **ERROR** — transport failure (missing env var, network error, non-2xx response); `error` contains
