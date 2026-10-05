@@ -20,10 +20,13 @@ function sqlTool(id: string, dsn = "${DATABASE_URL}"): IRTool {
   };
 }
 
+/** The server and database half of ADR-0012 D-9 ruling 1's read, which the startup check reads too. */
+const SERVER = { server_started: "2026-10-05 08:00:00.123456+00", database_oid: 16384 };
+
 function fakePool(roleRow: Record<string, unknown>, ownershipRows: Array<Record<string, unknown>> = []): PgPool {
   const client: PgPoolClient = {
     query: vi.fn(async (text: string) => {
-      if (text.includes("rolsuper")) return { rows: [roleRow] };
+      if (text.includes("rolsuper")) return { rows: [{ ...SERVER, ...roleRow }] };
       if (text.includes("role_table_grants")) return { rows: ownershipRows };
       return { rows: [] };
     }),
@@ -82,8 +85,8 @@ describe("checkSqlOverPrivilege", () => {
       pgPoolFactory: () => pool,
       connectionRegistry: new Map<string, ConnectionEntry>(),
     });
-    // One connect() for the role check, one for the ownership check — both against the SAME
-    // cached connection entry, never once per tool.
+    // One connect(): the role read and the ownership check run in one transaction on it, against
+    // the SAME cached connection entry, never once per tool.
     expect(connectSpy).toHaveBeenCalledTimes(1);
   });
 
@@ -134,6 +137,32 @@ describe("checkSqlOverPrivilege", () => {
     expect(lines[0]).toContain("[dsn]");
     expect(lines[0]).not.toContain("s3cret");
     expect(opts.connectionRegistry.size).toBe(0);
+  });
+
+  it("fails closed when the D-9 read cannot complete — pg_postmaster_start_time() not executable (R-9) — and caches nothing", async () => {
+    const connect = vi.fn(async (): Promise<PgPoolClient> => ({
+      query: vi.fn(async (text: string) => {
+        if (text.includes("pg_postmaster_start_time")) {
+          throw Object.assign(new Error("permission denied for function pg_postmaster_start_time"), { code: "42501" });
+        }
+        return { rows: [] };
+      }),
+      release: vi.fn(),
+    }));
+    const opts = {
+      env: { DATABASE_URL: "postgres://runtime@localhost/app" },
+      pgPoolFactory: () => ({ connect }),
+      connectionRegistry: new Map<string, ConnectionEntry>(),
+    };
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      expect(await checkSqlOverPrivilege([sqlTool("reporting.summary")], opts)).toEqual(["over-privileged connection check failed (SQLSTATE 42501)"]);
+    } finally {
+      stderr.mockRestore();
+    }
+    const entry = opts.connectionRegistry.get("postgres://runtime@localhost/app")!;
+    expect(entry.refusal).toBeUndefined();
+    expect(entry.ownership.size).toBe(0);
   });
 
   it("skips a tool whose dsn env var is unset — a configuration gap, not a privilege question", async () => {

@@ -55,7 +55,7 @@ const ir: IR = {
 function fakePool(rows: Array<Record<string, unknown>>): PgPool {
   const client: PgPoolClient = {
     query: vi.fn(async (text: string) => {
-      if (text.includes("rolsuper")) return { rows: [{ rolsuper: false, rolbypassrls: false }] };
+      if (text.includes("rolsuper")) return { rows: [{ rolsuper: false, rolbypassrls: false, server_started: "2026-10-05 08:00:00.123456+00", database_oid: 16384 }] };
       if (text.includes("role_table_grants")) return { rows: [] };
       if (text.includes("FROM reporting.portfolio_summary_v")) return { rows };
       return { rows: [] };

@@ -45,7 +45,7 @@ function withFixture(fixture: Record<string, unknown>, fn: (dir: string) => Prom
 function fakePool(positiveRows: Array<Record<string, unknown>>, negativeRows: Array<Record<string, unknown>>): PgPool {
   const client: PgPoolClient = {
     query: vi.fn(async (text: string, params?: unknown[]) => {
-      if (text.includes("rolsuper")) return { rows: [{ rolsuper: false, rolbypassrls: false }] };
+      if (text.includes("rolsuper")) return { rows: [{ rolsuper: false, rolbypassrls: false, server_started: "2026-10-05 08:00:00.123456+00", database_oid: 16384 }] };
       if (text.includes("role_table_grants")) return { rows: [] };
       void params;
       if (text === "SELECT set_config($1, $2, true)") {
