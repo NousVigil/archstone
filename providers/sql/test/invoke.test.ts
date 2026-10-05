@@ -589,11 +589,28 @@ describe("invokeSql — driver errors never reach the caller (#120)", () => {
     const { result, lines, stdoutCalls, logCalls } = await run({ connect: vi.fn() }, {
       pgPoolFactory: () => { throw new Error(message); },
     });
-    expect(result).toEqual({ ok: false, status: 0, error: "pool checkout failed (error code unknown)" });
+    expect(result).toEqual({ ok: false, status: 0, error: "pool creation failed (error code unknown)" });
     expectNoLeak(result.error, ["invalid connection string"]);
-    expect(lines).toEqual(["archstone: pool checkout failed for 'DATABASE_URL' (error code unknown): invalid connection string [dsn]"]);
+    expect(lines).toEqual(["archstone: pool creation failed for 'DATABASE_URL' (error code unknown): invalid connection string [dsn]"]);
     expect(stdoutCalls).toBe(0);
     expect(logCalls).toBe(0);
+  });
+
+  it("site 3 — a pool factory that throws is not cached: no registry entry, and the next call creates the pool and proceeds (D-5)", async () => {
+    const healthy: PgPool = { connect: vi.fn(async () => clientOf(healthyCheck)) };
+    const factory = vi
+      .fn<(dsn: string) => PgPool>()
+      .mockImplementationOnce(() => { throw new Error(`invalid connection string ${DSN}`); })
+      .mockImplementation(() => healthy);
+    const connectionRegistry = new Map<string, ConnectionEntry>();
+    const first = await run(healthy, { pgPoolFactory: factory, connectionRegistry });
+    expect(first.result).toEqual({ ok: false, status: 0, error: "pool creation failed (error code unknown)" });
+    expect(connectionRegistry.size).toBe(0);
+
+    const second = await run(healthy, { pgPoolFactory: factory, connectionRegistry });
+    expect(second.result).toEqual({ ok: true, status: 200, data: [] });
+    expect(factory).toHaveBeenCalledTimes(2);
+    expect(connectionRegistry.get(DSN)?.pool).toBe(healthy);
   });
 
   it("site 4 — per-call checkout failure: errno code only to the caller, host and role only on stderr", async () => {
