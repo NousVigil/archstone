@@ -960,7 +960,7 @@ A record looks like this — and this is the whole of it:
 
 `irreversible` is a human judgement no API description states, so `archstone apply` checks the
 declaration around it and prints one `⚠` line in its `semantic` block for each of these (see
-[#108](https://github.com/Archstone-Romania/archstone/issues/108)):
+[#108](https://github.com/NousVigil/archstone/issues/108)):
 
 - `irreversible-no-failures` — it declares no `failures`, so an agent can say only that it failed, not why.
 - `irreversible-unauthenticated` — it does not declare `policies: [authenticated]` and no attached
@@ -1577,7 +1577,7 @@ Both paths produce the same MCP protocol behavior — the difference is operatio
 ### Get a green checkout
 
 ```bash
-git clone https://github.com/Archstone-Romania/archstone
+git clone https://github.com/NousVigil/archstone
 cd archstone
 pnpm install
 pnpm lint             # eslint

@@ -9,7 +9,7 @@ This page is the quick reference.
 ## Quick start
 
 ```bash
-git clone https://github.com/Archstone-Romania/archstone
+git clone https://github.com/NousVigil/archstone
 cd archstone
 pnpm install
 pnpm lint             # eslint

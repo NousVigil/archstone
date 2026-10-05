@@ -2,8 +2,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Security vulnerability
-    url: https://github.com/Archstone-Romania/archstone/blob/main/SECURITY.md
+    url: https://github.com/NousVigil/archstone/blob/main/SECURITY.md
     about: Never open a public issue for a vulnerability — follow the security policy instead.
   - name: Questions and discussion
-    url: https://github.com/Archstone-Romania/archstone/discussions
+    url: https://github.com/NousVigil/archstone/discussions
     about: Not sure it is a bug or a feature request? Start here.

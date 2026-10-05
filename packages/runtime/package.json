@@ -1,6 +1,6 @@
 {
   "name": "@archstone/runtime",
-  "version": "0.27.0",
+  "version": "0.27.1",
   "private": false,
   "type": "module",
   "description": "Archstone runtime — a capability registry over compiled IR, and the MCP emitter that serves it as agent-callable tools over stdio or HTTP.",
@@ -20,7 +20,7 @@
   "homepage": "https://archstone.dev",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Archstone-Romania/archstone.git",
+    "url": "https://github.com/NousVigil/archstone.git",
     "directory": "packages/runtime"
   },
   "main": "./dist/index.js",

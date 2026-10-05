@@ -8,7 +8,7 @@ responsible disclosure.
 **Please do not open a public issue for security vulnerabilities.**
 
 Instead, report privately via GitHub's
-[**Report a vulnerability**](https://github.com/Archstone-Romania/archstone/security/advisories/new)
+[**Report a vulnerability**](https://github.com/NousVigil/archstone/security/advisories/new)
 form (Security → Advisories), or email the maintainers at **security@archstone.dev**.
 
 Please include:

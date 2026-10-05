@@ -1,6 +1,6 @@
 {
   "name": "@archstone/agent",
-  "version": "0.27.0",
+  "version": "0.27.1",
   "private": false,
   "type": "module",
   "description": "Embed Archstone capabilities directly in your own agent loop: typed tool definitions for Anthropic, OpenAI, Gemini and plain JSON Schema, plus fail-closed execution over a compiled IR — no MCP server process required.",
@@ -22,7 +22,7 @@
   "homepage": "https://archstone.dev",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Archstone-Romania/archstone.git",
+    "url": "https://github.com/NousVigil/archstone.git",
     "directory": "packages/agent"
   },
   "main": "./dist/index.js",

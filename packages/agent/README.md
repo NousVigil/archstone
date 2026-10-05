@@ -110,7 +110,7 @@ const handler = mcpHandler(archstone, {
 const response = await handler(new Request(...));
 ```
 
-Part of [Archstone](https://github.com/Archstone-Romania/archstone), an open-source
+Part of [Archstone](https://github.com/NousVigil/archstone), an open-source
 Capability Platform. For full documentation, see [`archstone/packages/agent`](../) and the
 main [`README.md`](../../README.md).
 

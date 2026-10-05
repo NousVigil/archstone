@@ -2,7 +2,7 @@
 
 ## Getting help
 
-- **Questions, bugs, feature ideas** — [open an issue](https://github.com/Archstone-Romania/archstone/issues).
+- **Questions, bugs, feature ideas** — [open an issue](https://github.com/NousVigil/archstone/issues).
 - **Security vulnerabilities** — do **not** open a public issue. Follow [SECURITY.md](SECURITY.md).
 - **Commercial support** (a named counterparty, response times, backports on a version you pin) —
   `hello@archstone.dev`.

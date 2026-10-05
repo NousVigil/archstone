@@ -5,7 +5,7 @@ lowers IR tools to MCP `tools/list` + typed `outputSchema`, dispatches `tools/ca
 a binding's connector and response mapping, and serves the result over stdio (or any
 transport, e.g. Streamable HTTP on Cloudflare Workers).
 
-Part of [Archstone](https://github.com/Archstone-Romania/archstone), an open-source
+Part of [Archstone](https://github.com/NousVigil/archstone), an open-source
 Capability Platform. This package is the third stage of the compiler pipeline
 (`schema` → `compiler` → `runtime` → `cli`) — most users should install
 [`@archstone/cli`](https://www.npmjs.com/package/@archstone/cli) instead of depending on

@@ -1,6 +1,6 @@
 {
   "name": "@archstone/provider-rest",
-  "version": "0.27.0",
+  "version": "0.27.1",
   "private": false,
   "type": "module",
   "description": "REST provider for Archstone — maps capability input to an HTTP request and maps the response back to a typed, validated result.",
@@ -20,7 +20,7 @@
   "homepage": "https://archstone.dev",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Archstone-Romania/archstone.git",
+    "url": "https://github.com/NousVigil/archstone.git",
     "directory": "providers/rest"
   },
   "main": "./dist/index.js",
