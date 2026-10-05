@@ -149,7 +149,7 @@ pnpm install
 # Scaffold a manifest from an API you already have (opt-in, read-only, no LLM)
 pnpm exec tsx packages/cli/src/index.ts init path/to/openapi.yaml --out my-manifest --domain catalog
 
-# Compile a manifest: validate + lower to IR
+# Compile a manifest: validate + lower to IR (also warns about what an `irreversible` capability still lacks)
 pnpm apply examples/manifests/booking
 
 # Build a portable IR artifact (for embedding in your own app)

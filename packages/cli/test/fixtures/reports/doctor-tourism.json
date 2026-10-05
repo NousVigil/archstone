@@ -1,0 +1,13 @@
+{
+  "findings": [
+    {
+      "severity": "advisory",
+      "code": "env-baseurl",
+      "capability": "tourism.search",
+      "message": "baseUrl comes from the environment (${STAYS_API_URL})",
+      "because": "Nothing wrong with it — but the deployment, not the manifest, decides where this capability points. Confirm the variable is set to the intended backend in every environment that runs it."
+    }
+  ],
+  "checked": 1,
+  "ok": true
+}

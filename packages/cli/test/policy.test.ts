@@ -131,8 +131,15 @@ describe("archstone apply — policy documents (SF-1/SF-6)", () => {
   it("prints unenforced-token warnings without blocking, on a real example manifest (S-US7.1/7.2)", async () => {
     const r = await run(["apply", bank]);
     expect(r.code).toBe(0); // warnings never block
-    const unenforced = r.stdout.split("\n").filter((l) => l.includes("not enforced in this version"));
+    // ADD-311: for an `irreversible` capability the per-token line is the lint's
+    // `irreversible-unenforced-policy` wording ("this version does not enforce"), which replaces
+    // — never duplicates — the general one ("is not enforced in this version"). Each
+    // (capability, token) pair is still reported exactly once.
+    const unenforced = r.stdout
+      .split("\n")
+      .filter((l) => l.includes("not enforced in this version") || l.includes("this version does not enforce"));
     expect(unenforced).toHaveLength(4);
+    expect(unenforced.filter((l) => l.includes("not enforced in this version"))).toHaveLength(2);
     expect(unenforced.filter((l) => l.includes("policies:[tenant-scoped]"))).toHaveLength(2);
     expect(unenforced.filter((l) => l.includes("policies:[human-approval]"))).toHaveLength(1);
     expect(unenforced.filter((l) => l.includes("policies:[rate-limited]"))).toHaveLength(1);

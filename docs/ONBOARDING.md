@@ -956,6 +956,25 @@ A record looks like this — and this is the whole of it:
 - **Never point the JSON Lines sink at stdout.** On the stdio transport stdout *is* the MCP
   protocol channel; `jsonLinesAuditSink` refuses `process.stdout` outright for that reason.
 
+### What `apply` warns about on an `irreversible` capability
+
+`irreversible` is a human judgement no API description states, so `archstone apply` checks the
+declaration around it and prints one `⚠` line in its `semantic` block for each of these (see
+[#108](https://github.com/Archstone-Romania/archstone/issues/108)):
+
+- `irreversible-no-failures` — it declares no `failures`, so an agent can say only that it failed, not why.
+- `irreversible-unauthenticated` — it does not declare `policies: [authenticated]` and no attached
+  Policy has a non-empty `allow`, so any caller that can reach the server can invoke it. If that is
+  intended the line stays, so the decision stays visible.
+- `irreversible-unenforced-policy` — it declares a policy token this version does not enforce
+  (`human-approval`, `consent-required`, `tenant-scoped`, `rate-limited`), one line per token. It
+  takes the place of the general unenforced-token warning for that capability. A `rate-limited`
+  token alongside an attached Policy with `spec.rateLimit` keeps the general warning.
+
+These are warnings: they never change the exit code of `apply`, and a `retired` capability is not
+checked. They check what the manifest *declares*, not the backend; `archstone verify` is the check
+against the provider. `archstone doctor` reports the same findings under the same codes.
+
 ### Before go-live: `archstone doctor`
 
 ```bash
@@ -973,7 +992,11 @@ set `allowedHosts`), a contract naming a fixture that is not on disk, and a comm
 
 What it warns about: capabilities declared but unbound, and on `read` capabilities, bound ones
 with no contract fixture — `verify` has nothing to replay for those, so backend drift is found by an agent in
-front of a customer instead of by CI.
+front of a customer instead of by CI. It also repeats what `apply` warns about on an `irreversible`
+capability, as warnings with the same codes: `irreversible-no-failures`,
+`irreversible-unauthenticated` and `irreversible-unenforced-policy` (the last carries a `token`
+field in `--json`). They sit beside the `irreversible-effect` advisory and do not change `ok` or the
+exit code.
 
 What it **advises** on `write` and `irreversible` capabilities: on a bound one with *no*
 contract fixture, the advisory tells you that this is the correct state rather than a gap — a

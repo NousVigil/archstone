@@ -16,9 +16,9 @@ archstone apply examples/manifests/bank
     ⚠ capability 'banking.quote-transfer' has no binding — not invocable until one is added
     ⚠ capability 'banking.initiate-transfer' declares policies:[authenticated] but its binding never references a caller credential (${caller.…}) — invocation will always fail closed unless one is added
     ⚠ capability 'banking.generate-statement' (banking.generate-statement.capability.yaml) declares policies:[tenant-scoped], which is not enforced in this version — which tenant's data a call may touch is a separate axis from identity, and is deliberately not implemented yet
-    ⚠ capability 'banking.initiate-transfer' (banking.initiate-transfer.capability.yaml) declares policies:[human-approval], which is not enforced in this version — no approval mechanism exists
-    ⚠ capability 'banking.initiate-transfer' (banking.initiate-transfer.capability.yaml) declares policies:[rate-limited], which is not enforced in this version — enforcing it needs invocation counting and therefore state — tracked as issue #45
     ⚠ capability 'banking.list-accounts' (banking.list-accounts.capability.yaml) declares policies:[tenant-scoped], which is not enforced in this version — which tenant's data a call may touch is a separate axis from identity, and is deliberately not implemented yet
+    ⚠ capability 'banking.initiate-transfer' is irreversible and declares policies:[human-approval], which this version does not enforce: no approval mechanism exists. An agent can run it without anyone approving. Put the approval step in the provider, or do not serve this capability to an agent unattended.
+    ⚠ capability 'banking.initiate-transfer' is irreversible and declares policies:[rate-limited], which this version does not enforce: enforcing it needs invocation counting and therefore state — tracked as issue #45. An agent can run it as often as it is called. Attach a Policy document with spec.rateLimit, which is enforced, or limit it in the provider.
   registry   IR v0 — 4 capabilities, 2 invocable (bound)
 
   → run 'archstone serve examples/manifests/bank' to expose 2 tool(s) to an AI agent over MCP

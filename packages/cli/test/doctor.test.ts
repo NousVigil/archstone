@@ -1,9 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, cpSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import type { IR, IRTool } from "@archstone/compiler";
-import { diagnose, formatReport } from "../src/doctor";
+import { join, resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { load } from "@archstone/schema";
+import { compile, lintIR, type IR, type IRTool, type LintFinding } from "@archstone/compiler";
+import { diagnose, formatReport, type DoctorReport } from "../src/doctor";
 
 let dir: string;
 beforeEach(() => {
@@ -220,4 +224,111 @@ describe("formatReport", () => {
     const clean = diagnose(ir([tool({ contract: { fingerprint: "s", probeFixture: "f/x.json" } })]), dir);
     expect(formatReport(clean, "manifest")).toContain("nothing to flag");
   });
+});
+
+// ADD-311 D-8/D-9 — lint findings in `findings[]`, beside (never instead of) `irreversible-effect`.
+describe("diagnose — opts.lint", () => {
+  const finding = (over: Partial<LintFinding> = {}): LintFinding => ({
+    code: "irreversible-no-failures",
+    severity: "warning",
+    capability: "tourism.search",
+    message: "is irreversible and declares no failures.",
+    because: "why",
+    ...over,
+  });
+
+  it("inserts each finding right after the capability's irreversible-effect advisory, as a warning", () => {
+    const other = tool({ id: "tourism.other", effect: "irreversible" });
+    const lint = [finding(), finding({ code: "irreversible-unenforced-policy", token: "human-approval" })];
+    const r = diagnose(ir([tool({ effect: "irreversible" }), other]), dir, { lint });
+    const mine = r.findings.filter((f) => f.capability === "tourism.search").map((f) => f.code);
+    const at = mine.indexOf("irreversible-effect");
+    expect(mine.slice(at, at + 3)).toEqual(["irreversible-effect", "irreversible-no-failures", "irreversible-unenforced-policy"]);
+    expect(r.findings.filter((f) => f.capability === "tourism.other").map((f) => f.code)).not.toContain("irreversible-no-failures");
+    expect(r.findings.find((f) => f.code === "irreversible-no-failures")).toMatchObject({ severity: "warning", because: "why" });
+    expect(r.ok).toBe(true);
+  });
+
+  it("carries token on the unenforced-policy finding only", () => {
+    const lint = [finding(), finding({ code: "irreversible-unenforced-policy", token: "rate-limited" })];
+    const r = diagnose(ir([tool({ effect: "irreversible" })]), dir, { lint });
+    expect(r.findings.filter((f) => "token" in f).map((f) => [f.code, f.token])).toEqual([["irreversible-unenforced-policy", "rate-limited"]]);
+  });
+
+  it("changes nothing when there is no lint", () => {
+    const t = ir([tool({ effect: "irreversible" })]);
+    expect(diagnose(t, dir, { lint: [] })).toEqual(diagnose(t, dir));
+  });
+});
+
+// End to end, through the real CLI.
+describe("archstone doctor — lint", () => {
+  const execFileAsync = promisify(execFile);
+  const here = dirname(fileURLToPath(import.meta.url));
+  const root = resolve(here, "../../..");
+  const tsx = resolve(root, "node_modules/.bin/tsx");
+  const cli = resolve(root, "packages/cli/src/index.ts");
+  const report = (name: string) => readFileSync(join(here, "fixtures/reports", name), "utf8");
+
+  async function doctor(manifest: string, ...flags: string[]): Promise<{ stdout: string; code: number }> {
+    try {
+      const { stdout } = await execFileAsync(tsx, [cli, "doctor", manifest, ...flags], { cwd: root });
+      return { stdout, code: 0 };
+    } catch (e) {
+      const err = e as { stdout: string; code: number };
+      return { stdout: err.stdout, code: err.code };
+    }
+  }
+
+  it("bank --json holds the same findings as lintIR, same codes and tokens; ok and exit unchanged", async () => {
+    const { stdout, code } = await doctor("examples/manifests/bank", "--json");
+    const r = JSON.parse(stdout) as DoctorReport;
+    const model = load(join(root, "examples/manifests/bank"));
+    const expected = lintIR(compile(model), model);
+    const lintCodes = new Set<string>(expected.map((f) => f.code));
+    const got = r.findings.filter((f) => lintCodes.has(f.code));
+    expect(got.map((f) => [f.code, f.capability, f.token, f.severity, f.message, f.because])).toEqual(
+      expected.map((f) => [f.code, f.capability, f.token, "warning", f.message, f.because]),
+    );
+    expect(got.map((f) => f.token)).toEqual(["human-approval", "rate-limited"]);
+    // `token` appears on no other finding.
+    expect(r.findings.filter((f) => !lintCodes.has(f.code) && "token" in f)).toEqual([]);
+    expect(r.ok).toBe(true);
+    expect(code).toBe(0);
+  }, 20000);
+
+  it("bank still renders irreversible-effect beside them, and counts 5 warnings", async () => {
+    const { stdout, code } = await doctor("examples/manifests/bank");
+    expect(stdout).toContain("(irreversible-effect)");
+    expect(stdout.match(/\(irreversible-unenforced-policy\)/g)).toHaveLength(2);
+    expect(stdout).toContain("4 capabilities checked — 0 error · 5 warning · 8 advisory.");
+    expect(code).toBe(0);
+  }, 20000);
+
+  it("a flawed copy gains the row 1 and row 4 findings and still exits 0 with ok true", async () => {
+    const copy = join(dir, "bank");
+    cpSync(join(root, "examples/manifests/bank"), copy, { recursive: true });
+    const file = join(copy, "banking.initiate-transfer.capability.yaml");
+    writeFileSync(
+      file,
+      readFileSync(file, "utf8").replace(/ {2}failures:\n(?: {4}.*\n)+\n/, "").replace("    - authenticated\n", ""),
+    );
+    const { stdout, code } = await doctor(copy, "--json");
+    const r = JSON.parse(stdout) as DoctorReport;
+    expect(r.findings.filter((f) => f.code.startsWith("irreversible-") && f.code !== "irreversible-effect").map((f) => f.code)).toEqual([
+      "irreversible-no-failures",
+      "irreversible-unauthenticated",
+      "irreversible-unenforced-policy",
+      "irreversible-unenforced-policy",
+    ]);
+    expect(r.ok).toBe(true);
+    expect(code).toBe(0);
+  }, 20000);
+
+  for (const name of ["booking", "tourism"]) {
+    it(`${name}: doctor and doctor --json are byte-identical to the pre-lint recordings`, async () => {
+      expect((await doctor(`examples/manifests/${name}`)).stdout).toBe(report(`doctor-${name}.txt`));
+      expect((await doctor(`examples/manifests/${name}`, "--json")).stdout).toBe(report(`doctor-${name}.json`));
+    }, 20000);
+  }
 });
