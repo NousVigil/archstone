@@ -1,0 +1,12 @@
+binding:
+  capabilityId: reporting.portfolio-summary
+  connector:
+    type: sql
+    sql:
+      engine: postgres
+      dsn: "${DATABASE_URL}"
+      statementKind: select
+      query: |
+        SELECT id FROM reporting.portfolio_summary_v WHERE id = $1
+      params:
+        - id

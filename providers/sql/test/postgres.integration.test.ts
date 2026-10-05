@@ -253,7 +253,8 @@ describePostgres("invokeSql against a real Postgres", () => {
     try {
       expect(await checkConnectionPrivileges(DSN_VARS.runtime, fx.env[DSN_VARS.runtime], o)).toEqual({
         ok: false,
-        error: "over-privileged connection check failed (SQLSTATE 42501)",
+        error: "connection privilege check failed (SQLSTATE 42501)",
+        incomplete: true,
       });
       expect(await invokeSql(ALL_ROWS, {}, o)).toEqual({ ok: false, status: 0, error: "query failed (SQLSTATE 42501)" });
       const entry = [...o.connectionRegistry!.values()][0];

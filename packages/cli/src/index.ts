@@ -45,7 +45,7 @@ import { runVerify, type HealthStatus } from "@archstone/runtime/verify";
 // stdio `serve` path's `connector` override (never into `serve --http`, which must stay
 // edge-safe per D-5's literal exclusion of `@archstone/runtime`'s `/http` subpath).
 import { invokeConnector, type ConnectorInvokeOptions } from "@archstone/runtime/connector";
-import { checkSqlOverPrivilege } from "./sql-privilege";
+import { checkSqlOverPrivilege, formatSqlPrivilegeFindings, sqlPrivilegeBlocksStartup, sqlPrivilegeJson } from "./sql-privilege";
 import { INIT_USAGE, runInitCmd } from "./init";
 import { runAuditCmd } from "./audit-cmd";
 import { diagnose, formatReport } from "./doctor";
@@ -288,11 +288,11 @@ async function runServeHttp(dir: string, port: number, token: string | undefined
   // ADR-0012 D-9: eager, before this process ever accepts a connection — a superuser/
   // BYPASSRLS/owns-and-granted DSN is refused at startup, not on whichever request happens to
   // reach it first. (`serve --http` never actually dispatches to `sql` per this PR's edge-safety
-  // fix, but the check costs nothing and stays correct if that changes.)
-  const privilegeErrors = await checkSqlOverPrivilege(built.registry.listCapabilities(), connectorOpts);
-  if (privilegeErrors.length > 0) {
-    console.error("archstone serve --http: refusing to start — over-privileged sql connection(s):");
-    for (const e of privilegeErrors) console.error(`  - ${e}`);
+  // fix, but the check costs nothing and stays correct if that changes.) A check that could not
+  // complete refuses too, under its own header rather than as over-privileged (#133).
+  const privilege = await checkSqlOverPrivilege(built.registry.listCapabilities(), connectorOpts);
+  if (sqlPrivilegeBlocksStartup(privilege)) {
+    for (const line of formatSqlPrivilegeFindings("archstone serve --http: refusing to start", privilege)) console.error(line);
     process.exit(1);
   }
 
@@ -686,14 +686,14 @@ async function runVerifyCmd(dir: string, json: boolean, sandbox: boolean, connec
   // `sql`-bound tool regardless of whether it has a recorded `contract`. A `sql` binding with no
   // contract is invisible to `runVerify`'s replay loop (nothing to replay), but an
   // over-privileged CONNECTION is a fact about the DSN, not about any one binding's fixture, and
-  // must still fail this CI gate rather than silently never being checked at all.
-  const privilegeErrors = await checkSqlOverPrivilege(registry.listCapabilities(), connectorOpts);
-  if (privilegeErrors.length > 0) {
+  // must still fail this CI gate rather than silently never being checked at all. A check that
+  // could not complete fails it too, reported as such rather than as over-privileged (#133).
+  const privilege = await checkSqlOverPrivilege(registry.listCapabilities(), connectorOpts);
+  if (sqlPrivilegeBlocksStartup(privilege)) {
     if (json) {
-      console.log(JSON.stringify({ error: "sql_over_privileged", errors: privilegeErrors }));
+      console.log(JSON.stringify(sqlPrivilegeJson(privilege)));
     } else {
-      console.error(`archstone verify ${dir}: refusing — over-privileged sql connection(s):`);
-      for (const e of privilegeErrors) console.error(`  - ${e}`);
+      for (const line of formatSqlPrivilegeFindings(`archstone verify ${dir}: refusing`, privilege)) console.error(line);
     }
     process.exit(1);
   }
@@ -1000,10 +1000,9 @@ async function main(): Promise<void> {
       // teaching `serveStdio` a new pre-check parameter.
       const built = buildRegistry(dir);
       if (built.ok && built.registry) {
-        const privilegeErrors = await checkSqlOverPrivilege(built.registry.listCapabilities(), connectorOpts);
-        if (privilegeErrors.length > 0) {
-          console.error("archstone serve: refusing to start — over-privileged sql connection(s):");
-          for (const e of privilegeErrors) console.error(`  - ${e}`);
+        const privilege = await checkSqlOverPrivilege(built.registry.listCapabilities(), connectorOpts);
+        if (sqlPrivilegeBlocksStartup(privilege)) {
+          for (const line of formatSqlPrivilegeFindings("archstone serve: refusing to start", privilege)) console.error(line);
           process.exit(1);
         }
       }

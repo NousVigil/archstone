@@ -48,8 +48,12 @@ export type PgPoolFactory = (dsn: string) => PgPool;
 
 /** D-9's four independent read-only/over-privileged enforcements — this module owns layers
  *  2 (transaction READ ONLY), 3 (role superuser/BYPASSRLS) and 4 (relation ownership). Layer 1
- *  (the static leading-keyword check) lives in `compiler/src/validate.ts`, offline, at `apply`. */
-export type OverPrivilegeCheck = { ok: true } | { ok: false; error: string };
+ *  (the static leading-keyword check) lives in `compiler/src/validate.ts`, offline, at `apply`.
+ *
+ *  `incomplete: true` marks a check that reached no verdict — pool creation, the checkout, the
+ *  D-9 read or layer 4's query failed (#133). It still fails closed. Absent, a failed check's
+ *  `error` is a refusal: a verdict that the connection is over-privileged. */
+export type OverPrivilegeCheck = { ok: true } | { ok: false; error: string; incomplete?: true };
 
 export interface ConnectionEntry {
   pool: PgPool;
@@ -331,18 +335,19 @@ export function ensureConnection(dsnEnvVar: string, resolvedDsn: string, opts: S
  * later transaction consults, so a process that never fails over runs layer 4 once.
  *
  * Never throws. A failure to reach a verdict — pool creation, the checkout, the read (for example
- * `pg_postmaster_start_time()` not executable, R-9) or layer 4's query — fails closed and caches
- * nothing, so a later check or call reads again.
+ * `pg_postmaster_start_time()` not executable, R-9) or layer 4's query — fails closed, comes back
+ * marked `incomplete: true` so a caller can tell it from a refusal (#133), and caches nothing, so
+ * a later check or call reads again (#122). A refusal — cached, or reached here — carries no mark.
  */
 export async function checkConnectionPrivileges(dsnEnvVar: string, resolvedDsn: string, opts: SqlInvokeOptions): Promise<OverPrivilegeCheck> {
   const connection = ensureConnection(dsnEnvVar, resolvedDsn, opts);
-  if (connection.pool === undefined) return { ok: false, error: connection.error };
+  if (connection.pool === undefined) return { ok: false, error: connection.error, incomplete: true };
   if (connection.refusal !== undefined) return { ok: false, error: connection.refusal };
   let client: PgPoolClient;
   try {
     client = await connection.pool.connect();
   } catch (err) {
-    return { ok: false, error: driverFailure("pool checkout failed while checking connection privileges", dsnEnvVar, resolvedDsn, err) };
+    return { ok: false, error: driverFailure("pool checkout failed while checking connection privileges", dsnEnvVar, resolvedDsn, err), incomplete: true };
   }
   try {
     await client.query("BEGIN");
@@ -356,7 +361,7 @@ export async function checkConnectionPrivileges(dsnEnvVar: string, resolvedDsn: 
     return { ok: true };
   } catch (err) {
     await rollbackQuietly(client);
-    return { ok: false, error: driverFailure("over-privileged connection check failed", dsnEnvVar, resolvedDsn, err) };
+    return { ok: false, error: driverFailure("connection privilege check failed", dsnEnvVar, resolvedDsn, err), incomplete: true };
   } finally {
     client.release();
   }
