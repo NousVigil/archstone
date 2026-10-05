@@ -18,6 +18,50 @@ All notable changes to Archstone are documented here. Format loosely follows
 
 ## [Unreleased]
 
+## [0.28.0]
+
+### Changed
+
+- **Breaking for a programmatic caller of `ensureConnection` or `ConnectionEntry` in
+  `@archstone/provider-sql`.** `ensureConnection` no longer runs the D-9 check. It is now
+  synchronous and returns the pool with the DSN's cached refusal, if any (`{ pool, entry,
+  refusal? }`, or `{ pool: undefined, error }` when no pool could be created). The eager check
+  that `serve`, `serve --http` and `verify` run at startup is the new `checkConnectionPrivileges`.
+  `ConnectionEntry.check` is replaced by `refusal` and a per-server-and-database `ownership` map.
+  `invokeSql` no longer checks out a separate connection for the check on its first call.
+
+### Fixed
+
+- **`archstone serve`, `serve --http` and `verify` no longer call a sql connection over-privileged
+  when the D-9 check could not reach a verdict.** An unreachable database, a failed catalog query
+  or a `pg_postmaster_start_time()` the runtime role cannot execute is now reported under
+  `sql connection privilege check(s) could not complete:`, apart from a genuine refusal, which
+  keeps `over-privileged sql connection(s):`. Both still exit 1. `verify --json` adds `refused`
+  and `incomplete` arrays beside the existing `errors` (`@archstone/cli`). A CI script that
+  matches `verify --json`'s `error === "sql_over_privileged"` now sees
+  `sql_privilege_check_incomplete` when no check reached a verdict and none refused; the exit code
+  is unchanged, and `errors` still lists every finding, now refusals first. In
+  `@archstone/provider-sql`, `checkConnectionPrivileges` marks a result that reached no verdict
+  with `incomplete: true` (additive), and its no-verdict error now reads
+  `connection privilege check failed (…)` instead of `over-privileged connection check failed (…)`.
+
+### Security
+
+- **A `sql` DSN re-pointed at another server kept the over-privileged verdict of the first one.**
+  `@archstone/provider-sql` ran the ADR-0012 D-9 role and ownership checks once per DSN and
+  cached the result for the life of the process, so a long-lived `serve --http` or embedded
+  `execute()` kept serving after a logical-replication failover, a blue/green cut-over or a proxy
+  re-pointed behind the same DSN, onto a server where the role could be a superuser, hold
+  `BYPASSRLS` or own what it reads. Now every transaction reads the role's `rolsuper` and
+  `rolbypassrls`, the server's `pg_postmaster_start_time()` and the database oid before any claim
+  is set. The ownership check runs again the first time a transaction lands on a server and
+  database it has not judged. A refusal reached mid-life refuses every later call on that DSN
+  until restart, as one at startup does. A read that fails, for example because the runtime role
+  cannot execute `pg_postmaster_start_time()`, fails the call with `query failed (…)` and caches
+  nothing; at `serve` and `verify` startup it stops the process. Not covered: an
+  `ALTER … OWNER TO` or a new `GRANT` on the same server and database while the process runs
+  (ADR-0012 R-8); restart long-lived processes after one.
+
 ## [0.27.2]
 
 ### Fixed
