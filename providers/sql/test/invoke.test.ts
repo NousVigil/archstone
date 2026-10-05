@@ -98,10 +98,14 @@ describe("invokeSql — D-4 transaction mechanics", () => {
       release: released,
     };
     const pool: PgPool = { connect: vi.fn(async () => client) };
-    const result = await invokeSql(tool, { id: "1" }, baseOpts(pool));
-    expect(result.ok).toBe(false);
-    expect(result.error).toMatch(/query failed: relation does not exist/);
-    expect(released).toHaveBeenCalledTimes(2); // the check's connection, and the transaction's
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const result = await invokeSql(tool, { id: "1" }, baseOpts(pool));
+      expect(result).toEqual({ ok: false, status: 0, error: "query failed (error code unknown)" });
+      expect(released).toHaveBeenCalledTimes(2); // the check's connection, and the transaction's
+    } finally {
+      stderr.mockRestore();
+    }
   });
 });
 
@@ -251,8 +255,13 @@ describe("invokeSql — response mapping surface (D-7)", () => {
 describe("invokeSql — connection lifecycle (D-5, BR-24)", () => {
   it("a pool-checkout failure returns the same fail-closed shape invokeRest returns for a fetch failure", async () => {
     const pool: PgPool = { connect: vi.fn(async () => { throw new Error("pool exhausted"); }) };
-    const result = await invokeSql(tool, { id: "1" }, baseOpts(pool));
-    expect(result).toEqual({ ok: false, status: 0, error: expect.stringContaining("pool checkout failed") });
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const result = await invokeSql(tool, { id: "1" }, baseOpts(pool));
+      expect(result).toEqual({ ok: false, status: 0, error: "pool checkout failed while checking connection privileges (error code unknown)" });
+    } finally {
+      stderr.mockRestore();
+    }
   });
 
   it("an idle client's 'error' on the pool is logged to stderr without the DSN or driver message, and the pool keeps serving", async () => {
@@ -349,11 +358,13 @@ describe("invokeSql — connection lifecycle (D-5, BR-24)", () => {
       const opts = baseOpts(pool);
       // First call: the D-9 check uses freshClient; the transaction gets the dying client.
       const failed = await invokeSql(tool, { id: "1" }, opts);
-      expect(failed).toEqual({ ok: false, status: 0, error: expect.stringMatching(/^query failed: /) });
+      expect(failed).toEqual({ ok: false, status: 0, error: "query failed (error code unknown)" });
       expect(dying.listenerCount("error")).toBe(1);
       expect(dying.release).toHaveBeenCalledTimes(1);
-      // Silent: the in-flight failure is already reported by the call's own result.
-      expect(stderr).not.toHaveBeenCalled();
+      // One line, from the failed call's own operator log — the client's 'error' listener itself
+      // stays silent, so a mid-call death is not reported twice.
+      expect(stderr).toHaveBeenCalledTimes(1);
+      expect(stderr.mock.calls[0].join(" ")).toContain("query failed for 'DATABASE_URL' (error code unknown): Connection terminated unexpectedly");
 
       expect(await invokeSql(tool, { id: "1" }, opts)).toEqual({ ok: true, status: 200, data: [{ id: "1" }] });
     } finally {
@@ -379,5 +390,141 @@ describe("invokeSql — connection lifecycle (D-5, BR-24)", () => {
     const { pool } = fakePool([]);
     const result = await invokeSql(restTool, { id: "1" }, baseOpts(pool));
     expect(result).toEqual({ ok: false, status: 0, error: "capability 'reporting.portfolio-summary' has no SQL connector" });
+  });
+});
+
+describe("invokeSql — driver errors never reach the caller (#120)", () => {
+  const DSN = "postgres://app_runtime:p%40ss%2Fw0rd@10.0.3.7:5432/app";
+  const PASSWORD_DECODED = "p@ss/w0rd";
+  const LEAKS = ["10.0.3.7", "5432", "app_runtime", "db.internal", "postgres://", "p%40ss", PASSWORD_DECODED];
+
+  type ClientScript = (text: string) => Promise<{ rows: Array<Record<string, unknown>> }>;
+  function clientOf(script: ClientScript): PgPoolClient {
+    return { query: vi.fn(script), release: vi.fn() };
+  }
+  const healthyCheck: ClientScript = async (text) => {
+    if (text.includes("rolsuper")) return { rows: [{ rolsuper: false, rolbypassrls: false }] };
+    return { rows: [] };
+  };
+
+  async function run(pool: PgPool, opts: Record<string, unknown> = {}) {
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const stdout = vi.spyOn(process.stdout, "write");
+    const log = vi.spyOn(console, "log");
+    try {
+      const result = await invokeSql(tool, { id: "1" }, baseOpts(pool, { env: { DATABASE_URL: DSN }, ...opts }));
+      return { result, lines: stderr.mock.calls.map((c) => c.join(" ")), stdoutCalls: stdout.mock.calls.length, logCalls: log.mock.calls.length };
+    } finally {
+      stderr.mockRestore();
+      stdout.mockRestore();
+      log.mockRestore();
+    }
+  }
+
+  function expectNoLeak(text: string | undefined, extra: string[] = []) {
+    for (const leak of [...LEAKS, ...extra]) expect(text).not.toContain(leak);
+  }
+
+  it("site 1 — D-9 checkout failure: errno code only to the caller, scrubbed driver text to stderr", async () => {
+    const message = "connect ECONNREFUSED 10.0.3.7:5432";
+    const pool: PgPool = { connect: vi.fn(async () => { throw Object.assign(new Error(message), { code: "ECONNREFUSED" }); }) };
+    const { result, lines, stdoutCalls, logCalls } = await run(pool);
+    expect(result).toEqual({ ok: false, status: 0, error: "pool checkout failed while checking connection privileges (ECONNREFUSED)" });
+    expectNoLeak(result.error, [message]);
+    expect(lines).toEqual([`archstone: pool checkout failed while checking connection privileges for 'DATABASE_URL' (ECONNREFUSED): ${message}`]);
+    expect(stdoutCalls).toBe(0);
+    expect(logCalls).toBe(0);
+  });
+
+  it("site 2 — D-9 check query failure: SQLSTATE only to the caller; the DSN and its password are scrubbed from stderr", async () => {
+    const message = `permission denied for table pg_roles (user "app_runtime", dsn ${DSN}, password ${PASSWORD_DECODED})\nDETAIL: line two`;
+    const pool: PgPool = {
+      connect: vi.fn(async () => clientOf(async () => { throw Object.assign(new Error(message), { code: "42501" }); })),
+    };
+    const { result, lines, stdoutCalls, logCalls } = await run(pool);
+    expect(result).toEqual({ ok: false, status: 0, error: "over-privileged connection check failed (SQLSTATE 42501)" });
+    expectNoLeak(result.error, ["permission denied"]);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toBe(
+      "archstone: over-privileged connection check failed for 'DATABASE_URL' (SQLSTATE 42501): " +
+        'permission denied for table pg_roles (user "app_runtime", dsn [dsn], password [redacted]) DETAIL: line two',
+    );
+    for (const secret of [DSN, "p%40ss%2Fw0rd", PASSWORD_DECODED, "\n"]) expect(lines[0]).not.toContain(secret);
+    expect(stdoutCalls).toBe(0);
+    expect(logCalls).toBe(0);
+  });
+
+  it("site 3 — a pool factory that throws: code only to the caller, the DSN scrubbed from stderr", async () => {
+    const message = `invalid connection string ${DSN}`;
+    const { result, lines, stdoutCalls, logCalls } = await run({ connect: vi.fn() }, {
+      pgPoolFactory: () => { throw new Error(message); },
+    });
+    expect(result).toEqual({ ok: false, status: 0, error: "pool checkout failed (error code unknown)" });
+    expectNoLeak(result.error, ["invalid connection string"]);
+    expect(lines).toEqual(["archstone: pool checkout failed for 'DATABASE_URL' (error code unknown): invalid connection string [dsn]"]);
+    expect(stdoutCalls).toBe(0);
+    expect(logCalls).toBe(0);
+  });
+
+  it("site 4 — per-call checkout failure: errno code only to the caller, host and role only on stderr", async () => {
+    const message = 'password authentication failed for user "app_runtime" at db.internal';
+    const connect = vi
+      .fn<() => Promise<PgPoolClient>>()
+      .mockResolvedValueOnce(clientOf(healthyCheck))
+      .mockRejectedValueOnce(Object.assign(new Error(message), { code: "ENOTFOUND" }));
+    const { result, lines, stdoutCalls, logCalls } = await run({ connect });
+    expect(result).toEqual({ ok: false, status: 0, error: "pool checkout failed (ENOTFOUND)" });
+    expectNoLeak(result.error, [message]);
+    expect(lines).toEqual([`archstone: pool checkout failed for 'DATABASE_URL' (ENOTFOUND): ${message}`]);
+    expect(stdoutCalls).toBe(0);
+    expect(logCalls).toBe(0);
+  });
+
+  it("site 5 — query failure: SQLSTATE only to the caller; no SQLSTATE class passes driver detail through", async () => {
+    const message = 'duplicate key value violates unique constraint "accounts_email_key" on host 10.0.3.7';
+    const connect = vi
+      .fn<() => Promise<PgPoolClient>>()
+      .mockResolvedValueOnce(clientOf(healthyCheck))
+      .mockResolvedValueOnce(
+        clientOf(async (text) => {
+          if (text.startsWith("SELECT id")) throw Object.assign(new Error(message), { code: "23505" });
+          return { rows: [] };
+        }),
+      );
+    const { result, lines, stdoutCalls, logCalls } = await run({ connect });
+    expect(result).toEqual({ ok: false, status: 0, error: "query failed (SQLSTATE 23505)" });
+    expectNoLeak(result.error, ["accounts_email_key", "duplicate key"]);
+    expect(lines).toEqual([`archstone: query failed for 'DATABASE_URL' (SQLSTATE 23505): ${message}`]);
+    expect(stdoutCalls).toBe(0);
+    expect(logCalls).toBe(0);
+  });
+
+  it("an error with no code, or a code that is not code-shaped, reports 'error code unknown' and never echoes the code", async () => {
+    const connect = vi
+      .fn<() => Promise<PgPoolClient>>()
+      .mockResolvedValueOnce(clientOf(healthyCheck))
+      .mockRejectedValueOnce(Object.assign(new Error("boom"), { code: "postgres://app_runtime@10.0.3.7" }));
+    const { result, lines } = await run({ connect });
+    expect(result.error).toBe("pool checkout failed (error code unknown)");
+    expect(lines[0]).toContain("(error code unknown): boom");
+    expectNoLeak(lines[0]);
+  });
+
+  it("a non-Error rejection, or one whose message is not a string, still yields the fixed caller string — logging never throws", async () => {
+    const connect = vi
+      .fn<() => Promise<PgPoolClient>>()
+      .mockResolvedValueOnce(clientOf(healthyCheck))
+      .mockRejectedValueOnce(Object.create(null))
+      .mockRejectedValueOnce(Object.assign(new Error(), { message: { host: "10.0.3.7" } }));
+    const pool: PgPool = { connect };
+    const first = await run(pool);
+    expect(first.result).toEqual({ ok: false, status: 0, error: "pool checkout failed (error code unknown)" });
+    expect(first.lines).toEqual(["archstone: pool checkout failed for 'DATABASE_URL' (error code unknown): (non-string error)"]);
+    // A fresh registry, so this rejection lands on the D-9 check's checkout (site 1).
+    const second = await run(pool);
+    expect(second.result).toEqual({ ok: false, status: 0, error: "pool checkout failed while checking connection privileges (error code unknown)" });
+    expect(second.lines).toEqual([
+      "archstone: pool checkout failed while checking connection privileges for 'DATABASE_URL' (error code unknown): (non-string error)",
+    ]);
   });
 });
