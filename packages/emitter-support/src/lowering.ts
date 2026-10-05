@@ -6,7 +6,7 @@
 // shares this, never re-implements it. No MCP SDK here — the SDK-specific tool shape
 // (McpToolDef) stays in @archstone/runtime.
 
-import type { IRField, IRResourceRegistry, SemanticType } from "@archstone/compiler";
+import { originListOf, type IRField, type IRResourceRegistry, type SemanticType } from "@archstone/compiler";
 
 type JsonSchema = Record<string, unknown>;
 
@@ -48,6 +48,12 @@ function semanticJsonSchema(semantic: SemanticType, values: string[] | undefined
       return { type: "string", format: "date-time" };
     case "date":
       return { type: "string", format: "date" };
+    case "web-page":
+      // Output-only, origin-checked. `format: uri` is safe to advertise because the mapper emits
+      // the normalised href, never the provider's raw string. No `pattern` built from the
+      // declared origins: the mapper already enforces the stronger rule, and a pattern would only
+      // add a way for a strict client to reject a value the mapper accepted.
+      return { type: "string", format: "uri" };
     case "quantity":
       return { type: "number" };
     case "enum":
@@ -104,6 +110,14 @@ function fieldJsonSchema(
   onError: OnErrorFieldSchema | undefined,
 ): JsonSchema {
   const base: JsonSchema = f.description ? { description: f.description } : {};
+  if (strict) {
+    // An origin-bound type is output-only: a link a model produces is exactly what it exists to
+    // keep out. Refused here, by name, rather than lowered into a schema a model could satisfy.
+    const semantic = f.type.kind === "scalar" ? f.type.semantic : f.type.kind === "list" ? f.type.items : undefined;
+    if (semantic !== undefined && originListOf(semantic) !== undefined) {
+      throw new ExtractionSchemaError(`field '${f.name}' is of type ${semantic}, which is output-only and never an extraction target`);
+    }
+  }
   if (f.type.kind === "list") return { ...base, type: "array", items: semanticJsonSchema(f.type.items, f.type.values, strict) };
   if (f.type.kind === "collection") {
     if (onError && onError.field === f.name) {

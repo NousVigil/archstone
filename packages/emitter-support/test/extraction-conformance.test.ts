@@ -11,8 +11,8 @@
 
 import { describe, it, expect } from "vitest";
 import Ajv2020 from "ajv/dist/2020.js";
-import { SEMANTIC_TYPES, type IRField, type IRResourceRegistry, type SemanticType } from "@archstone/compiler";
-import { extractionJsonSchema } from "../src/lowering";
+import { SEMANTIC_TYPES, ORIGIN_BOUND_TYPES, type IRField, type IRResourceRegistry, type SemanticType } from "@archstone/compiler";
+import { extractionJsonSchema, ExtractionSchemaError } from "../src/lowering";
 import { validateExtraction } from "../src/extraction";
 
 // Formats are registered as always-true, exactly as `@archstone/schema`'s loader does. ADR-0011
@@ -105,9 +105,26 @@ const CASES: Record<string, Case> = {
 
 describe("#10: every semantic type and field form is covered", () => {
   it("the table names every member of SEMANTIC_TYPES — adding one without a case fails here", () => {
-    const covered = new Set(Object.keys(CASES));
+    // An origin-bound type is never an extraction target, so it has no accept/refuse case: it is
+    // covered by the refusal test below instead.
+    const covered = new Set([...Object.keys(CASES), ...Object.keys(ORIGIN_BOUND_TYPES)]);
     const uncovered = [...SEMANTIC_TYPES].filter((t) => !covered.has(t));
     expect(uncovered).toEqual([]);
+  });
+
+  // S-C.6: `web-page` is output-only — refused as an extraction target by the schema AND by the
+  // validator (which asks the schema), naming the field, through the existing error mechanism.
+  it("every origin-bound type is refused by both, naming the field (S-C.6)", () => {
+    for (const semantic of Object.keys(ORIGIN_BOUND_TYPES) as SemanticType[]) {
+      const field: IRField = { name: "listingUrl", required: false, type: { kind: "scalar", semantic } };
+      expect(() => extractionJsonSchema([field])).toThrow(ExtractionSchemaError);
+      expect(() => extractionJsonSchema([field])).toThrow(/field 'listingUrl' is of type web-page/);
+      expect(() => validateExtraction([field], { listingUrl: "https://www.example.com/x" })).toThrow(ExtractionSchemaError);
+      // …and inside a resource, where the walk reaches it the same way.
+      const nested: IRResourceRegistry = { Stay: [{ name: "listingUrl", required: true, type: { kind: "scalar", semantic } }] };
+      const viaResource: IRField = { name: "stay", required: true, type: { kind: "resource", name: "Stay" } };
+      expect(() => extractionJsonSchema([viaResource], nested)).toThrow(/field 'listingUrl'/);
+    }
   });
 
   it("and all three composite field forms", () => {
