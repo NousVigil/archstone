@@ -52,6 +52,8 @@ export interface ProbeReport {
   contract?: RecordedContract;
   degraded?: string[];
   missing?: string[];
+  /** Origin-checked fields whose recorded value was outside the declared origins — names only. */
+  withheld?: string[];
 }
 
 const FREE_METHODS = new Set(["GET", "HEAD"]);
@@ -157,6 +159,7 @@ export async function runProbes(
       ...(contract ? { contract } : {}),
       ...(recording.degraded ? { degraded: recording.degraded } : {}),
       ...(recording.missing ? { missing: recording.missing } : {}),
+      ...(recording.withheld ? { withheld: recording.withheld } : {}),
     });
   }
   return reports;

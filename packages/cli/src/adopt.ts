@@ -114,7 +114,11 @@ async function adoptOne(dir: string, target: Target, contractShape: ShapeMap | u
 
   // ONE request (R-4). The drift and the contract that may be written both describe this
   // response; a second probe could describe a backend that changed in between.
-  const recording = await recordContract(tool, fixture.request, {}, {});
+  // The manifest's own resources, so the recording maps with each field's declared type — an
+  // origin-checked field is then checked here as it is on every other path, and a withheld value
+  // stops the adoption (red, names only) instead of being recorded.
+  const resources = new Registry(compile(load(dir))).ir.resources;
+  const recording = await recordContract(tool, fixture.request, resources, {});
   if (recording.outcome !== "green" && recording.outcome !== "yellow") {
     console.error(`  ${tool.id}: ${recording.detail}`);
     return 1;
@@ -125,7 +129,7 @@ async function adoptOne(dir: string, target: Target, contractShape: ShapeMap | u
   // reads as added, and the planner refuses the ones already declared. That is exactly the
   // right answer, and it means adoption does not require a re-record first.
   const drift = diffShape(contractShape ?? {}, liveShape);
-  const plan = planAdoption(tool, drift, new Registry(compile(load(dir))).ir.resources);
+  const plan = planAdoption(tool, drift, resources);
 
   const offers = adoptable(plan);
   const refused = plan.candidates.filter((c) => !c.adoptable);
