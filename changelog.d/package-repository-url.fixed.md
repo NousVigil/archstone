@@ -4,3 +4,7 @@
   published. All nine packages now name `https://github.com/NousVigil/archstone.git`.
 - Links to the repository in the package READMEs, `server.json`, `SECURITY.md`, `SUPPORT.md`,
   `CONTRIBUTING.md` and the issue-template config now point at `NousVigil/archstone`.
+- **The MCP Registry name moves to `io.github.NousVigil/archstone`.** The registry verifies a
+  namespace against the GitHub owner publishing it, which is now `NousVigil`. `mcpName` in
+  `@archstone/cli` and `name` in `server.json` change together. Clients that pinned the old
+  `io.github.Archstone-Romania/archstone` entry (last published at 0.26.0) must switch to the new name.

@@ -187,7 +187,7 @@ test("mcp registry step (#69): publish exits 0 but the registry never confirms â
   assert.deepEqual(r.publisher, ["login github-oidc", "publish"]);
   assert.match(r.stdout, /::error::/, "must emit a GitHub error annotation, not just a non-zero exit");
   assert.match(r.stdout, new RegExp(`workflow_dispatch with version=${SERVER.version.replace(/\./g, "\\.")}`), "must tell the operator how to resume");
-  assert.match(r.stdout, /curl -s https:\/\/registry\.modelcontextprotocol\.io\/v0\/servers\/io\.github\.Archstone-Romania%2Farchstone\/versions\//, "must print the exact endpoint to check");
+  assert.match(r.stdout, /curl -s https:\/\/registry\.modelcontextprotocol\.io\/v0\/servers\/io\.github\.NousVigil%2Farchstone\/versions\//, "must print the exact endpoint to check");
 });
 
 test("mcp registry step: a checksum mismatch stops before the publisher ever runs", () => {

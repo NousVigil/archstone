@@ -375,7 +375,7 @@ jobs:
       - name: Publish server.json to the MCP Registry
         # #69. Every release since 0.11.5 stamped server.json (release-prepare) and verified the
         # stamp (release-gate, #101) — and then published it nowhere. No step here ever sent it
-        # to registry.modelcontextprotocol.io, so `io.github.Archstone-Romania/archstone` stayed
+        # to registry.modelcontextprotocol.io, so `io.github.NousVigil/archstone` stayed
         # at 0.11.5 while npm moved to 0.22.0, and every run was green because nothing asked.
         #
         # AFTER THE NPM STEP, and not merely for tidiness: the registry verifies ownership of an

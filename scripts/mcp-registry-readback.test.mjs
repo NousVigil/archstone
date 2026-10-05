@@ -18,7 +18,7 @@ import {
 } from "./mcp-registry-readback.mjs";
 import { parseArgs, waitForVersion } from "./npm-readback.mjs";
 
-const NAME = "io.github.Archstone-Romania/archstone";
+const NAME = "io.github.NousVigil/archstone";
 const doc = (version) => JSON.stringify({ server: { name: NAME, version }, _meta: {} });
 
 // --- URL --------------------------------------------------------------------------------
@@ -28,14 +28,14 @@ test("serverVersionUrl: encodes the slash in the server name, keeps the casing",
   // reported as `absent`, forever, on a release that is fine.
   assert.equal(
     serverVersionUrl(DEFAULT_MCP_REGISTRY, NAME, "0.11.5"),
-    "https://registry.modelcontextprotocol.io/v0/servers/io.github.Archstone-Romania%2Farchstone/versions/0.11.5",
+    "https://registry.modelcontextprotocol.io/v0/servers/io.github.NousVigil%2Farchstone/versions/0.11.5",
   );
 });
 
 test("serverVersionUrl: tolerates a trailing slash on an overridden registry", () => {
   assert.equal(
     serverVersionUrl("http://localhost:8080/", NAME, "0.22.0"),
-    "http://localhost:8080/v0/servers/io.github.Archstone-Romania%2Farchstone/versions/0.22.0",
+    "http://localhost:8080/v0/servers/io.github.NousVigil%2Farchstone/versions/0.22.0",
   );
 });
 
