@@ -1,0 +1,9 @@
+
+archstone doctor examples/manifests/tourism
+
+🔵 tourism.search — baseUrl comes from the environment (${STAYS_API_URL})
+   Nothing wrong with it — but the deployment, not the manifest, decides where this capability points. Confirm the variable is set to the intended backend in every environment that runs it.
+   (env-baseurl)
+
+1 capabilities checked — 0 error · 0 warning · 1 advisory.
+

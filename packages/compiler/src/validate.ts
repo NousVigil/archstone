@@ -9,24 +9,7 @@ import type { LoadResult, CapabilityDoc, PolicyDoc } from "@archstone/schema";
 import { domainOf, referencedResourceName, resolveResourceName, resourceIndex } from "./resolve";
 import { parsePath } from "./path";
 import { policyScopesCapability } from "./compile";
-
-/**
- * CDL policy tokens (`cdl.schema.json`'s closed enum) that Archstone does NOT enforce in this
- * version. `authenticated` is deliberately absent — it is enforced, at the one evaluation point
- * (#43 / ADD-43 D-4), so it must not be warned about.
- *
- * BR-40: each remaining token gets exactly one warning per capability that declares it, so a
- * `policies:` list is never mistaken for a list of shipped guarantees by a compliance reviewer
- * reading the manifest as evidence. The list shrinks as tokens gain enforcement (`rate-limited`
- * is #45's); there is deliberately no suppression flag (AC OQ-H — a mechanism whose only
- * purpose is to hide a true statement).
- */
-const UNENFORCED_POLICY_TOKENS: Readonly<Record<string, string>> = {
-  "rate-limited": "enforcing it needs invocation counting and therefore state — tracked as issue #45",
-  "tenant-scoped": "which tenant's data a call may touch is a separate axis from identity, and is deliberately not implemented yet",
-  "human-approval": "no approval mechanism exists",
-  "consent-required": "no consent mechanism exists",
-};
+import { UNENFORCED_POLICY_TOKENS } from "./unenforced-tokens";
 
 export type Severity = "error" | "warning";
 
@@ -34,6 +17,10 @@ export interface Diagnostic {
   severity: Severity;
   code: string;
   message: string;
+  /** Set by BR-40 only (ADD-311 D-5): which (capability, token) pair the warning reports, so a
+   *  renderer that replaces it with a richer finding matches on structure, never on prose. */
+  capability?: string;
+  token?: string;
 }
 
 export function validateSemantics(model: LoadResult): Diagnostic[] {
@@ -688,14 +675,24 @@ export function validateSemantics(model: LoadResult): Diagnostic[] {
   // opening complaint, generalized: after this increment and #45, three of the five tokens
   // still have no enforcement and no issue. A warning costs no new primitive (Rule #10) and
   // stops `policies:` reading as a list of shipped guarantees.
+  //
+  // There is deliberately no suppression flag (AC OQ-H — a mechanism whose only purpose is to hide
+  // a true statement), and the list shrinks as tokens gain enforcement.
+  //
+  // Each (capability, token) pair is reported exactly once: here, or — for a non-retired
+  // `irreversible` capability — by `lintIR`'s `irreversible-unenforced-policy` (ADD-311 D-5),
+  // which the renderer swaps in for the matching diagnostic. This pass still emits every pair,
+  // so an invalid manifest (no lint) prints what it always did.
   for (const d of docs) {
     for (const token of d.capability.policies ?? []) {
-      const why = UNENFORCED_POLICY_TOKENS[token];
-      if (!why) continue;
+      const entry = UNENFORCED_POLICY_TOKENS[token];
+      if (!entry) continue;
       diags.push({
         severity: "warning",
         code: "unenforced-policy-token",
-        message: `capability '${d.capability.id}' (${d.file}) declares policies:[${token}], which is not enforced in this version — ${why}`,
+        message: `capability '${d.capability.id}' (${d.file}) declares policies:[${token}], which is not enforced in this version — ${entry.why}`,
+        capability: d.capability.id,
+        token,
       });
     }
   }

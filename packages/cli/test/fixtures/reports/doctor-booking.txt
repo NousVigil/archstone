@@ -1,0 +1,37 @@
+
+archstone doctor examples/manifests/booking
+
+🟡 tourism.book — declared but has no binding, so it is not invocable
+   A capability with no binding compiles and then does nothing. That is fine while you are drafting and a defect at go-live.
+   (unbound-capability)
+
+🟡 tourism.cancel — declared but has no binding, so it is not invocable
+   A capability with no binding compiles and then does nothing. That is fine while you are drafting and a defect at go-live.
+   (unbound-capability)
+
+🟡 tourism.invoice — declared but has no binding, so it is not invocable
+   A capability with no binding compiles and then does nothing. That is fine while you are drafting and a defect at go-live.
+   (unbound-capability)
+
+🟡 tourism.search — bound, but records no contract fixture
+   `archstone verify` replays a recorded fixture against the live backend. With no fixture there is nothing to replay, so backend drift is found by an agent, in front of a customer, instead of by CI.
+   (no-contract)
+
+🔵 tourism.book — requires an authenticated caller
+   The surface serving it must carry a per-request principal — `resolveCaller` on HTTP or the embedded SDK. `archstone serve` (stdio) has one static caller for the whole process, so it cannot serve this capability to more than one identity.
+   (authenticated-needs-principal)
+
+🔵 tourism.cancel — requires an authenticated caller
+   The surface serving it must carry a per-request principal — `resolveCaller` on HTTP or the embedded SDK. `archstone serve` (stdio) has one static caller for the whole process, so it cannot serve this capability to more than one identity.
+   (authenticated-needs-principal)
+
+🔵 tourism.invoice — requires an authenticated caller
+   The surface serving it must carry a per-request principal — `resolveCaller` on HTTP or the embedded SDK. `archstone serve` (stdio) has one static caller for the whole process, so it cannot serve this capability to more than one identity.
+   (authenticated-needs-principal)
+
+🔵 tourism.search — baseUrl comes from the environment (${BOOKING_API_URL})
+   Nothing wrong with it — but the deployment, not the manifest, decides where this capability points. Confirm the variable is set to the intended backend in every environment that runs it.
+   (env-baseurl)
+
+4 capabilities checked — 0 error · 4 warning · 4 advisory.
+

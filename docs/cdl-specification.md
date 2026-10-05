@@ -144,6 +144,9 @@ of a **business** failure state.
   failure token; those are Execution-model concerns.
 - Per-item outcomes of a batch **MUST** be modeled as `output` data, not `failures`.
 
+> *Non-normative.* `archstone apply` warns when an `irreversible` capability declares no
+> `failures`. The warning checks the declaration; it does not change what a processor accepts.
+
 ### 4.5 `lifecycle`
 
 `lifecycle`, if present, **MUST** be one of

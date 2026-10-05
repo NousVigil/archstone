@@ -10,7 +10,7 @@
 
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import type { IR, IRTool } from "@archstone/compiler";
+import type { IR, IRTool, LintFinding } from "@archstone/compiler";
 
 export type Severity = "error" | "warning" | "advisory";
 
@@ -19,6 +19,9 @@ export interface Finding {
   /** Stable machine key, so a CI job can allowlist a specific finding without regex-matching prose. */
   code: string;
   capability?: string;
+  /** The unenforced CDL token, on `irreversible-unenforced-policy` only — so CI can tell two
+   *  findings on one capability apart without parsing prose. Absent on every other finding. */
+  token?: string;
   message: string;
   /** Why it matters — the part that makes a checklist worth reading rather than obeying. */
   because: string;
@@ -44,7 +47,16 @@ function baseUrlOf(tool: IRTool): string | undefined {
  * directory is needed for exactly two of them — fixture existence and IR drift — and nothing
  * here writes.
  */
-export function diagnose(ir: IR, manifestDir: string, opts: { builtIr?: string } = {}): DoctorReport {
+export function diagnose(
+  ir: IR,
+  manifestDir: string,
+  opts: {
+    builtIr?: string;
+    /** `lintIR`'s findings (ADD-311 D-8), computed by the caller. They arrive as data rather than
+     *  being derived here, so `diagnose` still never loads a manifest. */
+    lint?: readonly LintFinding[];
+  } = {},
+): DoctorReport {
   const findings: Finding[] = [];
   const add = (f: Finding) => findings.push(f);
 
@@ -158,6 +170,20 @@ export function diagnose(ir: IR, manifestDir: string, opts: { builtIr?: string }
           // here is what makes the two agree wherever a reader starts.
           "No API description states this, so it was a human judgement: an agent must confirm explicitly and must never auto-retry. Re-read it before go-live — `irreversible` is the difference between looking up a price and charging a card. `archstone verify` applies the same judgement: it will not replay this capability's fixture against the live backend unless you assert a sandbox with --sandbox.",
       });
+      // ADD-311 D-8/D-9: what this declaration lacks, kept beside the advisory above. Both render:
+      // the advisory asks for a re-read on every `irreversible`; these say what is missing, only
+      // where something is. Same `code`s as `apply`'s lines, `warning`, never `error`.
+      for (const f of opts.lint ?? []) {
+        if (f.capability !== tool.id) continue;
+        add({
+          severity: f.severity,
+          code: f.code,
+          capability: f.capability,
+          ...(f.token !== undefined ? { token: f.token } : {}),
+          message: f.message,
+          because: f.because,
+        });
+      }
     }
 
     // --- governance wiring ------------------------------------------------------------

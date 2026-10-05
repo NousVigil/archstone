@@ -34,7 +34,7 @@ import { resolve } from "node:path";
 import { createRequire } from "node:module";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { load } from "@archstone/schema";
-import { validateSemantics, compile, diffIR, exposureOfIR, type IR, type IRDiff, type IRDiffEntry } from "@archstone/compiler";
+import { validateSemantics, compile, lintIR, diffIR, exposureOfIR, type IR, type IRDiff, type IRDiffEntry } from "@archstone/compiler";
 import { Registry, buildRegistry, serveStdio } from "@archstone/runtime";
 import { createHttpHandler } from "@archstone/runtime/http";
 // ADR-0012 D-5: `runVerify`/`HealthStatus` now come from the dedicated `/verify` subpath, not
@@ -162,17 +162,31 @@ function runApply(dir: string, exposure = false, json = false): void {
   const diags = validateSemantics(res);
   const errors = diags.filter((d) => d.severity === "error");
   const warnings = diags.filter((d) => d.severity === "warning");
-  say(`  semantic   ${errors.length} error(s), ${warnings.length} warning(s)`);
-  for (const d of errors) say(`    ✗ ${d.message}`);
-  for (const d of warnings) say(`    ⚠ ${d.message}`);
 
   const shapesAndSemanticsOk = res.ok && errors.length === 0;
 
-  // Compile to IR (#4) + index into the Registry (#5) — only when valid enough to emit.
+  // Compile to IR (#4) — only when valid enough to emit — BEFORE the semantic line prints, so the
+  // lint below (ADD-311 D-6) can be counted in it. The same IR feeds the Registry (#5).
   // ADD-30: a tool-name collision (two capability ids sanitizing to the same advertised
-  // name) is checked here, before the final `ok`, alongside the semantic errors above —
+  // name) is checked below, before the final `ok`, alongside the semantic errors above —
   // 'apply' must refuse the same manifest 'build'/'serve' would refuse (D-2).
-  const registry = shapesAndSemanticsOk ? new Registry(compile(res)) : undefined;
+  const ir = shapesAndSemanticsOk ? compile(res) : undefined;
+
+  // ADD-311: what an `irreversible` capability's declaration still lacks. Lint exists only for a
+  // manifest that compiles; an invalid one prints exactly what it always did, BR-40 included.
+  // Where a lint finding reports a (capability, token) pair, BR-40's line for that pair is
+  // dropped — matched on the structured fields, never on prose — so each pair prints once.
+  const lint = ir ? lintIR(ir, res) : [];
+  const lintPairs = new Set(lint.filter((f) => f.token !== undefined).map((f) => `${f.capability}\0${f.token}`));
+  const kept = warnings.filter((d) => !(d.code === "unenforced-policy-token" && lintPairs.has(`${d.capability}\0${d.token}`)));
+
+  say(`  semantic   ${errors.length} error(s), ${kept.length + lint.length} warning(s)`);
+  for (const d of errors) say(`    ✗ ${d.message}`);
+  for (const d of kept) say(`    ⚠ ${d.message}`);
+  for (const f of lint) say(`    ⚠ capability '${f.capability}' ${f.message} ${f.because}`);
+
+  // Index into the Registry (#5).
+  const registry = ir ? new Registry(ir) : undefined;
   const collisions = registry?.toolNameCollisions ?? [];
   if (collisions.length > 0) {
     say(`\n  ✗ ${collisions.length} tool-name collision(s):`);
@@ -904,11 +918,14 @@ function runDoctor(dir: string, json: boolean): void {
   }
 
   const ir = compile(res);
+  // ADD-311 D-8: lint is computed here, once, and handed to `diagnose` — which stays a function
+  // of the IR plus what is on disk and never loads a manifest.
+  const lint = lintIR(ir, res);
   // Compare drift against what `build` would actually write, which strips `contract` (ADD-43
   // D-9's strip rule) — comparing against the unstripped IR would report drift on every
   // manifest that records a fixture, i.e. on every well-configured one.
   const stripped: IR = { ...ir, tools: ir.tools.map(({ contract: _contract, ...t }) => t) };
-  const report = diagnose(ir, dir, { builtIr: `${JSON.stringify(stripped, null, 2)}\n` });
+  const report = diagnose(ir, dir, { builtIr: `${JSON.stringify(stripped, null, 2)}\n`, lint });
 
   console.log(json ? JSON.stringify(report, null, 2) : formatReport(report, dir));
   process.exit(report.ok ? 0 : 1);
