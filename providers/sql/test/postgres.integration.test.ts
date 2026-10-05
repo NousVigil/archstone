@@ -231,11 +231,24 @@ describePostgres("invokeSql against a real Postgres", () => {
   it("D-4/D-9 layer 2: a write smuggled in a WITH … SELECT is refused by the read-only transaction, nothing is written, and the connection is released", async () => {
     const smuggled = sqlTool("WITH w AS (INSERT INTO app.scratch (note) VALUES ($1) RETURNING id) SELECT id FROM w", ["note"], DSN_VARS.writer);
     const o = opts("tenant-a", { poolConfig: { max: 1 } });
-    const result = await invokeSql(smuggled, { note: "should never land" }, o);
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    let result: Awaited<ReturnType<typeof invokeSql>>;
+    let lines: string[];
+    try {
+      result = await invokeSql(smuggled, { note: "should never land" }, o);
+      lines = stderr.mock.calls.map((c) => c.join(" "));
+    } finally {
+      stderr.mockRestore(); // also clears the recorded calls, hence `lines` above
+    }
     expect(result.ok).toBe(false);
-    // Postgres names the statement's top-level command tag — SELECT, for a data-modifying CTE —
-    // not the INSERT inside it. The write is blocked all the same (asserted just below).
-    expect(result.error).toBe("query failed: cannot execute SELECT in a read-only transaction");
+    // The caller gets the SQLSTATE only (25006, read_only_sql_transaction), never the driver's text.
+    expect(result.error).toBe("query failed (SQLSTATE 25006)");
+    // The operator's stderr line carries it. Postgres names the statement's top-level command
+    // tag — SELECT, for a data-modifying CTE — not the INSERT inside it. The write is blocked all
+    // the same (asserted just below).
+    expect(lines).toEqual([
+      `archstone: query failed for '${DSN_VARS.writer}' (SQLSTATE 25006): cannot execute SELECT in a read-only transaction`,
+    ]);
 
     const { rows } = await fx.admin("SELECT count(*)::int AS n FROM app.scratch");
     expect(rows[0].n).toBe(0);
@@ -251,8 +264,19 @@ describePostgres("invokeSql against a real Postgres", () => {
 
   it("D-4: a sequence bump (nextval) is also a write the read-only transaction refuses", async () => {
     const tool = sqlTool("SELECT nextval('app.scratch_id_seq') AS id", [], DSN_VARS.writer);
-    const result = await invokeSql(tool, {}, opts("tenant-a"));
-    expect(result).toEqual({ ok: false, status: 0, error: "query failed: cannot execute nextval() in a read-only transaction" });
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    let result: Awaited<ReturnType<typeof invokeSql>>;
+    let lines: string[];
+    try {
+      result = await invokeSql(tool, {}, opts("tenant-a"));
+      lines = stderr.mock.calls.map((c) => c.join(" "));
+    } finally {
+      stderr.mockRestore(); // also clears the recorded calls, hence `lines` above
+    }
+    expect(result).toEqual({ ok: false, status: 0, error: "query failed (SQLSTATE 25006)" });
+    expect(lines).toEqual([
+      `archstone: query failed for '${DSN_VARS.writer}' (SQLSTATE 25006): cannot execute nextval() in a read-only transaction`,
+    ]);
   });
 
   // --------------------------------------------------------------- scenario 5: types (R-3, D-7)
