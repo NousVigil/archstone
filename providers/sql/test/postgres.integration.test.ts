@@ -2,7 +2,7 @@
 // (invoke.test.ts) proves what we send the driver through a fake pool; this one proves what
 // Postgres does with it. Skipped unless ARCHSTONE_TEST_PG_URL is set — see CONTRIBUTING.md.
 
-import { afterAll, beforeAll, expect, it } from "vitest";
+import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import type pg from "pg";
 import type { IRResourceRegistry, IRTool } from "@archstone/compiler";
 import { fingerprintShape, describeShape } from "@archstone/compiler";
@@ -92,22 +92,93 @@ describePostgres("invokeSql against a real Postgres", () => {
 
   // -------------------------------------------- D-5: what an idle pooled connection does on death
   //
-  // FINDING (shipped behaviour, not fixed here): the default pool `invokeSql` builds is a bare
-  // `new Pool(…)` with no 'error' listener. When Postgres terminates an IDLE pooled connection
-  // — a restart, a failover, `idle_session_timeout`, `pg_terminate_backend` — pg-pool re-emits
-  // the error on the pool, and with no listener Node throws it: the `serve` process exits.
-  // Reproduced by hand against this fixture (terminate the backend behind an idle pool →
-  // "Unhandled 'error' event … Emitted 'error' event on BoundPool"). Not reproduced inside
-  // vitest, where it would surface as an unhandled error in the worker rather than a result;
-  // pinned here by the missing listener itself.
-  it("FINDING D-5: the default pg.Pool has no 'error' listener, so an idle connection terminated by the server crashes the process", async () => {
+  // When Postgres terminates a pooled connection — a restart, a failover,
+  // `idle_session_timeout`, `pg_terminate_backend` — the dead connection emits 'error'. Unlistened,
+  // that is an unhandled 'error' event and the `serve` process exits. `ensureConnection` attaches
+  // the listeners when it creates the pool:
+  // - IDLE: pg-pool drops the client and re-emits on the pool; the pool listener logs it (env
+  //   var name + error code only) and the next checkout opens a fresh connection.
+  // - CHECKED OUT: pg-pool's own listener is detached during checkout, so every client gets a
+  //   permanent silent one ('connect'); the in-flight call fails closed and release() drops it.
+  // Both backends are terminated for real here, from the admin connection.
+  it("D-5: an idle connection terminated by the server is logged and dropped, and the pool keeps serving", async () => {
     const o = opts("tenant-a");
     expect((await invokeSql(ALL_ROWS, {}, o)).ok).toBe(true);
     const pool = [...o.connectionRegistry!.values()][0].pool as unknown as pg.Pool;
+    expect(pool.listenerCount("error")).toBe(1);
     expect(pool.idleCount).toBeGreaterThan(0);
-    expect(pool.listenerCount("error")).toBe(0);
+
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const poolError = new Promise<Error>((resolve) => pool.once("error", resolve));
+      const runtimeRole = decodeURIComponent(new URL(fx.env[DSN_VARS.runtime]).username);
+      const { rows } = await fx.admin(
+        "SELECT pg_terminate_backend(pid) AS terminated FROM pg_stat_activity WHERE datname = current_database() AND usename = $1 AND state = 'idle'",
+        [runtimeRole],
+      );
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows.every((r) => r.terminated === true)).toBe(true);
+
+      let timer: NodeJS.Timeout | undefined;
+      const err = await Promise.race([
+        poolError,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("pool never saw the terminated backend")), 10_000);
+        }),
+      ]).finally(() => clearTimeout(timer));
+      expect((err as Error & { code?: string }).code).toBe("57P01"); // admin_shutdown
+      for (let i = 0; pool.totalCount > 0 && i < 100; i++) await new Promise((r) => setTimeout(r, 50));
+      expect(pool.totalCount).toBe(0); // pg-pool discarded the dead client itself
+
+      const line = stderr.mock.calls.map((c) => c.join(" ")).find((l) => l.includes(DSN_VARS.runtime));
+      expect(line).toContain("SQLSTATE 57P01");
+      expect(line).not.toContain(runtimeRole);
+      expect(line).not.toContain(fx.env[DSN_VARS.runtime]);
+    } finally {
+      stderr.mockRestore();
+    }
+
+    // Still alive, and the same pool opens a fresh connection for the next call.
+    expect(await invokeSql(ALL_ROWS, {}, o)).toEqual({ ok: true, status: 200, data: SEED.acme.map((r) => ({ ...r })) });
   });
-  it.todo("D-5 fix: the default pool handles 'error' on idle clients (drop the client, keep serving) instead of crashing the process");
+
+  it("D-5: a CHECKED-OUT connection terminated by the server does not crash the process, and the pool keeps serving", async () => {
+    const o = opts("tenant-a");
+    expect((await invokeSql(ALL_ROWS, {}, o)).ok).toBe(true);
+    const pool = [...o.connectionRegistry!.values()][0].pool as unknown as pg.Pool;
+
+    const client = (await pool.connect()) as pg.PoolClient;
+    const opened = pool.totalCount;
+    let released = false;
+    try {
+      // pg-pool detaches its idle listener on checkout: only ours remains.
+      expect(client.listenerCount("error")).toBe(1);
+      const { rows } = await client.query("SELECT pg_backend_pid() AS pid");
+      const pid = rows[0].pid as number;
+
+      const clientError = new Promise<Error>((resolve) => client.once("error", resolve));
+      const terminated = await fx.admin("SELECT pg_terminate_backend($1) AS ok", [pid]);
+      expect(terminated.rows[0].ok).toBe(true);
+
+      let timer: NodeJS.Timeout | undefined;
+      const err = await Promise.race([
+        clientError,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("checked-out client never saw its terminated backend")), 10_000);
+        }),
+      ]).finally(() => clearTimeout(timer));
+      expect((err as Error & { code?: string }).code).toBe("57P01");
+      // Still here: the error had a listener, so it did not take the worker down.
+      await expect(client.query("SELECT 1")).rejects.toThrow();
+      client.release();
+      released = true;
+      expect(pool.totalCount).toBe(opened - 1); // release() of a dead client removes it from the pool
+    } finally {
+      if (!released) client.release();
+    }
+
+    expect(await invokeSql(ALL_ROWS, {}, o)).toEqual({ ok: true, status: 200, data: SEED.acme.map((r) => ({ ...r })) });
+  });
 
   // ------------------------------------------------------- scenario 3: D-9 over-privileged roles
 

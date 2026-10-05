@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import { describe, it, expect, vi } from "vitest";
 import type { IRTool } from "@archstone/compiler";
 import { invokeSql, type PgPool, type PgPoolClient, type ConnectionEntry } from "../src/index";
@@ -252,6 +253,118 @@ describe("invokeSql — connection lifecycle (D-5, BR-24)", () => {
     const pool: PgPool = { connect: vi.fn(async () => { throw new Error("pool exhausted"); }) };
     const result = await invokeSql(tool, { id: "1" }, baseOpts(pool));
     expect(result).toEqual({ ok: false, status: 0, error: expect.stringContaining("pool checkout failed") });
+  });
+
+  it("an idle client's 'error' on the pool is logged to stderr without the DSN or driver message, and the pool keeps serving", async () => {
+    const { pool: base, client } = fakePool([{ id: "1" }]);
+    const pool: PgPool & EventEmitter = Object.assign(new EventEmitter(), { connect: base.connect });
+    const opts = baseOpts(pool, { env: { DATABASE_URL: "postgres://runtime:s3cret@db.internal:5432/app" } });
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const stdout = vi.spyOn(process.stdout, "write");
+    try {
+      expect((await invokeSql(tool, { id: "1" }, opts)).ok).toBe(true);
+      const entry = opts.connectionRegistry.get("postgres://runtime:s3cret@db.internal:5432/app")!;
+      const check = entry.check;
+      expect(pool.listenerCount("error")).toBe(1);
+
+      const message = 'terminating connection due to administrator command (host "db.internal", user "runtime")';
+      expect(() => pool.emit("error", Object.assign(new Error(message), { code: "57P01" }))).not.toThrow();
+
+      expect(stderr).toHaveBeenCalledTimes(1);
+      const line = stderr.mock.calls[0].join(" ");
+      expect(line).toContain("'DATABASE_URL'");
+      expect(line).toContain("SQLSTATE 57P01");
+      for (const leak of ["postgres://", "s3cret", "db.internal", "runtime", "terminating connection"]) expect(line).not.toContain(leak);
+      expect(stdout).not.toHaveBeenCalled();
+
+      // No eviction: the same entry (pool and D-9 check) serves the next call, and the role
+      // check is not re-run.
+      expect((await invokeSql(tool, { id: "1" }, opts)).ok).toBe(true);
+      expect(opts.connectionRegistry.get("postgres://runtime:s3cret@db.internal:5432/app")).toBe(entry);
+      expect(entry.pool).toBe(pool);
+      expect(entry.check).toBe(check);
+      const roleCheckCalls = (client.query as ReturnType<typeof vi.fn>).mock.calls.filter(([text]: [string]) => text.includes("rolsuper")).length;
+      expect(roleCheckCalls).toBe(1);
+    } finally {
+      stderr.mockRestore();
+      stdout.mockRestore();
+    }
+  });
+
+  it("labels only a SQLSTATE-shaped code as SQLSTATE: a socket code is 'error code X', anything else 'error code unknown'", async () => {
+    const { pool: base } = fakePool([{ id: "1" }]);
+    const pool: PgPool & EventEmitter = Object.assign(new EventEmitter(), { connect: base.connect });
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      await invokeSql(tool, { id: "1" }, baseOpts(pool));
+      pool.emit("error", Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }));
+      pool.emit("error", new Error("Connection terminated unexpectedly"));
+      pool.emit("error", Object.assign(new Error("x"), { code: "postgres://runtime@db.internal" }));
+      pool.emit("error", Object.assign(new Error("write EPIPE"), { code: "EPIPE" })); // five letters, still not a SQLSTATE
+      const lines = stderr.mock.calls.map((c) => c.join(" "));
+      expect(lines[0]).toContain("failed (error code ECONNRESET)");
+      expect(lines[1]).toContain("failed (error code unknown)");
+      expect(lines[2]).toContain("failed (error code unknown)");
+      expect(lines[3]).toContain("failed (error code EPIPE)");
+      for (const line of lines) {
+        expect(line).not.toContain("SQLSTATE");
+        expect(line).not.toContain("closed by the server");
+        expect(line).not.toContain("db.internal");
+      }
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+
+  it("a checked-out client whose backend dies mid-call does not crash the process: the call fails closed and the next one succeeds", async () => {
+    const { client: healthy } = fakePool([{ id: "1" }]);
+    // A client whose connection dies between checkout and BEGIN: pg emits 'error' on the client
+    // itself (pg-pool's idle listener is detached while it is checked out), then rejects queries.
+    const dying = Object.assign(new EventEmitter(), {
+      query: vi.fn(async (text: string) => {
+        if (text === "BEGIN") {
+          dying.emit("error", Object.assign(new Error("terminating connection due to administrator command"), { code: "57P01" }));
+          throw new Error("Connection terminated unexpectedly");
+        }
+        return { rows: [] };
+      }),
+      release: vi.fn(),
+    });
+    const freshClient = Object.assign(new EventEmitter(), healthy);
+    const queue = [freshClient, dying, freshClient];
+    const opened = new Set<EventEmitter>();
+    const pool: PgPool & EventEmitter = Object.assign(new EventEmitter(), {
+      connect: vi.fn(async () => {
+        const next = queue.shift()!;
+        // pg-pool emits 'connect' once per newly opened client, not per checkout.
+        if (!opened.has(next)) {
+          opened.add(next);
+          pool.emit("connect", next);
+        }
+        return next;
+      }),
+    });
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const opts = baseOpts(pool);
+      // First call: the D-9 check uses freshClient; the transaction gets the dying client.
+      const failed = await invokeSql(tool, { id: "1" }, opts);
+      expect(failed).toEqual({ ok: false, status: 0, error: expect.stringMatching(/^query failed: /) });
+      expect(dying.listenerCount("error")).toBe(1);
+      expect(dying.release).toHaveBeenCalledTimes(1);
+      // Silent: the in-flight failure is already reported by the call's own result.
+      expect(stderr).not.toHaveBeenCalled();
+
+      expect(await invokeSql(tool, { id: "1" }, opts)).toEqual({ ok: true, status: 200, data: [{ id: "1" }] });
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+
+  it("a pool and client without `on` (a minimal fake) still work — no listener is required", async () => {
+    const { pool } = fakePool([{ id: "1" }]); // plain objects: no `on` on the pool or the client
+    expect(pool.on).toBeUndefined();
+    expect((await invokeSql(tool, { id: "1" }, baseOpts(pool))).ok).toBe(true);
   });
 
   it("a missing dsn env var fails closed with a missing-env-var message", async () => {
