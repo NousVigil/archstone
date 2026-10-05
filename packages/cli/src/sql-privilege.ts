@@ -96,6 +96,7 @@ export interface SqlPrivilegeJson {
  * `verify --json`'s payload for a run the eager check stopped. `error` names a refusal if there
  * is one, and `sql_privilege_check_incomplete` only when no verdict was reached anywhere (#133).
  * `errors` stays the flat list existing consumers read, refusals first. Pure: the caller prints.
+ * Expects at least one finding: call it only when `sqlPrivilegeBlocksStartup` holds.
  */
 export function sqlPrivilegeJson(findings: SqlPrivilegeFindings): SqlPrivilegeJson {
   return {

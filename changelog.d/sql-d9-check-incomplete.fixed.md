@@ -4,8 +4,9 @@
   `sql connection privilege check(s) could not complete:`, apart from a genuine refusal, which
   keeps `over-privileged sql connection(s):`. Both still exit 1. `verify --json` adds `refused`
   and `incomplete` arrays beside the existing `errors` (`@archstone/cli`). A CI script that
-  matches `verify --json`'s `error === "sql_over_privileged"` on an unreachable database now sees
-  `sql_privilege_check_incomplete` instead; the exit code and `errors` are unchanged. In
+  matches `verify --json`'s `error === "sql_over_privileged"` now sees
+  `sql_privilege_check_incomplete` when no check reached a verdict and none refused; the exit code
+  is unchanged, and `errors` still lists every finding, now refusals first. In
   `@archstone/provider-sql`, `checkConnectionPrivileges` marks a result that reached no verdict
   with `incomplete: true` (additive), and its no-verdict error now reads
   `connection privilege check failed (…)` instead of `over-privileged connection check failed (…)`.
