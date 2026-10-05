@@ -4,7 +4,7 @@ Schema Loader — loads and shape-validates a deployable Capability Definition L
 manifest from disk (`capabilities.yaml`, `*.capability.yaml`, `*.resource.yaml`,
 `bindings/*.binding.yaml`) against the canonical JSON Schema.
 
-Part of [Archstone](https://github.com/Archstone-Romania/archstone), an open-source
+Part of [Archstone](https://github.com/NousVigil/archstone), an open-source
 Capability Platform. This package is the first stage of the compiler pipeline
 (`schema` → `compiler` → `runtime` → `cli`) — most users should install
 [`@archstone/cli`](https://www.npmjs.com/package/@archstone/cli) instead of depending on

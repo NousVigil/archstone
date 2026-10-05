@@ -206,7 +206,7 @@ All notable changes to Archstone are documented here. Format loosely follows
   `release-tag.yml` and `CONTRIBUTING.md` now read nine.
 
 - **`@archstone/agent`'s `"openai"` format mixed two different OpenAI APIs' shapes**
-  ([archstone#89](https://github.com/Archstone-Romania/archstone/issues/89)). `tools("openai")`
+  ([archstone#89](https://github.com/NousVigil/archstone/issues/89)). `tools("openai")`
   emitted the Chat Completions tool shape (`{type, function:{name, description, parameters}}`),
   while `extractor(...,"openai").structuredOutput` emitted the Responses API's `text.format`
   shape (`{type, name, schema, strict}`) — one `Extractor` handed a caller halves from two
@@ -220,7 +220,7 @@ All notable changes to Archstone are documented here. Format loosely follows
 ### Changed
 
 - **Breaking, on the deprecated `"openai"` alias's structured-output axis only**
-  ([archstone#89](https://github.com/Archstone-Romania/archstone/issues/89)):
+  ([archstone#89](https://github.com/NousVigil/archstone/issues/89)):
   `extractor(resource, "openai").structuredOutput` now returns the Chat Completions
   `response_format.json_schema` shape (`{type, json_schema:{name, schema, strict}}`) instead of
   the Responses API's flat `text.format` shape it returned before. `tools("openai")` is
@@ -318,7 +318,7 @@ All notable changes to Archstone are documented here. Format loosely follows
 ### Fixed
 
 - **Releases now publish `server.json` to the official MCP Registry**
-  ([archstone#69](https://github.com/Archstone-Romania/archstone/issues/69)). Every release
+  ([archstone#69](https://github.com/NousVigil/archstone/issues/69)). Every release
   stamped and verified `server.json` but no workflow step ever sent it to
   `registry.modelcontextprotocol.io`, so `io.github.Archstone-Romania/archstone` stayed at 0.11.5
   while npm reached 0.22.0. `release.yml` gains a "Publish server.json to the MCP Registry" step,
@@ -347,7 +347,7 @@ All notable changes to Archstone are documented here. Format loosely follows
   connector answered, even with an error); `false` marks the non-billable half (it never did).
   Absent on `succeeded` (always billable) and `denied` (never billable), where it would be a
   constant. Additive: `execution.schema.json` gains one optional property, no previously-valid
-  record is invalidated. See [archstone#34](https://github.com/Archstone-Romania/archstone/issues/34).
+  record is invalidated. See [archstone#34](https://github.com/NousVigil/archstone/issues/34).
 
 ## [0.21.1]
 
