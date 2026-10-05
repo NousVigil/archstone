@@ -80,21 +80,13 @@ export interface SqlInvokeOptions extends BaseInvokeOptions {
 
 const ENV_RE = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/;
 
-function resolveDsn(dsn: string, env: Record<string, string | undefined>): { value?: string; missing?: string } {
-  const m = ENV_RE.exec(dsn);
-  if (!m) return { value: dsn }; // shape-validated at apply (BR-2) — defensive fallback only
-  const name = m[1];
-  const value = env[name];
-  if (value === undefined) return { missing: name };
-  return { value };
-}
-
 function defaultPoolFactory(dsn: string, poolConfig?: SqlInvokeOptions["poolConfig"]): PgPool {
   return new Pool({ connectionString: dsn, ...poolConfig }) as unknown as PgPool;
 }
 
-/** The DSN's env var name, or `(unnamed dsn)`. `invokeSql` falls back to the literal `dsn` when
- *  it is not `${VAR}`-shaped (apply refuses that shape; defensive only) — never echo that value. */
+/** The DSN's env var name, or `(unnamed dsn)`. `invokeSql` refuses a dsn that is not
+ *  `${VAR}`-shaped, but `ensureConnection` is exported and takes `dsnEnvVar` from its caller —
+ *  a literal DSN passed there (it can carry a password) is never echoed. */
 function safeDsnName(dsnEnvVar: string): string {
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(dsnEnvVar) ? dsnEnvVar : "(unnamed dsn)";
 }
@@ -177,13 +169,13 @@ async function checkOverPrivileged(client: PgClient, dsnEnvVar: string): Promise
   if (role?.rolsuper === true) {
     return {
       ok: false,
-      error: `connection for '${dsnEnvVar}' uses a role with rolsuper = true; the runtime role must not be a superuser — see the topology guide`,
+      error: `connection for '${safeDsnName(dsnEnvVar)}' uses a role with rolsuper = true; the runtime role must not be a superuser — see the topology guide`,
     };
   }
   if (role?.rolbypassrls === true) {
     return {
       ok: false,
-      error: `connection for '${dsnEnvVar}' uses a role with rolbypassrls = true; the runtime role must not bypass row-level security — see the topology guide`,
+      error: `connection for '${safeDsnName(dsnEnvVar)}' uses a role with rolbypassrls = true; the runtime role must not bypass row-level security — see the topology guide`,
     };
   }
 
@@ -205,7 +197,7 @@ async function checkOverPrivileged(client: PgClient, dsnEnvVar: string): Promise
   if (owned?.schema_name && owned.relation_name) {
     return {
       ok: false,
-      error: `connection for '${dsnEnvVar}' owns ${owned.schema_name}.${owned.relation_name}, which it also holds a grant on — the runtime role must not own any relation it can query — see the topology guide`,
+      error: `connection for '${safeDsnName(dsnEnvVar)}' owns ${owned.schema_name}.${owned.relation_name}, which it also holds a grant on — the runtime role must not own any relation it can query — see the topology guide`,
     };
   }
   return { ok: true };
@@ -314,11 +306,16 @@ export async function invokeSql(tool: IRTool, input: Record<string, unknown>, op
     };
   }
 
-  const dsnMatch = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/.exec(sql.dsn);
-  const dsnEnvVar = dsnMatch?.[1] ?? sql.dsn;
-  const { value: resolvedDsn, missing } = resolveDsn(sql.dsn, env);
-  if (missing) {
-    return { ok: false, status: 0, error: `missing env var(s): ${missing}` };
+  // Shape-validated at apply (BR-2); refused here too, naming none of it — a literal DSN can
+  // carry a password, and this result reaches the model.
+  const dsnMatch = ENV_RE.exec(sql.dsn);
+  if (!dsnMatch) {
+    return { ok: false, status: 0, error: `capability '${tool.id}': sql dsn is not a \${VAR} reference; refusing before any connection is used` };
+  }
+  const dsnEnvVar = dsnMatch[1];
+  const resolvedDsn = env[dsnEnvVar];
+  if (resolvedDsn === undefined) {
+    return { ok: false, status: 0, error: `missing env var(s): ${dsnEnvVar}` };
   }
   if (!resolvedDsn) {
     return { ok: false, status: 0, error: `capability '${tool.id}': no dsn resolved` };
