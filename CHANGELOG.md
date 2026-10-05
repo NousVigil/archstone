@@ -18,6 +18,139 @@ All notable changes to Archstone are documented here. Format loosely follows
 
 ## [Unreleased]
 
+## [0.27.0]
+
+### Added
+
+- **`archstone apply <dir> --exposure [--json]`: what a model receives, is shown, and never
+  sees** (`@archstone/cli`, `@archstone/compiler`, ADD-309). For each capability the report lists
+  its inputs, the output fields a model is shown — each marked as filled by `response.map`, by
+  `extract`, or declared but never filled — and every path in the binding's recorded
+  `contract.shape` that no mapping reaches, with its observed JSON type and the fixture and
+  fingerprint it was observed in. Names and types only; no value appears. Where a binding records
+  no shape, the withheld set is reported as unknown rather than empty, and a binding with neither
+  `response:` nor `extract:` is reported as passing the provider body through whole. With
+  `--json`, `{ "exposure": [...] }` is printed alone on stdout. Without `--exposure`, `apply`
+  prints exactly what it printed before, `--json` included. The same report is available to code
+  as `exposureOf(tool, resources)` / `exposureOfIR(ir)` from `@archstone/compiler`, pure, with
+  `pathTokens(path)` added beside `parsePath` so a static reader of a mapping tokenises it with
+  the same grammar the runtime evaluates. For the tourism example: five fields shown, six withheld
+  (`boardType`, `commission`, `freeCancellationUntil`, `id`, `net`, `roomDescription`).
+
+- **`archstone apply` checks what an `irreversible` capability declares** (`@archstone/compiler`,
+  `@archstone/cli`). Three warnings, each naming the capability and what to change, in both `apply`
+  and `archstone doctor`: an `irreversible` capability with no `failures`; one that neither
+  declares `policies:[authenticated]` nor has a Policy `allow` list; and one declaring a policy
+  token this version does not enforce. The last replaces the existing per-token warning for that
+  capability and token, so a script matching the old wording for an `irreversible` capability will
+  no longer match it. Warnings never change the exit code of either command. In `doctor --json`
+  they appear in `findings` with codes `irreversible-no-failures`, `irreversible-unauthenticated`
+  and `irreversible-unenforced-policy` (the last carries `token`). Available to code as
+  `lintIR(ir, model)`, pure and offline. The rules are checks over the declaration, not over the
+  backend: `archstone verify` is still the check against the provider.
+
+- **`archstone diff <before> <after> [--json] [--all]`: what changed for an agent between two
+  declarations** (`@archstone/cli`, `@archstone/compiler`, ADD-309, #77). Each side is a built
+  `archstone.ir.json` or a manifest directory compiled on the spot (an invalid one is refused
+  with `apply`'s messages). Every change is classified `breaking`, `notable` or `compatible` by a
+  fixed table: a removed capability, any `effect` change, a new required input, a removed or
+  loosened output field, retirement or a narrower policy is breaking; deprecation, a wider
+  policy, a rate-limit or policy-token change is notable; additions, descriptions and binding
+  edits are compatible. A resource field change is reported once, on the resource, naming the
+  capabilities it reaches. The command exits 1 iff anything is breaking, and 2 when it cannot
+  compare (an unreadable side, or two different IR versions). The human report lists breaking
+  and notable changes and counts compatible ones unless `--all`; `--json` prints the diff alone,
+  with no aggregate `ok`. The comparison is `diffIR(before, after)`, pure and exported from
+  `@archstone/compiler`. It never reads `contract`, so two built artifacts diff completely, and
+  it says nothing about the backend: that is still `archstone verify`.
+
+### Changed
+
+- **The licence names NousVigil LLC as the copyright holder.** The `LICENSE` shipped in every
+  `@archstone/*` package now reads `Copyright 2026 NousVigil LLC` instead of `Copyright 2026
+  Archstone`, which named no legal person. The licence itself is unchanged: Apache-2.0, as before,
+  for this and every earlier version.
+
+### Fixed
+
+- **`archstone apply` accepted JSONPath expressions anchored at `@` that could never be
+  evaluated.** A `response.map`, `collection`, `extract` or `onError` path such as `@.name`
+  passed validation, then failed at every invocation because jsonpath-plus throws "Unknown value
+  type" for a path that starts with `@`. Such paths are now a `bad-response-path` /
+  `bad-extract-path` error at apply time; `@` remains valid inside a filter expression
+  (`$.rooms[?(@.available)]`).
+
+- **An `identityAdapter` returning claims that set no usable session GUC counted as a resolved
+  identity.** In `@archstone/provider-sql`, `invokeSql` ran the declared query when the adapter
+  returned an empty object `{}`, a claim with an empty-string or non-string value
+  (`{ tenantId: "" }`, `{ tenantId: null }`), or a non-object result (a string, an array, or
+  `Object` itself for the principal `constructor` in an `--identity-map`). In `@archstone/runtime`,
+  `archstone verify`'s negative isolation test passed vacuously for the same negative-identity
+  results, because RLS with no or an empty GUC returns zero rows. All of these now refuse exactly
+  like an unresolved identity — "no session identity resolved" before any connection is used, and
+  a red "negative identity did not resolve to any claims" in `verify` — which is the documented
+  ADR-0012 D-3 contract.
+
+- **A Postgres connection closed under `archstone serve` crashed the process.**
+  `@archstone/provider-sql` attached no `'error'` listener to its `pg.Pool` or to the clients it
+  checked out. When Postgres terminated a pooled connection (a restart, a failover,
+  `pg_terminate_backend`, `idle_session_timeout`), Node threw an unhandled `'error'` event and the
+  process exited. This happened whether the connection was idle or in the middle of a call. Now
+  a dead idle connection is discarded, the next call opens a fresh one, and one line goes to
+  stderr naming only the DSN's env var and the error code (never the DSN, host, user or driver
+  message). A call whose connection dies in flight fails closed with `query failed`, and the
+  dead connection is dropped on release. The listeners are attached to a pool from an injected
+  `pgPoolFactory` too, when it implements `on`.
+
+- **A database that was unreachable when its first `sql` call arrived stayed refused until
+  restart.** `@archstone/provider-sql` cached the ADR-0012 D-9 over-privileged check per DSN, and
+  it cached a failure to run the check the same way as a verdict. If the check's own pool
+  checkout failed (the database down, `ECONNREFUSED`, a timeout), or a catalog query failed
+  mid-check, every later call on that DSN was refused even after the database recovered. Now
+  only a verdict is cached: an acceptable role, or a refusal for `rolsuper`, `rolbypassrls` or an
+  owned-and-granted relation, which still holds for the life of the process. A failure to reach
+  a verdict still fails that call closed, with the same error as before, and the next call runs
+  the check again.
+
+- **`SUPPORT.md` named 0.17.x as the Current line through nine releases.** The "Today" table was
+  edited by hand in each release commit up to 0.17.0, and stopped being touched when stamping
+  moved into `scripts/release-prepare.mjs`. It now reads Current `0.26.x`, Maintenance `0.25.x`,
+  End of life `≤ 0.24.x`, and no longer names `release/X.Y.x` branches that were never cut.
+  `release-prepare` stamps the table from the minor on every release, and `verifyStamp` refuses a
+  tag whose `SUPPORT.md` names the wrong Current line.
+
+- **`archstone verify` could never pass a `sql` binding.** The CLI builds an `identityAdapter`
+  from `--identity-map` / `ARCHSTONE_IDENTITY_MAP` but has no caller principal to resolve through
+  it, so the positive replay in `@archstone/runtime`'s `verifyTool` refused with "no session
+  identity resolved" and every contract-bearing `sql` binding was red. A golden fixture may now
+  record `identity: { principal }` beside `negativeIdentity`; for a `sql` binding with no caller
+  principal, the positive leg replays under that principal (ADR-0012 D-8). A caller principal
+  supplied by an embedding host still wins, `rest` bindings ignore the field, and a fixture
+  without it behaves exactly as before.
+
+### Security
+
+- **`@archstone/provider-rest` passed fetch error messages to the model.** When a request failed
+  before any response arrived, or its body could not be read, the error returned to the caller
+  included the transport's own message, which can name the backend's host, port and IP
+  (`getaddrinfo ENOTFOUND api.internal`, `connect ECONNREFUSED 10.0.3.7:443`) — and a custom
+  `fetchImpl` may throw anything. That result reaches the model. Now the caller gets a fixed
+  message and the error code only: `request failed (ECONNREFUSED)`,
+  `request failed (UND_ERR_CONNECT_TIMEOUT)`, `request failed (TimeoutError)`, or
+  `(error code unknown)` when there is none. The message and its cause chain go to one stderr
+  line for the operator, named by capability id, with the request URL, header values, URL
+  credentials, query values and the caller's access token removed.
+
+- **`@archstone/provider-sql` passed Postgres driver messages to the model.** When a pool
+  checkout, the over-privileged connection check, or a query failed, the error returned to the
+  caller included node-postgres' own message, which can name the database host and port
+  (`connect ECONNREFUSED 10.0.3.7:5432`), the role (`password authentication failed for user
+  "app_runtime"`), and constraint or relation names. That result reaches the model. Now the
+  caller gets a fixed message and the error code only: `query failed (SQLSTATE 25006)`,
+  `pool checkout failed (ECONNREFUSED)`, or `(error code unknown)` when there is no code. The
+  driver's message goes to one stderr line for the operator, named by the DSN's env var, with the
+  DSN and its password removed. No SQLSTATE class passes driver detail through to the caller.
+
 ## [0.26.0]
 
 ### Added
