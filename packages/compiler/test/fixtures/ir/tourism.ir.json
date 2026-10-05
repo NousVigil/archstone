@@ -1,0 +1,167 @@
+{
+  "version": "0",
+  "company": {
+    "id": "wanderlust",
+    "name": "Wanderlust Travel"
+  },
+  "tools": [
+    {
+      "id": "tourism.search",
+      "description": "Find places to stay matching a traveler's destination, dates, party and budget.",
+      "effect": "read",
+      "provider": "booking-engine",
+      "policies": [],
+      "lifecycle": "stable",
+      "input": [
+        {
+          "name": "destination",
+          "required": true,
+          "type": {
+            "kind": "scalar",
+            "semantic": "location"
+          }
+        },
+        {
+          "name": "dates",
+          "required": true,
+          "type": {
+            "kind": "scalar",
+            "semantic": "date-range"
+          }
+        },
+        {
+          "name": "travelers",
+          "required": true,
+          "type": {
+            "kind": "scalar",
+            "semantic": "party"
+          }
+        },
+        {
+          "name": "budget",
+          "required": false,
+          "type": {
+            "kind": "scalar",
+            "semantic": "money"
+          }
+        }
+      ],
+      "output": [
+        {
+          "name": "stays",
+          "required": true,
+          "type": {
+            "kind": "collection",
+            "of": "tourism.Stay"
+          }
+        },
+        {
+          "name": "totalMatches",
+          "required": true,
+          "type": {
+            "kind": "scalar",
+            "semantic": "quantity"
+          },
+          "description": "Total number of stays the backend found, before this response's own page/limit."
+        }
+      ],
+      "connector": {
+        "type": "rest",
+        "rest": {
+          "method": "POST",
+          "path": "/v1/search",
+          "baseUrl": "${STAYS_API_URL}"
+        }
+      },
+      "response": {
+        "resource": "tourism.Stay",
+        "field": "stays",
+        "fields": [
+          {
+            "name": "name",
+            "path": "$.name"
+          },
+          {
+            "name": "location",
+            "path": "$.location"
+          },
+          {
+            "name": "pricePerNight",
+            "path": "$.pricePerNight"
+          },
+          {
+            "name": "rating",
+            "path": "$.rating"
+          }
+        ],
+        "collection": "$.stays[*]"
+      },
+      "extract": [
+        {
+          "name": "totalMatches",
+          "path": "$.totalMatches"
+        }
+      ],
+      "contract": {
+        "fingerprint": "sha256:f5475f16fbc6d9f151b8cb565dfbe1243633929816aabdacdd40ec45bb89d241",
+        "probeFixture": "fixtures/tourism.search.golden.json",
+        "shape": {
+          "$": "object",
+          "$.stays": "array",
+          "$.stays[]": "object",
+          "$.stays[].boardType": "string",
+          "$.stays[].commission": "number",
+          "$.stays[].freeCancellationUntil": "string",
+          "$.stays[].id": "string",
+          "$.stays[].location": "string",
+          "$.stays[].name": "string",
+          "$.stays[].net": "number",
+          "$.stays[].pricePerNight": "number",
+          "$.stays[].rating": "number",
+          "$.stays[].roomDescription": "string",
+          "$.totalMatches": "number"
+        }
+      }
+    }
+  ],
+  "resources": {
+    "tourism.Stay": [
+      {
+        "name": "name",
+        "required": true,
+        "type": {
+          "kind": "scalar",
+          "semantic": "text"
+        },
+        "description": "The property's display name."
+      },
+      {
+        "name": "location",
+        "required": true,
+        "type": {
+          "kind": "scalar",
+          "semantic": "location"
+        },
+        "description": "Where the stay is — city, region, or address."
+      },
+      {
+        "name": "pricePerNight",
+        "required": true,
+        "type": {
+          "kind": "scalar",
+          "semantic": "quantity"
+        },
+        "description": "Nightly rate for the stay."
+      },
+      {
+        "name": "rating",
+        "required": false,
+        "type": {
+          "kind": "scalar",
+          "semantic": "quantity"
+        },
+        "description": "Guest review score, when available."
+      }
+    ]
+  }
+}

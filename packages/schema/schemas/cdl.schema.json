@@ -102,8 +102,10 @@
             "quantity",
             "enum",
             "date",
-            "datetime"
-          ]
+            "datetime",
+            "web-page"
+          ],
+          "description": "A semantic type. `web-page` is Experimental and output-only: the page where a person sees this resource on the provider's own site, checked against the binding's `origins.pages`."
         },
         "required": { "type": "boolean", "default": true },
         "description": { "type": "string" },

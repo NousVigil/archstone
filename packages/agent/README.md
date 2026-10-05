@@ -51,7 +51,13 @@ if (result.status === "ok") {
 } else {
   console.log("Error:", result.error);
 }
+// `result.withheld` (optional) names any `web-page` field whose value was outside the binding's
+// declared origins and was therefore withheld — field names only, never the value.
 ```
+
+The tool-definition envelopes carry an input schema only, so an output field's semantic type
+(a `web-page` link, for example) is not expressed in them; `execute()` still applies the origin
+check and returns the normalised link or withholds it.
 
 **Extracting business data from unstructured input (ADR-0011):**
 
