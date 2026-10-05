@@ -25,7 +25,8 @@ Decision text is edited in place; this list is what moved:
 
 **Amended (2026-10-05),** deciding #123 (should D-9 re-run after a failover onto a server where
 the role may differ?). This amendment is ratified (2026-10-05); ADR-0012 as a whole stays Draft.
-Not yet implemented: #132. Decision text is edited in place; this list is what moved:
+Implemented for `invokeSql` and the CLI startup check (#132); `introspectCatalog` (D-10) and the
+topology guide are not yet. Decision text is edited in place; this list is what moved:
 
 1. **D-9 layer 3, when it runs.** The role-attribute check (`rolsuper`, `rolbypassrls`) runs
    inside **every** transaction `providers/sql` opens, on the backend that is about to run the
@@ -914,8 +915,9 @@ change above is binding/provider/IR-side.
 7. **Docs**: the topology guide (curated-view default, RLS-on-base-tables alternative, the
    fail-closed role check's exact error text) — a tech-writer follow-up once the mechanism above
    is implemented, not before.
-8. **D-9 re-run after a server change (#123, amended 2026-10-05).** Ratified 2026-10-05; not started,
-   tracked in #132. In order:
+8. **D-9 re-run after a server change (#123, amended 2026-10-05).** Ratified 2026-10-05.
+   Steps 1–4 shipped for `invokeSql` (#132); step 2's `introspectCatalog` half waits on that
+   function (#87), step 5 on the topology guide (step 7). In order:
    1. *`providers/sql`*: `checkOverPrivileged` reads ruling 1's row, returning the
       (`server_started`, `database_oid`) key. `ConnectionEntry` keeps a DSN-level refusal and, per
       key, a layer-4 verdict (or an in-flight check); #127's verdict-versus-absence handling and
