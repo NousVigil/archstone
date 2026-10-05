@@ -24,8 +24,8 @@ Decision text is edited in place; this list is what moved:
    `@archstone/emitter-support/connector` subpath — correcting drift, no behaviour change.
 
 **Amended (2026-10-05),** deciding #123 (should D-9 re-run after a failover onto a server where
-the role may differ?). Decided here, not yet implemented; the follow-up issue is filed when this
-amendment is ratified. Decision text is edited in place; this list is what moved:
+the role may differ?). This amendment is ratified (2026-10-05); ADR-0012 as a whole stays Draft.
+Not yet implemented: #132. Decision text is edited in place; this list is what moved:
 
 1. **D-9 layer 3, when it runs.** The role-attribute check (`rolsuper`, `rolbypassrls`) runs
    inside **every** transaction `providers/sql` opens, on the backend that is about to run the
@@ -864,7 +864,7 @@ change above is binding/provider/IR-side.
 | R-6 | Premature Phase-2 (edge/Hyperdrive) complexity creeps into v1 because "it would be nice to also run this on Workers" | L | M | D-5 draws the exclusion boundary now and builds no accommodation for it; a data-proxy decision is explicitly deferred to a real customer demand, per the product brief |
 | R-7 | The ownership check (D-9, layer 4) misses a grant the connecting role holds but that is not visible in the checking session — most plausibly a `NOINHERIT` role membership the connection has not `SET ROLE`'d into, or a path to data reached through a `SECURITY DEFINER` function rather than a direct table/view grant | L | H | Named explicitly in D-9 rather than folded into a general "best effort" disclaimer, so the topology guide can say precisely what is and is not covered. The mitigation is operational, not code: the documented default topology (a runtime role granted directly on a curated view schema, no role-membership indirection, no `SECURITY DEFINER` in the exposed surface) is exactly the shape under which this check is complete, and `archstone init`'s own output never produces the shape that would evade it |
 | R-8 | Ownership or grants change in the *same* database on the *same* running server — `ALTER TABLE … OWNER TO` the runtime role, or a new `GRANT` to it on a relation it already owns — after a long-lived process (`serve --http`, embedded `execute()`) has judged that (server, database); layer 4 is not re-run, so the process keeps serving a role that now owns a relation it can read. Layer 3's attributes are not affected: they are read in every transaction | L | H | Named in D-9 rather than implied away. Operational: the topology guide states that layer 4 is judged once per server and database per process, that ownership of exposed relations belongs to a separate owner role, and that an ownership or grant change touching the runtime role is followed by a restart of long-lived processes. `archstone verify` re-runs layer 4, which helps only where it reaches the production server and database, which CI usually does not. A per-transaction layer 4 would close it and was rejected as a judgment on cost, not a measurement (D-9) |
-| R-9 | A managed Postgres service revokes `EXECUTE` on `pg_postmaster_start_time()` from ordinary roles, or returns something other than the server process's start time; or a server is a memory-snapshot clone (CRIU, a VM instant clone) of a running one, which keeps the same start time (and `system_identifier`) while it diverges; or two servers start in the same microsecond (theoretical). Verified only on stock Postgres 16 and 17, where it is `PUBLIC` | L | M if revoked (every call fails closed — an outage, never a bypass); H if the key does not change across a server change (layer 4 would not re-run on a re-point) | Revoked: fails closed by D-9 ruling 4, loudly (until the CLI wording bug noted under Implementation Guidance step 8 is fixed, the startup error prints it as "over-privileged") — at `serve`/`serve --http`/`verify` startup before any call is served; under embedded `execute()`, which has no startup check, on every call from the first. The Postgres integration suite pins the stock behaviour; the topology guide lists the function among what the runtime role needs. A service whose value does not track the server is not detectable from inside the session; if one is found, the fix is a different server identity in the same place, not a fallback to per-DSN caching |
+| R-9 | A managed Postgres service revokes `EXECUTE` on `pg_postmaster_start_time()` from ordinary roles, or returns something other than the server process's start time; or a server is a memory-snapshot clone (CRIU, a VM instant clone) of a running one, which keeps the same start time (and `system_identifier`) while it diverges; or two servers start in the same microsecond (theoretical). Verified only on stock Postgres 16 and 17, where it is `PUBLIC` | L | M if revoked (every call fails closed — an outage, never a bypass); H if the key does not change across a server change (layer 4 would not re-run on a re-point) | Revoked: fails closed by D-9 ruling 4, loudly (until #133 is fixed, the startup error prints it as "over-privileged") — at `serve`/`serve --http`/`verify` startup before any call is served; under embedded `execute()`, which has no startup check, on every call from the first. The Postgres integration suite pins the stock behaviour; the topology guide lists the function among what the runtime role needs. A service whose value does not track the server is not detectable from inside the session; if one is found, the fix is a different server identity in the same place, not a fallback to per-DSN caching |
 
 ---
 
@@ -914,8 +914,8 @@ change above is binding/provider/IR-side.
 7. **Docs**: the topology guide (curated-view default, RLS-on-base-tables alternative, the
    fail-closed role check's exact error text) — a tech-writer follow-up once the mechanism above
    is implemented, not before.
-8. **D-9 re-run after a server change (#123, amended 2026-10-05).** Not started; the issue is filed
-   when this amendment is ratified. In order:
+8. **D-9 re-run after a server change (#123, amended 2026-10-05).** Ratified 2026-10-05; not started,
+   tracked in #132. In order:
    1. *`providers/sql`*: `checkOverPrivileged` reads ruling 1's row, returning the
       (`server_started`, `database_oid`) key. `ConnectionEntry` keeps a DSN-level refusal and, per
       key, a layer-4 verdict (or an in-flight check); #127's verdict-versus-absence handling and
@@ -949,4 +949,4 @@ change above is binding/provider/IR-side.
       requirements (R-9).
 
    Separately, the CLI's startup error mislabels a check that could not complete as
-   "over-privileged"; that is its own bug, filed on ratification, not part of this step.
+   "over-privileged"; that is its own bug, #133, not part of this step.
