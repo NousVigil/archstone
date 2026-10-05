@@ -86,6 +86,11 @@ needs no checkout of this one
 | `archstone adopt <dir>` | Declare a field the backend started returning (interactive) |
 | `archstone audit <log>` | Read back the execution audit trail |
 
+`apply` also warns about what an `irreversible` capability still lacks — here, removing its
+declared failures adds a warning, and restoring them clears it:
+
+![archstone apply warning that an irreversible capability declares no failures](docs/checked-before-it-runs.gif)
+
 Each command is covered in the [onboarding guide](docs/ONBOARDING.md#provider-onboarding).
 Working from a checkout of this repository instead? Use `pnpm apply`, `pnpm serve`, … — see
 [contributor onboarding](docs/ONBOARDING.md#contributor-onboarding).
