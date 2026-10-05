@@ -596,7 +596,8 @@ describe("invokeSql — D-9 re-runs after a server change (ADR-0012, amended 202
     t.state.read = Object.assign(new Error("permission denied for function pg_postmaster_start_time"), { code: "42501" });
     expect(await quietly(() => checkConnectionPrivileges("DATABASE_URL", "postgres://runtime@localhost/app", opts))).toEqual({
       ok: false,
-      error: "over-privileged connection check failed (SQLSTATE 42501)",
+      error: "connection privilege check failed (SQLSTATE 42501)",
+      incomplete: true,
     });
     expect(t.log.at(-1)!.text).toBe("ROLLBACK");
     expect(t.releases()).toBe(1);
@@ -611,6 +612,7 @@ describe("invokeSql — D-9 re-runs after a server change (ADR-0012, amended 202
     expect(await quietly(() => checkConnectionPrivileges("DATABASE_URL", "postgres://runtime@localhost/app", opts))).toEqual({
       ok: false,
       error: "pool checkout failed while checking connection privileges (ECONNREFUSED)",
+      incomplete: true,
     });
     t.state.checkout = undefined;
     expect(await call(opts)).toEqual(ok);
@@ -640,6 +642,82 @@ describe("invokeSql — D-9 re-runs after a server change (ADR-0012, amended 202
         stderr.mockRestore();
       }
     }
+  });
+});
+
+describe("D-9 caches only a verdict: a transient failure is retried (#122)", () => {
+  // Layer 4's own failing check, retried by the next call, is
+  // "concurrent transactions sharing a failing in-flight layer-4 check all fail, and the next call runs it again" above.
+  const DSN = "postgres://runtime@localhost/app";
+  const KEY = `${PASSING_ROW.server_started}|${PASSING_ROW.database_oid}`;
+  const refused = () => Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:5432"), { code: "ECONNREFUSED" });
+
+  async function quietly<T>(fn: () => Promise<T>): Promise<T> {
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      return await fn();
+    } finally {
+      stderr.mockRestore();
+    }
+  }
+
+  /** A pool whose first checkout is refused and every later one gets a passing client. */
+  function flakyCheckoutPool() {
+    const { client, queries } = fakePool([{ id: "1" }]);
+    const connect = vi.fn<() => Promise<PgPoolClient>>().mockRejectedValueOnce(refused()).mockResolvedValue(client);
+    return { pool: { connect } as PgPool, connect, queries };
+  }
+
+  it("checkConnectionPrivileges: a first checkout refused by the network is no verdict — the next check on the same registry passes", async () => {
+    const { pool, connect } = flakyCheckoutPool();
+    const opts = baseOpts(pool);
+    expect(await quietly(() => checkConnectionPrivileges("DATABASE_URL", DSN, opts))).toEqual({
+      ok: false,
+      error: "pool checkout failed while checking connection privileges (ECONNREFUSED)",
+      incomplete: true,
+    });
+    expect(await checkConnectionPrivileges("DATABASE_URL", DSN, opts)).toEqual({ ok: true });
+    expect(connect).toHaveBeenCalledTimes(2);
+    expect(opts.connectionRegistry.get(DSN)!.refusal).toBeUndefined();
+  });
+
+  it("invokeSql: a first checkout refused by the network fails closed, and the next call on the same registry serves", async () => {
+    const { pool, connect } = flakyCheckoutPool();
+    const opts = baseOpts(pool);
+    expect(await quietly(() => invokeSql(tool, { id: "1" }, opts))).toEqual({ ok: false, status: 0, error: "pool checkout failed (ECONNREFUSED)" });
+    expect(await invokeSql(tool, { id: "1" }, opts)).toEqual({ ok: true, status: 200, data: [{ id: "1" }] });
+    expect(connect).toHaveBeenCalledTimes(2);
+    expect(opts.connectionRegistry.get(DSN)!.refusal).toBeUndefined();
+  });
+
+  it("invokeSql: the first transaction's D-9 read failing (backend terminated) fails closed with a ROLLBACK, and the next call is judged afresh and serves", async () => {
+    const { client: healthy, queries } = fakePool([{ id: "1" }]);
+    const dying: string[] = [];
+    const first: PgPoolClient = {
+      query: vi.fn(async (text: string) => {
+        dying.push(text);
+        if (isRead(text)) throw Object.assign(new Error("terminating connection due to administrator command"), { code: "57P01" });
+        return { rows: [] };
+      }),
+      release: vi.fn(),
+    };
+    const connect = vi.fn<() => Promise<PgPoolClient>>().mockResolvedValueOnce(first).mockResolvedValue(healthy);
+    const opts = baseOpts({ connect });
+    expect(await quietly(() => invokeSql(tool, { id: "1" }, opts))).toEqual({ ok: false, status: 0, error: "query failed (SQLSTATE 57P01)" });
+    expect(dying.at(-1)).toBe("ROLLBACK");
+    expect(dying.some((t) => isOwnership(t) || t.startsWith("SELECT set_config") || t.startsWith("SELECT id"))).toBe(false);
+    expect(first.release).toHaveBeenCalledTimes(1);
+    const entry = opts.connectionRegistry.get(DSN)!;
+    expect(entry.refusal).toBeUndefined();
+    expect(entry.ownership.size).toBe(0);
+
+    expect(await invokeSql(tool, { id: "1" }, opts)).toEqual({ ok: true, status: 200, data: [{ id: "1" }] });
+    // Judged afresh: the read, then layer 4 — whose verdict is the only one the map now holds.
+    expect(queries.filter((q) => isRead(q.text))).toHaveLength(1);
+    expect(queries.filter((q) => isOwnership(q.text))).toHaveLength(1);
+    expect(entry.refusal).toBeUndefined();
+    expect([...entry.ownership.keys()]).toEqual([KEY]);
+    expect(await entry.ownership.get(KEY)).toEqual({ ok: true });
   });
 });
 
@@ -853,7 +931,7 @@ describe("invokeSql — driver errors never reach the caller (#120)", () => {
     const message = "connect ECONNREFUSED 10.0.3.7:5432";
     const pool: PgPool = { connect: vi.fn(async () => { throw Object.assign(new Error(message), { code: "ECONNREFUSED" }); }) };
     const { check, lines, stdoutCalls, logCalls } = await runStartup(pool);
-    expect(check).toEqual({ ok: false, error: "pool checkout failed while checking connection privileges (ECONNREFUSED)" });
+    expect(check).toEqual({ ok: false, error: "pool checkout failed while checking connection privileges (ECONNREFUSED)", incomplete: true });
     expectNoLeak(check.ok ? "" : check.error, [message]);
     expect(lines).toEqual([`archstone: pool checkout failed while checking connection privileges for 'DATABASE_URL' (ECONNREFUSED): ${message}`]);
     expect(stdoutCalls).toBe(0);
@@ -869,11 +947,11 @@ describe("invokeSql — driver errors never reach the caller (#120)", () => {
     const message = `permission denied for function pg_postmaster_start_time (user "app_runtime", dsn ${DSN}, password ${PASSWORD_DECODED})\nDETAIL: line two`;
     const pool: PgPool = { connect: vi.fn(async () => clientOf(deniedRead(message))) };
     const { check, lines, stdoutCalls, logCalls } = await runStartup(pool);
-    expect(check).toEqual({ ok: false, error: "over-privileged connection check failed (SQLSTATE 42501)" });
+    expect(check).toEqual({ ok: false, error: "connection privilege check failed (SQLSTATE 42501)", incomplete: true });
     expectNoLeak(check.ok ? "" : check.error, ["permission denied"]);
     expect(lines).toHaveLength(1);
     expect(lines[0]).toBe(
-      "archstone: over-privileged connection check failed for 'DATABASE_URL' (SQLSTATE 42501): " +
+      "archstone: connection privilege check failed for 'DATABASE_URL' (SQLSTATE 42501): " +
         'permission denied for function pg_postmaster_start_time (user "app_runtime", dsn [dsn], password [redacted]) DETAIL: line two',
     );
     for (const secret of [DSN, "p%40ss%2Fw0rd", PASSWORD_DECODED, "\n"]) expect(lines[0]).not.toContain(secret);
@@ -973,7 +1051,7 @@ describe("invokeSql — driver errors never reach the caller (#120)", () => {
     expect(first.lines).toEqual(["archstone: pool checkout failed for 'DATABASE_URL' (error code unknown): (non-string error)"]);
     // Through the startup check, so this rejection lands on its own checkout (site 1).
     const second = await runStartup(pool);
-    expect(second.check).toEqual({ ok: false, error: "pool checkout failed while checking connection privileges (error code unknown)" });
+    expect(second.check).toEqual({ ok: false, error: "pool checkout failed while checking connection privileges (error code unknown)", incomplete: true });
     expect(second.lines).toEqual([
       "archstone: pool checkout failed while checking connection privileges for 'DATABASE_URL' (error code unknown): (non-string error)",
     ]);

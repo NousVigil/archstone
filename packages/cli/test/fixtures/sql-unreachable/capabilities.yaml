@@ -1,0 +1,6 @@
+company:
+  id: acme
+capabilities:
+  - reporting.portfolio-summary
+providers:
+  - warehouse
