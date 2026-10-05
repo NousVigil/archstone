@@ -373,6 +373,13 @@ jobs:
           done
 
       - name: Publish server.json to the MCP Registry
+        # NAMESPACE FOLLOWS THE REPOSITORY OWNER. The registry derives the publish permission from
+        # the `repository_owner` claim of this job's OIDC token: `io.github.<owner>/*`, nothing
+        # else. The repository moved to NousVigil, so the name is `io.github.NousVigil/archstone`
+        # (server.json `name` and `mcpName` in packages/cli/package.json, which must match). The
+        # earlier `io.github.Archstone-Romania/archstone` entry stays at 0.26.0 and can no longer
+        # be updated from this workflow.
+        #
         # #69. Every release since 0.11.5 stamped server.json (release-prepare) and verified the
         # stamp (release-gate, #101) — and then published it nowhere. No step here ever sent it
         # to registry.modelcontextprotocol.io, so `io.github.Archstone-Romania/archstone` stayed
