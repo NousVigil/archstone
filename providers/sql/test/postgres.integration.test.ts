@@ -3,12 +3,12 @@
 // Postgres does with it. Skipped unless ARCHSTONE_TEST_PG_URL is set — see CONTRIBUTING.md.
 
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
-import type pg from "pg";
+import pg from "pg";
 import type { IRResourceRegistry, IRTool } from "@archstone/compiler";
 import { fingerprintShape, describeShape } from "@archstone/compiler";
 import { applyResponseMapping, objectJsonSchema } from "@archstone/emitter-support";
-import { invokeSql, type ConnectionEntry, type SqlInvokeOptions } from "../src/index";
-import { createPgFixture, describePostgres, endPools, DSN_VARS, SEED, type PgFixture, type RoleKey } from "./support/postgres";
+import { invokeSql, checkConnectionPrivileges, type ConnectionEntry, type PgPool, type SqlInvokeOptions } from "../src/index";
+import { ADMIN_URL, createPgFixture, describePostgres, endPools, DSN_VARS, SEED, type PgFixture, type RoleKey } from "./support/postgres";
 
 function sqlTool(query: string, params: string[], dsnVar: string = DSN_VARS.runtime, extra: Partial<IRTool> = {}): IRTool {
   return {
@@ -218,6 +218,138 @@ describePostgres("invokeSql against a real Postgres", () => {
     const tool = sqlTool("SELECT id, label FROM app.holdings ORDER BY id", [], DSN_VARS.ownerNoGrant);
     const result = await invokeSql(tool, {}, opts("tenant-b"));
     expect(result).toEqual({ ok: true, status: 200, data: SEED.beta.map((r) => ({ ...r })) });
+  });
+
+  // ------------------------------------- D-9 re-runs after a server change (amended 2026-10-05)
+  //
+  // Layer 3 is read inside every transaction; layer 4's verdict is cached per DSN per (server
+  // start time, database oid). What the unit suite proves with a fake pool, pinned here against
+  // what Postgres actually lets an unprivileged role read and what it does under a live pool.
+  // Not covered here: restarting the server under a live pool (a new start time), which the CI
+  // service container gives the suite no way to do.
+
+  const runtimeRole = () => decodeURIComponent(new URL(fx.env[DSN_VARS.runtime]).username);
+  const ownershipKeys = (o: SqlInvokeOptions) => [...[...o.connectionRegistry!.values()][0].ownership.keys()];
+
+  it("D-9 ruling 1: the unprivileged runtime role executes the per-transaction read, and layer 4 is keyed by this server and database", async () => {
+    const o = opts("tenant-a");
+    const check = await checkConnectionPrivileges(DSN_VARS.runtime, fx.env[DSN_VARS.runtime], o);
+    expect(check).toEqual({ ok: true });
+    expect((await invokeSql(ALL_ROWS, {}, o)).ok).toBe(true);
+    expect((await invokeSql(ALL_ROWS, {}, o)).ok).toBe(true);
+    const { rows } = await fx.admin(
+      // The key is session-independent: UTC, fixed format, microseconds kept.
+      "SELECT to_char(pg_postmaster_start_time() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US') AS started, oid::text AS oid FROM pg_database WHERE datname = current_database()",
+    );
+    expect(ownershipKeys(o)).toEqual([`${rows[0].started}|${rows[0].oid}`]); // judged once: at startup
+    expect(rows[0].started).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}$/);
+  });
+
+  it("D-9 R-9: with EXECUTE on pg_postmaster_start_time() revoked, the startup check and every call fail closed, and nothing is cached", async (ctx) => {
+    if (!fx.created.superuser) ctx.skip(); // revoking a catalog function's EXECUTE takes a superuser admin
+    const o = opts("tenant-a");
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    await fx.admin("REVOKE EXECUTE ON FUNCTION pg_postmaster_start_time() FROM PUBLIC");
+    try {
+      expect(await checkConnectionPrivileges(DSN_VARS.runtime, fx.env[DSN_VARS.runtime], o)).toEqual({
+        ok: false,
+        error: "over-privileged connection check failed (SQLSTATE 42501)",
+      });
+      expect(await invokeSql(ALL_ROWS, {}, o)).toEqual({ ok: false, status: 0, error: "query failed (SQLSTATE 42501)" });
+      const entry = [...o.connectionRegistry!.values()][0];
+      expect(entry.refusal).toBeUndefined();
+      expect(entry.ownership.size).toBe(0);
+    } finally {
+      await fx.admin("GRANT EXECUTE ON FUNCTION pg_postmaster_start_time() TO PUBLIC");
+      stderr.mockRestore();
+    }
+    // A failed read was not a verdict: once readable again, the same DSN serves.
+    expect(await invokeSql(ALL_ROWS, {}, o)).toEqual({ ok: true, status: 200, data: SEED.acme.map((r) => ({ ...r })) });
+  });
+
+  it("D-9 ruling 3: ALTER ROLE … BYPASSRLS on the runtime role under a live pool refuses the next call, and every later one without a checkout", async (ctx) => {
+    if (!fx.created.bypassrls) ctx.skip(); // granting BYPASSRLS takes a superuser admin
+    const o = opts("tenant-a");
+    expect((await invokeSql(ALL_ROWS, {}, o)).ok).toBe(true);
+    const pool = [...o.connectionRegistry!.values()][0].pool as unknown as pg.Pool;
+    const connect = vi.spyOn(pool, "connect");
+    const expected = {
+      ok: false,
+      status: 0,
+      error: `connection for '${DSN_VARS.runtime}' uses a role with rolbypassrls = true; the runtime role must not bypass row-level security — see the topology guide`,
+    };
+    await fx.admin(`ALTER ROLE ${runtimeRole()} BYPASSRLS`);
+    try {
+      expect(await invokeSql(ALL_ROWS, {}, o)).toEqual(expected);
+      expect(connect).toHaveBeenCalledTimes(1);
+    } finally {
+      await fx.admin(`ALTER ROLE ${runtimeRole()} NOBYPASSRLS`);
+    }
+    // Fixed on the server, but a refusal is the DSN's verdict until restart.
+    for (let i = 0; i < 2; i++) expect(await invokeSql(ALL_ROWS, {}, o)).toEqual(expected);
+    expect(connect).toHaveBeenCalledTimes(1);
+    expect(pool.idleCount).toBe(pool.totalCount); // the refused transaction was released, rolled back
+  });
+
+  it("D-9 ruling 2: a name re-pointed at another database is judged on its own, and its refusal survives routing back", async () => {
+    // A proxy alias moved to another database on the same server: same DSN, new database oid.
+    // Database `<fixture>_b` has a table the runtime role owns (implicit grant intact), so layer 4
+    // refuses there and nowhere else.
+    const other = `${fx.database}_b`;
+    await fx.admin(`CREATE DATABASE ${other}`);
+    const otherAdmin = new URL(ADMIN_URL!);
+    otherAdmin.pathname = `/${other}`;
+    const setup = new pg.Client({ connectionString: otherAdmin.toString() });
+    const pools: pg.Pool[] = [];
+    let registry: Map<string, ConnectionEntry> | undefined;
+    try {
+      await setup.connect();
+      await setup.query(`CREATE TABLE public.owned_elsewhere (id int4); ALTER TABLE public.owned_elsewhere OWNER TO ${runtimeRole()}`);
+      await setup.end();
+
+      const runtimeOther = new URL(fx.env[DSN_VARS.runtime]);
+      runtimeOther.pathname = `/${other}`;
+      const targets = { a: new pg.Pool({ connectionString: fx.env[DSN_VARS.runtime] }), b: new pg.Pool({ connectionString: runtimeOther.toString() }) };
+      pools.push(targets.a, targets.b);
+      let route: keyof typeof targets = "a";
+      const router = {
+        connect: () => targets[route].connect(),
+        on: (event: string, listener: (...args: never[]) => void) => {
+          for (const p of pools) p.on(event as "error", listener as (err: Error) => void);
+        },
+      };
+      const o = opts("tenant-a", { pgPoolFactory: () => router as unknown as PgPool });
+      registry = o.connectionRegistry;
+      const read = sqlTool("SELECT 1 AS one", []);
+
+      expect(await invokeSql(read, {}, o)).toEqual({ ok: true, status: 200, data: [{ one: 1 }] });
+      route = "b";
+      const refused = await invokeSql(read, {}, o);
+      expect(refused).toEqual({
+        ok: false,
+        status: 0,
+        error: `connection for '${DSN_VARS.runtime}' owns public.owned_elsewhere, which it also holds a grant on — the runtime role must not own any relation it can query — see the topology guide`,
+      });
+      expect(ownershipKeys(o)).toHaveLength(2); // one verdict per (server, database) reached
+      route = "a";
+      expect(await invokeSql(read, {}, o)).toEqual(refused);
+    } finally {
+      registry?.clear(); // the router has no `end`: its pools are ended below, not by endPools
+      await setup.end().catch(() => undefined);
+      for (const p of pools) await p.end().catch(() => undefined);
+      for (let attempt = 0; ; attempt++) {
+        try {
+          await fx.admin(`DROP DATABASE IF EXISTS ${other}`);
+          break;
+        } catch (err) {
+          if ((err as { code?: string }).code !== "55006" || attempt >= 50) {
+            await fx.admin(`DROP DATABASE IF EXISTS ${other} WITH (FORCE)`);
+            break;
+          }
+          await new Promise((r) => setTimeout(r, 100));
+        }
+      }
+    }
   });
 
   // ----------------------------------------------------- scenario 4: read-only transaction (D-4)

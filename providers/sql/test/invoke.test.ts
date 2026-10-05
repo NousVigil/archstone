@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { describe, it, expect, vi } from "vitest";
 import type { IRTool } from "@archstone/compiler";
-import { invokeSql, ensureConnection, type PgPool, type PgPoolClient, type ConnectionEntry } from "../src/index";
+import { invokeSql, ensureConnection, checkConnectionPrivileges, type PgPool, type PgPoolClient, type ConnectionEntry } from "../src/index";
 
 const tool: IRTool = {
   id: "reporting.portfolio-summary",
@@ -23,6 +23,12 @@ const tool: IRTool = {
   },
 };
 
+/** ADR-0012 D-9 ruling 1's per-transaction read, as a passing role on one server and database. */
+const SERVER_A = { server_started: "2026-10-05T08:00:00.123456", database_oid: 16384 };
+const PASSING_ROW = { rolsuper: false, rolbypassrls: false, ...SERVER_A };
+const isRead = (text: string) => text.includes("pg_postmaster_start_time()");
+const isOwnership = (text: string) => text.includes("role_table_grants");
+
 /** A fake pool that records every query issued against it — no real Postgres involved. */
 function fakePool(rows: Array<Record<string, unknown>>, roleRow?: Record<string, unknown>) {
   const queries: Array<{ text: string; params?: unknown[] }> = [];
@@ -30,9 +36,7 @@ function fakePool(rows: Array<Record<string, unknown>>, roleRow?: Record<string,
   const client: PgPoolClient = {
     query: vi.fn(async (text: string, params?: unknown[]) => {
       queries.push({ text, params });
-      if (text.includes("pg_roles") && text.includes("rolsuper")) {
-        return { rows: roleRow ? [roleRow] : [{ rolsuper: false, rolbypassrls: false }] };
-      }
+      if (isRead(text)) return { rows: [{ ...PASSING_ROW, ...roleRow }] };
       if (text.includes("role_table_grants")) {
         return { rows: [] }; // no owned-and-granted relation by default
       }
@@ -59,23 +63,27 @@ function baseOpts(pool: PgPool, extra: Record<string, unknown> = {}) {
 }
 
 describe("invokeSql — D-4 transaction mechanics", () => {
-  it("runs BEGIN, SET TRANSACTION READ ONLY, set_config per claim, the query, COMMIT, then releases", async () => {
+  it("runs BEGIN, SET TRANSACTION READ ONLY, the D-9 read, layer 4, set_config per claim, the query, COMMIT, then releases", async () => {
     const { pool, queries, released } = fakePool([{ id: "1", headline: "Q1" }]);
     const result = await invokeSql(tool, { id: "1" }, baseOpts(pool));
     expect(result).toEqual({ ok: true, status: 200, data: [{ id: "1", headline: "Q1" }] });
-    // The first connection checkout runs D-9's over-privileged check (pg_roles, then the
-    // ownership query) — cached thereafter. The transaction itself is a SECOND checkout.
+    // One checkout, one transaction: D-9 is judged inside it (ADR-0012 D-9 rulings 1–2), not on
+    // a separate connection first.
     const texts = queries.map((q) => q.text);
-    const beginIdx = texts.indexOf("BEGIN");
-    expect(beginIdx).toBeGreaterThan(0);
-    expect(texts[beginIdx + 1]).toBe("SET TRANSACTION READ ONLY");
-    expect(texts[beginIdx + 2]).toBe("SELECT set_config($1, $2, true)");
-    expect(queries[beginIdx + 2].params).toEqual(["app.tenantId", "acme"]);
-    expect(texts[beginIdx + 3]).toBe("SELECT id, headline FROM reporting.portfolio_summary_v WHERE id = $1");
-    expect(queries[beginIdx + 3].params).toEqual(["1"]);
-    expect(texts[beginIdx + 4]).toBe("COMMIT");
-    // Released once for the check's own connection, once for the transaction's.
-    expect(released).toHaveBeenCalledTimes(2);
+    expect(texts[0]).toBe("BEGIN");
+    expect(texts[1]).toBe("SET TRANSACTION READ ONLY");
+    // The start time is rendered in UTC with a fixed format, so the layer-4 key does not depend
+    // on the session's TimeZone or DateStyle and keeps microseconds.
+    expect(texts[2]).toMatch(/^SELECT rolsuper, rolbypassrls,\s+to_char\(pg_postmaster_start_time\(\) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS\.US'\) AS server_started,\s+\(SELECT oid FROM pg_database WHERE datname = current_database\(\)\) AS database_oid\s+FROM pg_roles WHERE rolname = current_user$/);
+    expect(isOwnership(texts[3])).toBe(true); // first transaction on this key: layer 4 runs here
+    expect(texts[4]).toBe("SELECT set_config($1, $2, true)");
+    expect(queries[4].params).toEqual(["app.tenantId", "acme"]);
+    expect(texts[5]).toBe("SELECT id, headline FROM reporting.portfolio_summary_v WHERE id = $1");
+    expect(queries[5].params).toEqual(["1"]);
+    expect(texts[6]).toBe("COMMIT");
+    expect(texts).toHaveLength(7);
+    expect(pool.connect).toHaveBeenCalledTimes(1);
+    expect(released).toHaveBeenCalledTimes(1);
   });
 
   it("honors a custom sqlSessionGucPrefix", async () => {
@@ -89,8 +97,8 @@ describe("invokeSql — D-4 transaction mechanics", () => {
     const released = vi.fn();
     const client: PgPoolClient = {
       query: vi.fn(async (text: string) => {
-        if (text.includes("pg_roles")) return { rows: [{ rolsuper: false, rolbypassrls: false }] };
-        if (text.includes("role_table_grants")) return { rows: [] };
+        if (isRead(text)) return { rows: [PASSING_ROW] };
+        if (isOwnership(text)) return { rows: [] };
         if (text === "BEGIN" || text === "SET TRANSACTION READ ONLY" || text === "ROLLBACK") return { rows: [] };
         if (text === "SELECT set_config($1, $2, true)") return { rows: [] };
         throw new Error("relation does not exist");
@@ -102,7 +110,7 @@ describe("invokeSql — D-4 transaction mechanics", () => {
     try {
       const result = await invokeSql(tool, { id: "1" }, baseOpts(pool));
       expect(result).toEqual({ ok: false, status: 0, error: "query failed (error code unknown)" });
-      expect(released).toHaveBeenCalledTimes(2); // the check's connection, and the transaction's
+      expect(released).toHaveBeenCalledTimes(1); // the transaction's — there is no separate check connection
     } finally {
       stderr.mockRestore();
     }
@@ -173,19 +181,29 @@ describe("invokeSql — D-3 identity-adapter fail-closed gate", () => {
 });
 
 describe("invokeSql — D-9 over-privileged connection detection", () => {
-  it("refuses a superuser connection, naming rolsuper, before running the query", async () => {
-    const { pool, queries } = fakePool([{ id: "1" }], { rolsuper: true, rolbypassrls: false });
+  /** Neither a claim nor the declared query reached the database, and the transaction rolled back. */
+  function expectRefusedInsideTransaction(texts: string[]) {
+    expect(texts.some((t) => t === "SELECT set_config($1, $2, true)")).toBe(false);
+    expect(texts.some((t) => t.startsWith("SELECT id, headline"))).toBe(false);
+    expect(texts.at(-1)).toBe("ROLLBACK");
+    expect(texts).not.toContain("COMMIT");
+  }
+
+  it("refuses a superuser connection, naming rolsuper, before any claim is set or the query runs", async () => {
+    const { pool, queries, released } = fakePool([{ id: "1" }], { rolsuper: true, rolbypassrls: false });
     const result = await invokeSql(tool, { id: "1" }, baseOpts(pool));
     expect(result.ok).toBe(false);
     expect(result.error).toMatch(/rolsuper/);
-    expect(queries.some((q) => q.text === "BEGIN")).toBe(false);
+    expectRefusedInsideTransaction(queries.map((q) => q.text));
+    expect(released).toHaveBeenCalledTimes(1);
   });
 
   it("refuses a BYPASSRLS role, naming rolbypassrls", async () => {
-    const { pool } = fakePool([], { rolsuper: false, rolbypassrls: true });
+    const { pool, queries } = fakePool([], { rolsuper: false, rolbypassrls: true });
     const result = await invokeSql(tool, { id: "1" }, baseOpts(pool));
     expect(result.ok).toBe(false);
     expect(result.error).toMatch(/rolbypassrls/);
+    expectRefusedInsideTransaction(queries.map((q) => q.text));
   });
 
   it("refuses a role that owns a relation it also holds a grant on, naming the exact schema.relation", async () => {
@@ -193,8 +211,8 @@ describe("invokeSql — D-9 over-privileged connection detection", () => {
     const client: PgPoolClient = {
       query: vi.fn(async (text: string) => {
         queries.push({ text });
-        if (text.includes("rolsuper")) return { rows: [{ rolsuper: false, rolbypassrls: false }] };
-        if (text.includes("role_table_grants")) return { rows: [{ schema_name: "reporting", relation_name: "portfolio_summary_v" }] };
+        if (isRead(text)) return { rows: [PASSING_ROW] };
+        if (isOwnership(text)) return { rows: [{ schema_name: "reporting", relation_name: "portfolio_summary_v" }] };
         return { rows: [] };
       }),
       release: vi.fn(),
@@ -203,6 +221,7 @@ describe("invokeSql — D-9 over-privileged connection detection", () => {
     const result = await invokeSql(tool, { id: "1" }, baseOpts(pool));
     expect(result.ok).toBe(false);
     expect(result.error).toMatch(/reporting\.portfolio_summary_v/);
+    expectRefusedInsideTransaction(queries.map((q) => q.text));
   });
 
   it("does NOT refuse a role that owns a relation it holds no grant on (EC-8a)", async () => {
@@ -221,7 +240,7 @@ describe("invokeSql — D-9 over-privileged connection detection", () => {
   it("the ownership check queries only pg_class/role_table_grants filtered to current_user/PUBLIC — no role-membership traversal (R-7's documented boundary)", async () => {
     const { pool, queries } = fakePool([{ id: "1" }]);
     await invokeSql(tool, { id: "1" }, baseOpts(pool));
-    const ownershipQuery = queries.find((q) => q.text.includes("role_table_grants"))?.text ?? "";
+    const ownershipQuery = queries.find((q) => isOwnership(q.text))?.text ?? "";
     expect(ownershipQuery).toMatch(/FROM pg_class c/);
     expect(ownershipQuery).toMatch(/JOIN pg_namespace n/);
     expect(ownershipQuery).toMatch(/FROM information_schema\.role_table_grants g/);
@@ -234,47 +253,65 @@ describe("invokeSql — D-9 over-privileged connection detection", () => {
     expect(ownershipQuery).not.toMatch(/SECURITY DEFINER/i);
   });
 
-  it("caches the over-privileged check across invocations on the same DSN (checked once, not per-call)", async () => {
+  it("reads layer 3 in every transaction, and runs layer 4 once per server and database", async () => {
     const { pool, client } = fakePool([{ id: "1" }]);
     const opts = baseOpts(pool);
     await invokeSql(tool, { id: "1" }, opts);
     await invokeSql(tool, { id: "1" }, opts);
-    const roleCheckCalls = (client.query as ReturnType<typeof vi.fn>).mock.calls.filter(([text]: [string]) => text.includes("rolsuper")).length;
-    expect(roleCheckCalls).toBe(1);
+    const texts = (client.query as ReturnType<typeof vi.fn>).mock.calls.map(([text]: [string]) => text);
+    expect(texts.filter(isRead)).toHaveLength(2);
+    expect(texts.filter(isOwnership)).toHaveLength(1);
+  });
+
+  it("ensureConnection runs no check: it returns the pool and no refusal, and checks nothing out", () => {
+    const { pool } = fakePool([]);
+    const opts = baseOpts(pool);
+    const connection = ensureConnection("DATABASE_URL", "postgres://runtime@localhost/app", opts);
+    expect(connection.pool).toBe(pool);
+    expect(connection.pool !== undefined && connection.refusal).toBeUndefined();
+    expect(pool.connect).not.toHaveBeenCalled();
   });
 });
 
-describe("invokeSql — D-9 caches a verdict, retries a failure to reach one", () => {
-  /** A pool whose database can go down and come back, and whose role/ownership answers can
-   *  change between calls — so a test can tell a cached verdict from a re-run check. */
-  function flakyPool() {
-    const state = {
-      checkout: undefined as Error | undefined, // set: connect() rejects with it
-      roleQuery: undefined as Error | undefined, // set: the pg_roles query rejects with it
-      role: { rolsuper: false, rolbypassrls: false } as Record<string, unknown>,
-      owned: [] as Array<Record<string, unknown>>,
-    };
-    const client: PgPoolClient = {
-      query: vi.fn(async (text: string) => {
-        if (text.includes("rolsuper")) {
-          if (state.roleQuery) throw state.roleQuery;
-          return { rows: [state.role] };
-        }
-        if (text.includes("role_table_grants")) return { rows: state.owned };
-        if (text.startsWith("SELECT id")) return { rows: [{ id: "1" }] };
-        return { rows: [] };
-      }),
-      release: vi.fn(),
-    };
-    const connect = vi.fn(async () => {
+describe("invokeSql — D-9 re-runs after a server change (ADR-0012, amended 2026-10-05)", () => {
+  type Server = { server_started: string; database_oid: number; rolsuper: boolean; rolbypassrls: boolean; owned: Array<Record<string, unknown>> };
+  const passing = (started: string, oid: number): Server => ({ server_started: started, database_oid: oid, rolsuper: false, rolbypassrls: false, owned: [] });
+
+  /** A DSN whose name can be re-pointed: each checkout lands on whichever server `route` names at
+   *  that moment, and keeps it for the whole transaction (a backend does not move mid-transaction).
+   *  Every query is recorded with the server it ran on. */
+  function topologyPool(servers: Record<string, Server>, first: string) {
+    const state = { route: first, checkout: undefined as Error | undefined, read: undefined as Error | undefined, ownership: undefined as Error | undefined };
+    const log: Array<{ server: string; text: string }> = [];
+    let releases = 0;
+    const connect = vi.fn(async (): Promise<PgPoolClient> => {
       if (state.checkout) throw state.checkout;
-      return client;
+      const server = state.route;
+      return {
+        query: vi.fn(async (text: string) => {
+          log.push({ server, text });
+          const s = servers[server];
+          if (isRead(text)) {
+            if (state.read) throw state.read;
+            return { rows: [{ rolsuper: s.rolsuper, rolbypassrls: s.rolbypassrls, server_started: s.server_started, database_oid: s.database_oid }] };
+          }
+          if (isOwnership(text)) {
+            if (state.ownership) throw state.ownership;
+            return { rows: s.owned };
+          }
+          if (text.startsWith("SELECT id")) return { rows: [{ id: "1" }] };
+          return { rows: [] };
+        }),
+        release: vi.fn(() => {
+          releases++;
+        }),
+      };
     });
-    const roleChecks = () => (client.query as ReturnType<typeof vi.fn>).mock.calls.filter(([text]: [string]) => text.includes("rolsuper")).length;
-    return { pool: { connect } as PgPool, connect, client, state, roleChecks };
+    const ownershipRuns = (server?: string) => log.filter((q) => isOwnership(q.text) && (server === undefined || q.server === server)).length;
+    return { pool: { connect } as PgPool, connect, state, log, ownershipRuns, releases: () => releases };
   }
-  const refused = Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:5432"), { code: "ECONNREFUSED" });
   const ok = { ok: true, status: 200, data: [{ id: "1" }] };
+  const call = (opts: ReturnType<typeof baseOpts>) => invokeSql(tool, { id: "1" }, opts);
 
   async function quietly<T>(fn: () => Promise<T>): Promise<T> {
     const stderr = vi.spyOn(console, "error").mockImplementation(() => undefined);
@@ -285,92 +322,324 @@ describe("invokeSql — D-9 caches a verdict, retries a failure to reach one", (
     }
   }
 
-  it("a checkout failure during the check fails closed for that call, and the next call re-runs the check once the database is back", async () => {
-    const { pool, state, roleChecks } = flakyPool();
-    const opts = baseOpts(pool);
-    state.checkout = refused;
-    expect(await quietly(() => invokeSql(tool, { id: "1" }, opts))).toEqual({
-      ok: false,
-      status: 0,
-      error: "pool checkout failed while checking connection privileges (ECONNREFUSED)",
-    });
-    expect(roleChecks()).toBe(0);
+  it("a server change (new start time) re-runs layer 4 once, and not again", async () => {
+    const t = topologyPool({ a: passing("2026-10-05T08:00:00.000001", 16384), b: passing("2026-10-05T09:30:00.000002", 16384) }, "a");
+    const opts = baseOpts(t.pool);
+    expect(await call(opts)).toEqual(ok);
+    expect(await call(opts)).toEqual(ok);
+    expect(t.ownershipRuns("a")).toBe(1);
 
-    state.checkout = undefined;
-    expect(await invokeSql(tool, { id: "1" }, opts)).toEqual(ok);
-    expect(roleChecks()).toBe(1);
+    t.state.route = "b"; // failover or a re-pointed name: same DSN, another server process
+    for (let i = 0; i < 3; i++) expect(await call(opts)).toEqual(ok);
+    expect(t.ownershipRuns("b")).toBe(1);
+    expect(t.ownershipRuns()).toBe(2);
   });
 
-  it("a catalog query that fails mid-check fails closed for that call, and the next call re-runs the check", async () => {
-    const { pool, client, state, roleChecks } = flakyPool();
-    const opts = baseOpts(pool);
-    state.roleQuery = Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" });
-    expect(await quietly(() => invokeSql(tool, { id: "1" }, opts))).toEqual({
+  it("a database change on the same server (new oid, same start time) re-runs layer 4 too", async () => {
+    const started = "2026-10-05T08:00:00.000001";
+    const t = topologyPool({ a: passing(started, 16384), recreated: passing(started, 24576) }, "a");
+    const opts = baseOpts(t.pool);
+    expect(await call(opts)).toEqual(ok);
+    t.state.route = "recreated";
+    expect(await call(opts)).toEqual(ok);
+    expect(await call(opts)).toEqual(ok);
+    expect(t.ownershipRuns("a")).toBe(1);
+    expect(t.ownershipRuns("recreated")).toBe(1);
+  });
+
+  it("two servers alternating behind one DSN run layer 4 once each", async () => {
+    const t = topologyPool({ a: passing("2026-10-05T08:00:00.000001", 16384), b: passing("2026-10-05T08:00:00.000002", 16384) }, "a");
+    const opts = baseOpts(t.pool);
+    for (let i = 0; i < 6; i++) {
+      t.state.route = i % 2 === 0 ? "a" : "b";
+      expect(await call(opts)).toEqual(ok);
+    }
+    expect(t.ownershipRuns("a")).toBe(1);
+    expect(t.ownershipRuns("b")).toBe(1);
+  });
+
+  it("no set_config is sent before the verdict: the read, then layer 4 when needed, then the claims — on every transaction", async () => {
+    const t = topologyPool({ a: passing("2026-10-05T08:00:00.000001", 16384), b: passing("2026-10-05T09:00:00.000001", 16384) }, "a");
+    const opts = baseOpts(t.pool);
+    await call(opts);
+    await call(opts); // key judged: no layer 4
+    t.state.route = "b";
+    await call(opts); // new key: layer 4 again
+    const transactions: string[][] = [];
+    for (const { text } of t.log) {
+      if (text === "BEGIN") transactions.push([]);
+      transactions.at(-1)!.push(isRead(text) ? "read" : isOwnership(text) ? "layer4" : text.startsWith("SELECT set_config") ? "claim" : text.startsWith("SELECT id") ? "query" : text);
+    }
+    expect(transactions).toEqual([
+      ["BEGIN", "SET TRANSACTION READ ONLY", "read", "layer4", "claim", "query", "COMMIT"],
+      ["BEGIN", "SET TRANSACTION READ ONLY", "read", "claim", "query", "COMMIT"],
+      ["BEGIN", "SET TRANSACTION READ ONLY", "read", "layer4", "claim", "query", "COMMIT"],
+    ]);
+  });
+
+  it("concurrent transactions on a key with no verdict await the one in-flight check: layer 4 runs once, and no claim is set before it settles", async () => {
+    const t = topologyPool({ a: passing("2026-10-05T08:00:00.000001", 16384) }, "a");
+    const opts = baseOpts(t.pool);
+    let settle!: () => void;
+    const gate = new Promise<void>((resolve) => { settle = resolve; });
+    t.connect.mockImplementation(async () => {
+      const client: PgPoolClient = {
+        query: vi.fn(async (text: string) => {
+          t.log.push({ server: "a", text });
+          if (isRead(text)) return { rows: [{ ...PASSING_ROW, server_started: "2026-10-05T08:00:00.000001" }] };
+          if (isOwnership(text)) {
+            await gate;
+            return { rows: [] };
+          }
+          if (text.startsWith("SELECT id")) return { rows: [{ id: "1" }] };
+          return { rows: [] };
+        }),
+        release: vi.fn(),
+      };
+      return client;
+    });
+    const calls = Promise.all([1, 2, 3].map(() => call(opts)));
+    await vi.waitFor(() => expect(t.log.filter((q) => isRead(q.text))).toHaveLength(3));
+    expect(t.log.some((q) => q.text.startsWith("SELECT set_config"))).toBe(false);
+    settle();
+    for (const result of await calls) expect(result).toEqual(ok);
+    expect(t.ownershipRuns()).toBe(1);
+  });
+
+  it("a role turning rolbypassrls mid-life refuses the next transaction, and every later call without a checkout", async () => {
+    const servers = { a: passing("2026-10-05T08:00:00.000001", 16384) };
+    const t = topologyPool(servers, "a");
+    const opts = baseOpts(t.pool);
+    expect(await call(opts)).toEqual(ok);
+
+    servers.a.rolbypassrls = true; // ALTER ROLE … BYPASSRLS on the same server: layer 3 sees it
+    const refused = await call(opts);
+    expect(refused).toEqual({
       ok: false,
       status: 0,
-      error: "over-privileged connection check failed (ECONNRESET)",
+      error: "connection for 'DATABASE_URL' uses a role with rolbypassrls = true; the runtime role must not bypass row-level security — see the topology guide",
     });
-    expect(client.release).toHaveBeenCalledTimes(1);
+    expect(t.log.at(-1)!.text).toBe("ROLLBACK");
+    expect(t.connect).toHaveBeenCalledTimes(2);
+    expect(t.releases()).toBe(2); // exactly once per checkout, the refused one included
 
-    state.roleQuery = undefined;
-    expect(await invokeSql(tool, { id: "1" }, opts)).toEqual(ok);
-    expect(roleChecks()).toBe(2);
+    servers.a.rolbypassrls = false; // fixed — but a refusal holds until restart (ruling 3)
+    for (let i = 0; i < 3; i++) expect(await call(opts)).toEqual(refused);
+    expect(t.connect).toHaveBeenCalledTimes(2);
+    expect(await checkConnectionPrivileges("DATABASE_URL", "postgres://runtime@localhost/app", opts)).toEqual({ ok: false, error: refused.error });
+    expect(t.connect).toHaveBeenCalledTimes(2);
+  });
+
+  it("a call queued on a saturated pool is refused once it gets a client, if a refusal was cached while it waited — nothing runs on that client", async () => {
+    const t = topologyPool({ a: { ...passing("2026-10-05T08:00:00.000001", 16384), rolbypassrls: true } }, "a");
+    const opts = baseOpts(t.pool);
+    const original = t.connect.getMockImplementation()!;
+    let grant!: () => void;
+    const freed = new Promise<void>((resolve) => { grant = resolve; });
+    let queued: PgPoolClient | undefined;
+    t.connect.mockImplementationOnce(original).mockImplementationOnce(async () => {
+      await freed; // the pool's one client is busy with the first call
+      queued = await original();
+      return queued;
+    });
+    const first = call(opts);
+    const second = call(opts); // already past the cached-refusal check, waiting in connect()
+    const refused = await first;
+    expect(refused.ok).toBe(false);
+    expect(opts.connectionRegistry.get("postgres://runtime@localhost/app")!.refusal).toBe(refused.error);
+    const queriesBefore = t.log.length;
+    grant();
+    expect(await second).toEqual(refused);
+    expect(queued!.query).not.toHaveBeenCalled();
+    expect(t.log).toHaveLength(queriesBefore);
+    expect(queued!.release).toHaveBeenCalledTimes(1);
+    expect(t.releases()).toBe(2);
+  });
+
+  it("a mid-life layer-4 refusal is cached for the DSN and survives routing back to a passing server", async () => {
+    const t = topologyPool(
+      {
+        a: passing("2026-10-05T08:00:00.000001", 16384),
+        b: { ...passing("2026-10-05T09:00:00.000001", 16384), owned: [{ schema_name: "reporting", relation_name: "portfolio_summary_v" }] },
+      },
+      "a",
+    );
+    const opts = baseOpts(t.pool);
+    expect(await call(opts)).toEqual(ok);
+    t.state.route = "b";
+    const refused = await call(opts);
+    expect(refused.ok).toBe(false);
+    expect(refused.error).toBe(
+      "connection for 'DATABASE_URL' owns reporting.portfolio_summary_v, which it also holds a grant on — the runtime role must not own any relation it can query — see the topology guide",
+    );
+    t.state.route = "a";
+    for (let i = 0; i < 3; i++) expect(await call(opts)).toEqual(refused);
+    expect(t.connect).toHaveBeenCalledTimes(2);
   });
 
   it.each([
-    ["rolsuper", { role: { rolsuper: true, rolbypassrls: false } }, /rolsuper = true/],
-    ["rolbypassrls", { role: { rolsuper: false, rolbypassrls: true } }, /rolbypassrls = true/],
-    ["an owned-and-granted relation", { owned: [{ schema_name: "reporting", relation_name: "portfolio_summary_v" }] }, /owns reporting\.portfolio_summary_v/],
-  ])("a refusal (%s) is a verdict: it stays cached even once the role would pass, and the check is not re-run", async (_label, unsafe, pattern) => {
-    const { pool, connect, state, roleChecks } = flakyPool();
-    const opts = baseOpts(pool);
-    Object.assign(state, unsafe);
-    const first = await invokeSql(tool, { id: "1" }, opts);
-    expect(first.ok).toBe(false);
-    expect(first.error).toMatch(pattern);
+    ["the D-9 read", "read" as const, Object.assign(new Error("permission denied for function pg_postmaster_start_time"), { code: "42501" }), "query failed (SQLSTATE 42501)"],
+    ["layer 4's query", "ownership" as const, Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }), "query failed (ECONNRESET)"],
+  ])("a failure of %s fails the call through 'query failed', caches nothing, and the next call reads again", async (_label, which, err, expected) => {
+    const t = topologyPool({ a: passing("2026-10-05T08:00:00.000001", 16384) }, "a");
+    const opts = baseOpts(t.pool);
+    t.state[which] = err;
+    expect(await quietly(() => call(opts))).toEqual({ ok: false, status: 0, error: expected });
+    expect(t.log.some((q) => q.text.startsWith("SELECT set_config"))).toBe(false);
+    expect(t.log.at(-1)!.text).toBe("ROLLBACK");
+    expect(t.releases()).toBe(1);
+    const entry = opts.connectionRegistry.get("postgres://runtime@localhost/app")!;
+    expect(entry.refusal).toBeUndefined();
+    expect(entry.ownership.size).toBe(0);
 
-    state.role = { rolsuper: false, rolbypassrls: false };
-    state.owned = [];
-    for (let i = 0; i < 3; i++) expect(await invokeSql(tool, { id: "1" }, opts)).toEqual(first);
-    expect(roleChecks()).toBe(1);
-    expect(connect).toHaveBeenCalledTimes(1); // only the check's own checkout — no query ever ran
+    t.state[which] = undefined;
+    expect(await call(opts)).toEqual(ok);
+    expect(t.ownershipRuns()).toBe(which === "ownership" ? 2 : 1);
   });
 
-  it("concurrent callers share one failing in-flight check (one checkout attempt, all refused), and the following call retries", async () => {
-    const { pool, connect, state, roleChecks } = flakyPool();
+  it("a read that names no server start time or database oid is a failed read, not a verdict", async () => {
+    const { pool } = fakePool([{ id: "1" }], { server_started: null });
     const opts = baseOpts(pool);
-    let fail!: (err: Error) => void;
-    connect.mockImplementationOnce(() => new Promise((_resolve, reject) => { fail = reject; }));
-    const calls = quietly(() => Promise.all([1, 2, 3].map(() => invokeSql(tool, { id: "1" }, opts))));
-    await vi.waitFor(() => expect(fail).toBeTypeOf("function"));
-    fail(refused);
-    const results = await calls;
-    for (const result of results) {
-      expect(result).toEqual({ ok: false, status: 0, error: "pool checkout failed while checking connection privileges (ECONNREFUSED)" });
-    }
-    expect(connect).toHaveBeenCalledTimes(1);
-
-    expect(state.checkout).toBeUndefined();
-    expect(await invokeSql(tool, { id: "1" }, opts)).toEqual(ok);
-    expect(roleChecks()).toBe(1);
+    expect(await quietly(() => invokeSql(tool, { id: "1" }, opts))).toEqual({ ok: false, status: 0, error: "query failed (error code unknown)" });
+    const entry = opts.connectionRegistry.get("postgres://runtime@localhost/app")!;
+    expect(entry.refusal).toBeUndefined();
+    expect(entry.ownership.size).toBe(0);
   });
 
-  it("a failed check that is cleared never clobbers a newer check already in flight", async () => {
-    const { pool, connect, roleChecks } = flakyPool();
-    const opts = baseOpts(pool);
-    const entryOf = () => opts.connectionRegistry.get("postgres://runtime@localhost/app");
+  it("concurrent transactions sharing a failing in-flight layer-4 check all fail, and the next call runs it again", async () => {
+    const t = topologyPool({ a: passing("2026-10-05T08:00:00.000001", 16384) }, "a");
+    const opts = baseOpts(t.pool);
     let fail!: (err: Error) => void;
-    connect.mockImplementationOnce(() => new Promise((_resolve, reject) => { fail = reject; }));
-    const first = quietly(() => invokeSql(tool, { id: "1" }, opts));
+    const pending = new Promise<never>((_resolve, reject) => { fail = reject; });
+    const original = t.connect.getMockImplementation()!;
+    t.connect.mockImplementation(async () => {
+      const client = await original();
+      const query = client.query;
+      client.query = vi.fn(async (text: string, params?: unknown[]) => {
+        if (isOwnership(text)) {
+          t.log.push({ server: "a", text });
+          return pending;
+        }
+        return query(text, params);
+      });
+      return client;
+    });
+    const calls = quietly(() => Promise.all([1, 2, 3].map(() => call(opts))));
+    await vi.waitFor(() => expect(t.log.filter((q) => isRead(q.text))).toHaveLength(3));
+    fail(Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }));
+    for (const result of await calls) expect(result).toEqual({ ok: false, status: 0, error: "query failed (ECONNRESET)" });
+    expect(t.ownershipRuns()).toBe(1);
+
+    t.connect.mockImplementation(original);
+    expect(await call(opts)).toEqual(ok);
+    expect(t.ownershipRuns()).toBe(2);
+  });
+
+  it("a failed layer-4 check that is cleared never clobbers a newer check already in flight for its key", async () => {
+    const t = topologyPool({ a: passing("2026-10-05T08:00:00.000001", 16384) }, "a");
+    const opts = baseOpts(t.pool);
+    const key = "2026-10-05T08:00:00.000001|16384";
+    let fail!: (err: Error) => void;
+    const original = t.connect.getMockImplementation()!;
+    t.connect.mockImplementationOnce(async () => {
+      const client = await original();
+      const query = client.query;
+      client.query = vi.fn(async (text: string, params?: unknown[]) =>
+        isOwnership(text) ? new Promise<never>((_resolve, reject) => { fail = reject; }) : query(text, params),
+      );
+      return client;
+    });
+    const first = quietly(() => call(opts));
     await vi.waitFor(() => expect(fail).toBeTypeOf("function"));
+    const entry = opts.connectionRegistry.get("postgres://runtime@localhost/app")!;
     // Simulate a newer check replacing the pending one before it settles.
     const newer = Promise.resolve({ ok: true } as const);
-    entryOf()!.check = newer;
-    fail(refused);
+    entry.ownership.set(key, newer);
+    fail(Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }));
     expect((await first).ok).toBe(false);
-    expect(entryOf()!.check).toBe(newer);
-    expect(await invokeSql(tool, { id: "1" }, opts)).toEqual(ok);
-    expect(roleChecks()).toBe(0); // served by the newer verdict, not a re-run
+    expect(entry.ownership.get(key)).toBe(newer);
+    expect(await call(opts)).toEqual(ok);
+    expect(t.ownershipRuns()).toBe(0); // served by the newer verdict, not a re-run
+  });
+
+  it("the startup check records its verdict against the key it reached: a process that never fails over runs layer 4 once", async () => {
+    const t = topologyPool({ a: passing("2026-10-05T08:00:00.000001", 16384) }, "a");
+    const opts = baseOpts(t.pool);
+    expect(await checkConnectionPrivileges("DATABASE_URL", "postgres://runtime@localhost/app", opts)).toEqual({ ok: true });
+    expect(t.log.map((q) => (isRead(q.text) ? "read" : isOwnership(q.text) ? "layer4" : q.text))).toEqual([
+      "BEGIN",
+      "SET TRANSACTION READ ONLY",
+      "read",
+      "layer4",
+      "COMMIT",
+    ]);
+    for (let i = 0; i < 3; i++) expect(await call(opts)).toEqual(ok);
+    expect(t.ownershipRuns()).toBe(1);
+    expect(t.connect).toHaveBeenCalledTimes(4); // its own checkout, then one per call
+  });
+
+  it("a refusal reached by the startup check refuses every call without a checkout", async () => {
+    const t = topologyPool({ a: { ...passing("2026-10-05T08:00:00.000001", 16384), rolsuper: true } }, "a");
+    const opts = baseOpts(t.pool);
+    const check = await checkConnectionPrivileges("DATABASE_URL", "postgres://runtime@localhost/app", opts);
+    expect(check.ok).toBe(false);
+    expect(t.log.at(-1)!.text).toBe("ROLLBACK");
+    expect(t.releases()).toBe(1);
+    const error = check.ok ? "" : check.error;
+    for (let i = 0; i < 2; i++) expect(await call(opts)).toEqual({ ok: false, status: 0, error });
+    expect(t.connect).toHaveBeenCalledTimes(1);
+  });
+
+  it("the startup check fails closed when the read cannot complete, and caches nothing", async () => {
+    const t = topologyPool({ a: passing("2026-10-05T08:00:00.000001", 16384) }, "a");
+    const opts = baseOpts(t.pool);
+    t.state.read = Object.assign(new Error("permission denied for function pg_postmaster_start_time"), { code: "42501" });
+    expect(await quietly(() => checkConnectionPrivileges("DATABASE_URL", "postgres://runtime@localhost/app", opts))).toEqual({
+      ok: false,
+      error: "over-privileged connection check failed (SQLSTATE 42501)",
+    });
+    expect(t.log.at(-1)!.text).toBe("ROLLBACK");
+    expect(t.releases()).toBe(1);
+    t.state.read = undefined;
+    expect(await checkConnectionPrivileges("DATABASE_URL", "postgres://runtime@localhost/app", opts)).toEqual({ ok: true });
+  });
+
+  it("the startup check's own checkout failure fails closed and caches nothing", async () => {
+    const t = topologyPool({ a: passing("2026-10-05T08:00:00.000001", 16384) }, "a");
+    const opts = baseOpts(t.pool);
+    t.state.checkout = Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:5432"), { code: "ECONNREFUSED" });
+    expect(await quietly(() => checkConnectionPrivileges("DATABASE_URL", "postgres://runtime@localhost/app", opts))).toEqual({
+      ok: false,
+      error: "pool checkout failed while checking connection privileges (ECONNREFUSED)",
+    });
+    t.state.checkout = undefined;
+    expect(await call(opts)).toEqual(ok);
+  });
+
+  it("refusal strings carry no server start time, database oid, host or driver text", async () => {
+    const started = "2026-10-05T08:00:00.123456";
+    const dsn = "postgres://app_runtime:s3cret@db.internal:5432/app";
+    const cases: Array<Partial<Server>> = [
+      { rolsuper: true },
+      { rolbypassrls: true },
+      { owned: [{ schema_name: "reporting", relation_name: "portfolio_summary_v" }] },
+    ];
+    for (const unsafe of cases) {
+      const t = topologyPool({ a: { ...passing(started, 16384), ...unsafe } }, "a");
+      const opts = baseOpts(t.pool, { env: { DATABASE_URL: dsn } });
+      const stderr = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      try {
+        const result = await call(opts);
+        const startup = await checkConnectionPrivileges("DATABASE_URL", dsn, opts);
+        expect(result.ok).toBe(false);
+        expect(result.error).toMatch(/^connection for 'DATABASE_URL' /);
+        for (const text of [result.error, startup.ok ? "" : startup.error, ...stderr.mock.calls.map((c) => c.join(" "))]) {
+          for (const leak of [started, "2026-10-05", "16384", "db.internal", "app_runtime", "s3cret", "5432", "postgres://"]) expect(text).not.toContain(leak);
+        }
+      } finally {
+        stderr.mockRestore();
+      }
+    }
   });
 });
 
@@ -388,7 +657,7 @@ describe("invokeSql — connection lifecycle (D-5, BR-24)", () => {
     const stderr = vi.spyOn(console, "error").mockImplementation(() => undefined);
     try {
       const result = await invokeSql(tool, { id: "1" }, baseOpts(pool));
-      expect(result).toEqual({ ok: false, status: 0, error: "pool checkout failed while checking connection privileges (error code unknown)" });
+      expect(result).toEqual({ ok: false, status: 0, error: "pool checkout failed (error code unknown)" });
     } finally {
       stderr.mockRestore();
     }
@@ -403,7 +672,8 @@ describe("invokeSql — connection lifecycle (D-5, BR-24)", () => {
     try {
       expect((await invokeSql(tool, { id: "1" }, opts)).ok).toBe(true);
       const entry = opts.connectionRegistry.get("postgres://runtime:s3cret@db.internal:5432/app")!;
-      const check = entry.check;
+      const ownership = entry.ownership.get(`${SERVER_A.server_started}|${SERVER_A.database_oid}`);
+      expect(ownership).toBeDefined();
       expect(pool.listenerCount("error")).toBe(1);
 
       const message = 'terminating connection due to administrator command (host "db.internal", user "runtime")';
@@ -416,14 +686,14 @@ describe("invokeSql — connection lifecycle (D-5, BR-24)", () => {
       for (const leak of ["postgres://", "s3cret", "db.internal", "runtime", "terminating connection"]) expect(line).not.toContain(leak);
       expect(stdout).not.toHaveBeenCalled();
 
-      // No eviction: the same entry (pool and D-9 check) serves the next call, and the role
-      // check is not re-run.
+      // No eviction: the same entry (pool and layer-4 verdict) serves the next call, and layer 4
+      // is not re-run — the server behind the DSN did not change.
       expect((await invokeSql(tool, { id: "1" }, opts)).ok).toBe(true);
       expect(opts.connectionRegistry.get("postgres://runtime:s3cret@db.internal:5432/app")).toBe(entry);
       expect(entry.pool).toBe(pool);
-      expect(entry.check).toBe(check);
-      const roleCheckCalls = (client.query as ReturnType<typeof vi.fn>).mock.calls.filter(([text]: [string]) => text.includes("rolsuper")).length;
-      expect(roleCheckCalls).toBe(1);
+      expect(entry.ownership.get(`${SERVER_A.server_started}|${SERVER_A.database_oid}`)).toBe(ownership);
+      const ownershipCalls = (client.query as ReturnType<typeof vi.fn>).mock.calls.filter(([text]: [string]) => isOwnership(text)).length;
+      expect(ownershipCalls).toBe(1);
     } finally {
       stderr.mockRestore();
       stdout.mockRestore();
@@ -470,7 +740,7 @@ describe("invokeSql — connection lifecycle (D-5, BR-24)", () => {
       release: vi.fn(),
     });
     const freshClient = Object.assign(new EventEmitter(), healthy);
-    const queue = [freshClient, dying, freshClient];
+    const queue = [dying, freshClient];
     const opened = new Set<EventEmitter>();
     const pool: PgPool & EventEmitter = Object.assign(new EventEmitter(), {
       connect: vi.fn(async () => {
@@ -486,7 +756,7 @@ describe("invokeSql — connection lifecycle (D-5, BR-24)", () => {
     const stderr = vi.spyOn(console, "error").mockImplementation(() => undefined);
     try {
       const opts = baseOpts(pool);
-      // First call: the D-9 check uses freshClient; the transaction gets the dying client.
+      // First call: the transaction gets the dying client.
       const failed = await invokeSql(tool, { id: "1" }, opts);
       expect(failed).toEqual({ ok: false, status: 0, error: "query failed (error code unknown)" });
       expect(dying.listenerCount("error")).toBe(1);
@@ -542,7 +812,7 @@ describe("invokeSql — driver errors never reach the caller (#120)", () => {
     return { query: vi.fn(script), release: vi.fn() };
   }
   const healthyCheck: ClientScript = async (text) => {
-    if (text.includes("rolsuper")) return { rows: [{ rolsuper: false, rolbypassrls: false }] };
+    if (isRead(text)) return { rows: [PASSING_ROW] };
     return { rows: [] };
   };
 
@@ -560,35 +830,64 @@ describe("invokeSql — driver errors never reach the caller (#120)", () => {
     }
   }
 
+  /** `run`, through the eager startup check (`serve`/`verify`) instead of an invocation. */
+  async function runStartup(pool: PgPool) {
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const stdout = vi.spyOn(process.stdout, "write");
+    const log = vi.spyOn(console, "log");
+    try {
+      const check = await checkConnectionPrivileges("DATABASE_URL", DSN, baseOpts(pool, { env: { DATABASE_URL: DSN } }));
+      return { check, lines: stderr.mock.calls.map((c) => c.join(" ")), stdoutCalls: stdout.mock.calls.length, logCalls: log.mock.calls.length };
+    } finally {
+      stderr.mockRestore();
+      stdout.mockRestore();
+      log.mockRestore();
+    }
+  }
+
   function expectNoLeak(text: string | undefined, extra: string[] = []) {
     for (const leak of [...LEAKS, ...extra]) expect(text).not.toContain(leak);
   }
 
-  it("site 1 — D-9 checkout failure: errno code only to the caller, scrubbed driver text to stderr", async () => {
+  it("site 1 — startup check checkout failure: errno code only to the caller, scrubbed driver text to stderr", async () => {
     const message = "connect ECONNREFUSED 10.0.3.7:5432";
     const pool: PgPool = { connect: vi.fn(async () => { throw Object.assign(new Error(message), { code: "ECONNREFUSED" }); }) };
-    const { result, lines, stdoutCalls, logCalls } = await run(pool);
-    expect(result).toEqual({ ok: false, status: 0, error: "pool checkout failed while checking connection privileges (ECONNREFUSED)" });
-    expectNoLeak(result.error, [message]);
+    const { check, lines, stdoutCalls, logCalls } = await runStartup(pool);
+    expect(check).toEqual({ ok: false, error: "pool checkout failed while checking connection privileges (ECONNREFUSED)" });
+    expectNoLeak(check.ok ? "" : check.error, [message]);
     expect(lines).toEqual([`archstone: pool checkout failed while checking connection privileges for 'DATABASE_URL' (ECONNREFUSED): ${message}`]);
     expect(stdoutCalls).toBe(0);
     expect(logCalls).toBe(0);
   });
 
-  it("site 2 — D-9 check query failure: SQLSTATE only to the caller; the DSN and its password are scrubbed from stderr", async () => {
-    const message = `permission denied for table pg_roles (user "app_runtime", dsn ${DSN}, password ${PASSWORD_DECODED})\nDETAIL: line two`;
-    const pool: PgPool = {
-      connect: vi.fn(async () => clientOf(async () => { throw Object.assign(new Error(message), { code: "42501" }); })),
-    };
-    const { result, lines, stdoutCalls, logCalls } = await run(pool);
-    expect(result).toEqual({ ok: false, status: 0, error: "over-privileged connection check failed (SQLSTATE 42501)" });
-    expectNoLeak(result.error, ["permission denied"]);
+  const deniedRead = (message: string): ClientScript => async (text) => {
+    if (isRead(text)) throw Object.assign(new Error(message), { code: "42501" });
+    return { rows: [] };
+  };
+
+  it("site 2 — startup check read failure: SQLSTATE only to the caller; the DSN and its password are scrubbed from stderr", async () => {
+    const message = `permission denied for function pg_postmaster_start_time (user "app_runtime", dsn ${DSN}, password ${PASSWORD_DECODED})\nDETAIL: line two`;
+    const pool: PgPool = { connect: vi.fn(async () => clientOf(deniedRead(message))) };
+    const { check, lines, stdoutCalls, logCalls } = await runStartup(pool);
+    expect(check).toEqual({ ok: false, error: "over-privileged connection check failed (SQLSTATE 42501)" });
+    expectNoLeak(check.ok ? "" : check.error, ["permission denied"]);
     expect(lines).toHaveLength(1);
     expect(lines[0]).toBe(
       "archstone: over-privileged connection check failed for 'DATABASE_URL' (SQLSTATE 42501): " +
-        'permission denied for table pg_roles (user "app_runtime", dsn [dsn], password [redacted]) DETAIL: line two',
+        'permission denied for function pg_postmaster_start_time (user "app_runtime", dsn [dsn], password [redacted]) DETAIL: line two',
     );
     for (const secret of [DSN, "p%40ss%2Fw0rd", PASSWORD_DECODED, "\n"]) expect(lines[0]).not.toContain(secret);
+    expect(stdoutCalls).toBe(0);
+    expect(logCalls).toBe(0);
+  });
+
+  it("site 2 — per-transaction read failure: the existing 'query failed' path, SQLSTATE only to the caller, scrubbed on stderr", async () => {
+    const message = `permission denied for function pg_postmaster_start_time (dsn ${DSN})`;
+    const pool: PgPool = { connect: vi.fn(async () => clientOf(deniedRead(message))) };
+    const { result, lines, stdoutCalls, logCalls } = await run(pool);
+    expect(result).toEqual({ ok: false, status: 0, error: "query failed (SQLSTATE 42501)" });
+    expectNoLeak(result.error, ["permission denied", "pg_postmaster_start_time"]);
+    expect(lines).toEqual(["archstone: query failed for 'DATABASE_URL' (SQLSTATE 42501): permission denied for function pg_postmaster_start_time (dsn [dsn])"]);
     expect(stdoutCalls).toBe(0);
     expect(logCalls).toBe(0);
   });
@@ -626,7 +925,6 @@ describe("invokeSql — driver errors never reach the caller (#120)", () => {
     const message = 'password authentication failed for user "app_runtime" at db.internal';
     const connect = vi
       .fn<() => Promise<PgPoolClient>>()
-      .mockResolvedValueOnce(clientOf(healthyCheck))
       .mockRejectedValueOnce(Object.assign(new Error(message), { code: "ENOTFOUND" }));
     const { result, lines, stdoutCalls, logCalls } = await run({ connect });
     expect(result).toEqual({ ok: false, status: 0, error: "pool checkout failed (ENOTFOUND)" });
@@ -640,11 +938,10 @@ describe("invokeSql — driver errors never reach the caller (#120)", () => {
     const message = 'duplicate key value violates unique constraint "accounts_email_key" on host 10.0.3.7';
     const connect = vi
       .fn<() => Promise<PgPoolClient>>()
-      .mockResolvedValueOnce(clientOf(healthyCheck))
       .mockResolvedValueOnce(
         clientOf(async (text) => {
           if (text.startsWith("SELECT id")) throw Object.assign(new Error(message), { code: "23505" });
-          return { rows: [] };
+          return healthyCheck(text);
         }),
       );
     const { result, lines, stdoutCalls, logCalls } = await run({ connect });
@@ -658,7 +955,6 @@ describe("invokeSql — driver errors never reach the caller (#120)", () => {
   it("an error with no code, or a code that is not code-shaped, reports 'error code unknown' and never echoes the code", async () => {
     const connect = vi
       .fn<() => Promise<PgPoolClient>>()
-      .mockResolvedValueOnce(clientOf(healthyCheck))
       .mockRejectedValueOnce(Object.assign(new Error("boom"), { code: "postgres://app_runtime@10.0.3.7" }));
     const { result, lines } = await run({ connect });
     expect(result.error).toBe("pool checkout failed (error code unknown)");
@@ -669,16 +965,15 @@ describe("invokeSql — driver errors never reach the caller (#120)", () => {
   it("a non-Error rejection, or one whose message is not a string, still yields the fixed caller string — logging never throws", async () => {
     const connect = vi
       .fn<() => Promise<PgPoolClient>>()
-      .mockResolvedValueOnce(clientOf(healthyCheck))
       .mockRejectedValueOnce(Object.create(null))
       .mockRejectedValueOnce(Object.assign(new Error(), { message: { host: "10.0.3.7" } }));
     const pool: PgPool = { connect };
     const first = await run(pool);
     expect(first.result).toEqual({ ok: false, status: 0, error: "pool checkout failed (error code unknown)" });
     expect(first.lines).toEqual(["archstone: pool checkout failed for 'DATABASE_URL' (error code unknown): (non-string error)"]);
-    // A fresh registry, so this rejection lands on the D-9 check's checkout (site 1).
-    const second = await run(pool);
-    expect(second.result).toEqual({ ok: false, status: 0, error: "pool checkout failed while checking connection privileges (error code unknown)" });
+    // Through the startup check, so this rejection lands on its own checkout (site 1).
+    const second = await runStartup(pool);
+    expect(second.check).toEqual({ ok: false, error: "pool checkout failed while checking connection privileges (error code unknown)" });
     expect(second.lines).toEqual([
       "archstone: pool checkout failed while checking connection privileges for 'DATABASE_URL' (error code unknown): (non-string error)",
     ]);
@@ -714,17 +1009,17 @@ describe("a literal (non-${VAR}) dsn is never echoed (#121)", () => {
     ["rolsuper", { rolsuper: true, rolbypassrls: false }, undefined, /^connection for '\(unnamed dsn\)' uses a role with rolsuper = true/],
     ["rolbypassrls", { rolsuper: false, rolbypassrls: true }, undefined, /^connection for '\(unnamed dsn\)' uses a role with rolbypassrls = true/],
     ["ownership", undefined, { schema_name: "reporting", relation_name: "portfolio_summary_v" }, /^connection for '\(unnamed dsn\)' owns reporting\.portfolio_summary_v/],
-  ])("ensureConnection called directly with a literal dsn as dsnEnvVar names it '(unnamed dsn)' in the %s refusal", async (_label, roleRow, ownedRow, expected) => {
+  ])("the startup check called directly with a literal dsn as dsnEnvVar names it '(unnamed dsn)' in the %s refusal", async (_label, roleRow, ownedRow, expected) => {
     const client: PgPoolClient = {
       query: vi.fn(async (text: string) => {
-        if (text.includes("rolsuper")) return { rows: [roleRow ?? { rolsuper: false, rolbypassrls: false }] };
-        if (text.includes("role_table_grants")) return { rows: ownedRow ? [ownedRow] : [] };
+        if (isRead(text)) return { rows: [{ ...PASSING_ROW, ...roleRow }] };
+        if (isOwnership(text)) return { rows: ownedRow ? [ownedRow] : [] };
         return { rows: [] };
       }),
       release: vi.fn(),
     };
     const pool: PgPool = { connect: vi.fn(async () => client) };
-    const { check } = await ensureConnection(LITERAL_DSN, LITERAL_DSN, { pgPoolFactory: () => pool, connectionRegistry: new Map() });
+    const check = await checkConnectionPrivileges(LITERAL_DSN, LITERAL_DSN, { pgPoolFactory: () => pool, connectionRegistry: new Map() });
     expect(check.ok).toBe(false);
     const error = check.ok ? "" : check.error;
     expect(error).toMatch(expected);

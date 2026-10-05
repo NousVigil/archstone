@@ -5,7 +5,7 @@
 // loaded.
 
 import type { IRTool } from "@archstone/compiler";
-import { ensureConnection, type SqlInvokeOptions } from "@archstone/provider-sql";
+import { checkConnectionPrivileges, type SqlInvokeOptions } from "@archstone/provider-sql";
 
 /** The env-var NAME inside a `${VAR}`-shaped dsn — `connector.schema.json`'s pattern already
  *  guarantees this shape at `apply` time; a non-matching string here is unreachable via a
@@ -15,9 +15,10 @@ export function dsnEnvVarName(dsn: string): string | undefined {
 }
 
 /**
- * ADR-0012 D-9 layers 3/4 — the over-privileged-connection checks are documented to run "at
- * `archstone verify` and at `serve`/`serve --http` startup," never lazily on a binding's first
- * real invocation. Called once per distinct DSN found across every `sql`-bound tool in the
+ * ADR-0012 D-9 layers 3/4 — the over-privileged-connection checks run "at `archstone verify` and
+ * at `serve`/`serve --http` startup," and again inside every transaction after that (amended
+ * 2026-10-05); this is the eager one, so a refusal does not wait for a binding's first real
+ * invocation. Called once per distinct DSN found across every `sql`-bound tool in the
  * compiled registry, BEFORE `serve`/`serve --http` accepts a connection and BEFORE `verify`
  * reports a single result — so a superuser/BYPASSRLS/owns-and-granted DSN is refused at startup
  * or at the top of a CI gate, not on whichever request happens to reach it first.
@@ -36,9 +37,10 @@ export async function checkSqlOverPrivilege(tools: IRTool[], opts: SqlInvokeOpti
     const resolvedDsn = (opts?.env ?? process.env)[dsnEnvVar];
     if (resolvedDsn === undefined || seen.has(resolvedDsn)) continue;
     seen.add(resolvedDsn);
-    // No catch: `ensureConnection` does not throw on a driver failure. A pool that cannot be created is a failed check
-    // like any other, its message already scrubbed of the DSN and its password (`driverFailure`).
-    const { check } = await ensureConnection(dsnEnvVar, resolvedDsn, opts ?? {});
+    // No catch: `checkConnectionPrivileges` does not throw on a driver failure. A pool that cannot
+    // be created, or a D-9 read that cannot complete, is a failed check like any other, its
+    // message already scrubbed of the DSN and its password (`driverFailure`).
+    const check = await checkConnectionPrivileges(dsnEnvVar, resolvedDsn, opts ?? {});
     if (!check.ok) errors.push(check.error);
   }
   return errors;

@@ -53,10 +53,14 @@ export type OverPrivilegeCheck = { ok: true } | { ok: false; error: string };
 
 export interface ConnectionEntry {
   pool: PgPool;
-  /** D-9's verdict for this DSN, cached across every invocation for the life of the process once
-   *  reached — the checks run "on first connection per DSN", not on every call. A failure to
-   *  reach one (the checkout or a catalog query failed) is not cached: see `ensureConnection`. */
-  check?: Promise<OverPrivilegeCheck>;
+  /** D-9's refusal for this DSN, once one is reached — at startup or mid-life, by layer 3 or 4.
+   *  It holds for the life of the process: every later call against the DSN is refused before a
+   *  connection is checked out (ADR-0012 D-9, "When layers 3 and 4 re-run", ruling 3). */
+  refusal?: string;
+  /** D-9 layer 4's verdict per (server, database) this DSN has reached, keyed by
+   *  `serverKey` — settled once judged, pending while a transaction is judging it (ruling 2).
+   *  Only a verdict stays: a check that failed to reach one is removed again (#127, per key). */
+  ownership: Map<string, Promise<OverPrivilegeCheck>>;
 }
 
 /** Process-wide, keyed by the RESOLVED dsn string (D-5: "One pg.Pool per process… reused across
@@ -68,7 +72,7 @@ export interface SqlInvokeOptions extends BaseInvokeOptions {
   /** Constructs a pool for a resolved DSN. Defaults to a real `pg.Pool`; a test supplies a fake
    *  pool that never opens a socket. */
   pgPoolFactory?: PgPoolFactory;
-  /** Overrides the process-wide connection cache (pool + cached over-privileged check),
+  /** Overrides the process-wide connection cache (pool + cached D-9 verdicts),
    *  primarily for test isolation — each test gets its own registry rather than sharing the
    *  module-level `Map` across the whole vitest worker. */
   connectionRegistry?: Map<string, ConnectionEntry>;
@@ -155,30 +159,53 @@ function logIdleClientError(dsnEnvVar: string, err: unknown): void {
 }
 
 /**
- * D-9 layer 3 — role-level: refuse if the connecting role is superuser or holds BYPASSRLS.
+ * ADR-0012 D-9 ruling 1's read: layer 3's role attributes, and the (server, database) key layer
+ * 4's verdict is cached under. Sent as a statement of its own inside a read-only transaction,
+ * after `SET TRANSACTION READ ONLY` and before any `set_config` (D-4): a transaction is the one
+ * unit that stays on one backend, on a direct connection and through a session- or
+ * transaction-pooling proxy alike, so the answer is about the server that runs the declared query.
+ *
+ * `server_started` is rendered in UTC with a fixed format, not read as a `timestamptz` (which
+ * `pg` parses into a millisecond `Date`) nor cast `::text` (which follows the session's TimeZone
+ * and DateStyle, so one server could yield several keys): the key is the same from every session
+ * and keeps the microseconds that tell two server processes apart (R-9).
+ */
+const SERVER_AND_ROLE_READ = `SELECT rolsuper, rolbypassrls,
+       to_char(pg_postmaster_start_time() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US') AS server_started,
+       (SELECT oid FROM pg_database WHERE datname = current_database()) AS database_oid
+FROM pg_roles WHERE rolname = current_user`;
+
+type ServerAndRole = { rolsuper?: unknown; rolbypassrls?: unknown; server_started?: unknown; database_oid?: unknown };
+
+/** D-9 layer 3 — role-level: a refusal if the connecting role is superuser or holds BYPASSRLS. */
+function roleRefusal(row: ServerAndRole | undefined, dsnEnvVar: string): string | undefined {
+  if (row?.rolsuper === true) {
+    return `connection for '${safeDsnName(dsnEnvVar)}' uses a role with rolsuper = true; the runtime role must not be a superuser — see the topology guide`;
+  }
+  if (row?.rolbypassrls === true) {
+    return `connection for '${safeDsnName(dsnEnvVar)}' uses a role with rolbypassrls = true; the runtime role must not bypass row-level security — see the topology guide`;
+  }
+  return undefined;
+}
+
+/** The layer-4 cache key: the server process (`pg_postmaster_start_time()`) and the database
+ *  (its oid) the transaction landed on (ruling 2). Kept internal — never put in a caller-facing
+ *  string. A read that cannot name both is a failed read, never a verdict (ruling 4): it throws. */
+function serverKey(row: ServerAndRole | undefined): string {
+  const started = row?.server_started;
+  const oid = row?.database_oid;
+  if (started === null || started === undefined || oid === null || oid === undefined) {
+    throw new Error("the D-9 read returned no server start time or database oid");
+  }
+  return `${started instanceof Date ? started.toISOString() : String(started)}|${String(oid)}`;
+}
+
+/**
  * D-9 layer 4 — relation-level: refuse if the connecting role both OWNS a relation and can
  * also REACH it through a grant (direct or PUBLIC) — the exact set a bound `sql` capability
  * could actually read, with no query-text parsing.
- *
- * Live, and therefore only ever called from `verify`/`serve` startup — NEVER from `apply`,
- * which stays fully offline. No flag exists anywhere in this module to bypass either check.
  */
-async function checkOverPrivileged(client: PgClient, dsnEnvVar: string): Promise<OverPrivilegeCheck> {
-  const roleResult = await client.query("SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user");
-  const role = roleResult.rows[0] as { rolsuper?: boolean; rolbypassrls?: boolean } | undefined;
-  if (role?.rolsuper === true) {
-    return {
-      ok: false,
-      error: `connection for '${safeDsnName(dsnEnvVar)}' uses a role with rolsuper = true; the runtime role must not be a superuser — see the topology guide`,
-    };
-  }
-  if (role?.rolbypassrls === true) {
-    return {
-      ok: false,
-      error: `connection for '${safeDsnName(dsnEnvVar)}' uses a role with rolbypassrls = true; the runtime role must not bypass row-level security — see the topology guide`,
-    };
-  }
-
+async function checkOwnership(client: PgClient, dsnEnvVar: string): Promise<OverPrivilegeCheck> {
   const ownershipResult = await client.query(
     `SELECT n.nspname AS schema_name, c.relname AS relation_name
      FROM pg_class c
@@ -203,21 +230,69 @@ async function checkOverPrivileged(client: PgClient, dsnEnvVar: string): Promise
   return { ok: true };
 }
 
-/** What `ensureConnection` resolves to. `pool` is `undefined` exactly when no pool could be
- *  created for the DSN — the check is then a failure by construction, with nothing to check. */
-export type EnsuredConnection = { pool: PgPool; check: OverPrivilegeCheck } | { pool: undefined; check: { ok: false; error: string } };
+/**
+ * D-9 layers 3 and 4 inside the read-only transaction `client` has open (ADR-0012 D-9, "When
+ * layers 3 and 4 re-run", rulings 1–4). Live, and therefore never reached from `apply`, which
+ * stays fully offline. No flag exists anywhere in this module to bypass either check (ruling 5).
+ *
+ * Returns the refusal, if any, having cached it as the DSN's (ruling 3); `undefined` lets the
+ * transaction go on to set claims and run its query. Layer 3 is judged on every call. Layer 4
+ * runs only when this transaction's key has no verdict: an in-flight check for the same key is
+ * awaited rather than repeated (ruling 2). Throws when the read or layer 4's query fails — no
+ * verdict, nothing cached, and the next transaction on that key judges it again (ruling 4, #127).
+ */
+async function judgeTransaction(client: PgClient, entry: ConnectionEntry, dsnEnvVar: string): Promise<string | undefined> {
+  const row = (await client.query(SERVER_AND_ROLE_READ)).rows[0] as ServerAndRole | undefined;
+  let refusal = roleRefusal(row, dsnEnvVar);
+  if (refusal === undefined) {
+    const key = serverKey(row);
+    let check = entry.ownership.get(key);
+    if (!check) {
+      const own = checkOwnership(client, dsnEnvVar);
+      check = own;
+      entry.ownership.set(key, own);
+      // No verdict: clear it so the next transaction on this key retries — unless a newer check
+      // has replaced it (#127's guard, per key). Every waiter on `own` fails with it.
+      own.catch(() => {
+        if (entry.ownership.get(key) === own) entry.ownership.delete(key);
+      });
+    }
+    const verdict = await check;
+    if (!verdict.ok) refusal = verdict.error;
+  }
+  // The first refusal reached stays the DSN's verdict; a later one never replaces it.
+  if (refusal !== undefined) entry.refusal ??= refusal;
+  return refusal;
+}
+
+/** Best-effort: the connection is about to be released regardless; a failed ROLLBACK (e.g. the
+ *  connection itself died) is not a second error worth surfacing. */
+async function rollbackQuietly(client: PgClient): Promise<void> {
+  try {
+    await client.query("ROLLBACK");
+  } catch {
+    // See above.
+  }
+}
+
+/** What `ensureConnection` returns. `pool` is `undefined` exactly when no pool could be created
+ *  for the DSN; `error` is then that failure, already scrubbed. Otherwise `refusal` is the DSN's
+ *  cached D-9 refusal, if one has been reached. */
+export type EnsuredConnection =
+  | { pool: PgPool; entry: ConnectionEntry; refusal?: string }
+  | { pool: undefined; entry?: undefined; error: string };
 
 /**
- * Get (or lazily create) this DSN's pool + cached over-privileged check. Exported so `verify`/
- * `serve` startup and `archstone init`'s introspection connection can all run the SAME check
- * against the SAME cache entry (D-9: "the same entry points... never `apply`").
+ * Get (or lazily create) this DSN's pool, and return it with the DSN's cached D-9 refusal. Runs
+ * no check (ADR-0012 D-9 ruling 2): every transaction judges its own backend, and the eager
+ * startup check is `checkConnectionPrivileges`.
  *
  * Does not throw on a driver failure. A pool that cannot be created (the factory, or `pg`'s Pool constructor, threw —
- * its message can carry the DSN and its password) is a failed check scrubbed through
+ * its message can carry the DSN and its password) comes back as `error`, scrubbed through
  * `driverFailure` like every other driver failure, and is not cached: no registry entry is made,
- * so the next call retries (D-5, the same "no verdict is not cached" rule as a checkout failure).
+ * so the next call retries (D-5).
  */
-export async function ensureConnection(dsnEnvVar: string, resolvedDsn: string, opts: SqlInvokeOptions): Promise<EnsuredConnection> {
+export function ensureConnection(dsnEnvVar: string, resolvedDsn: string, opts: SqlInvokeOptions): EnsuredConnection {
   const registry = opts.connectionRegistry ?? defaultRegistry;
   let entry = registry.get(resolvedDsn);
   if (!entry) {
@@ -238,46 +313,52 @@ export async function ensureConnection(dsnEnvVar: string, resolvedDsn: string, o
       pool.on?.("connect", (client) => client.on?.("error", () => undefined));
     } catch (err) {
       // Inside the try so a pool without its 'error' listener never enters the registry.
-      return { pool: undefined, check: { ok: false, error: driverFailure("pool creation failed", dsnEnvVar, resolvedDsn, err) } };
+      return { pool: undefined, error: driverFailure("pool creation failed", dsnEnvVar, resolvedDsn, err) };
     }
-    // Deliberately no eviction of the pool: replacing it would orphan clients checked out of
-    // the old one and leak it, never `end()`ed.
-    entry = { pool };
+    // Deliberately no eviction of the pool, nor of its verdicts (#119): replacing it would orphan
+    // clients checked out of the old one and leak it, never `end()`ed.
+    entry = { pool, ownership: new Map() };
     registry.set(resolvedDsn, entry);
   }
-  // A VERDICT (`checkOverPrivileged` returned, ok or refused) is cached for the life of the
-  // process: it is a property of the role behind the DSN (D-9: "on first connection per DSN"),
-  // which a dropped backend does not change, so a refusal stays refused. NO verdict — the
-  // checkout or a catalog query failed — is a property of the network at that moment, not of
-  // the role: it fails closed for this call (and every caller sharing the in-flight check), and
-  // the next call re-runs the check (D-5: a checkout failure is a per-call failure, the same
-  // shape as a fetch failure, never a permanent refusal).
-  const current = entry;
-  if (current.check) return { pool: current.pool, check: await current.check };
-  let verdict = false;
-  const check = (async (): Promise<OverPrivilegeCheck> => {
-    let client: PgPoolClient;
-    try {
-      client = await current.pool.connect();
-    } catch (err) {
-      return { ok: false, error: driverFailure("pool checkout failed while checking connection privileges", dsnEnvVar, resolvedDsn, err) };
-    }
-    try {
-      const result = await checkOverPrivileged(client, dsnEnvVar);
-      verdict = true;
-      return result;
-    } catch (err) {
-      return { ok: false, error: driverFailure("over-privileged connection check failed", dsnEnvVar, resolvedDsn, err) };
-    } finally {
-      client.release();
-    }
-  })();
-  current.check = check;
+  return { pool: entry.pool, entry, refusal: entry.refusal };
+}
+
+/**
+ * D-9's eager check, called only at `serve`/`serve --http`/`verify` startup, so `serve` refuses
+ * before it accepts a connection and `verify` before it reports a result (ADR-0012 D-9 ruling 2).
+ * On a checkout of its own, it reads ruling 1's row in a read-only transaction and runs layer 4
+ * when the key it lands on has no verdict yet — recording both in the same cache entry every
+ * later transaction consults, so a process that never fails over runs layer 4 once.
+ *
+ * Never throws. A failure to reach a verdict — pool creation, the checkout, the read (for example
+ * `pg_postmaster_start_time()` not executable, R-9) or layer 4's query — fails closed and caches
+ * nothing, so a later check or call reads again.
+ */
+export async function checkConnectionPrivileges(dsnEnvVar: string, resolvedDsn: string, opts: SqlInvokeOptions): Promise<OverPrivilegeCheck> {
+  const connection = ensureConnection(dsnEnvVar, resolvedDsn, opts);
+  if (connection.pool === undefined) return { ok: false, error: connection.error };
+  if (connection.refusal !== undefined) return { ok: false, error: connection.refusal };
+  let client: PgPoolClient;
   try {
-    return { pool: current.pool, check: await check };
+    client = await connection.pool.connect();
+  } catch (err) {
+    return { ok: false, error: driverFailure("pool checkout failed while checking connection privileges", dsnEnvVar, resolvedDsn, err) };
+  }
+  try {
+    await client.query("BEGIN");
+    await client.query("SET TRANSACTION READ ONLY"); // D-9 layer 2, D-4
+    const refusal = await judgeTransaction(client, connection.entry, dsnEnvVar);
+    if (refusal !== undefined) {
+      await rollbackQuietly(client);
+      return { ok: false, error: refusal };
+    }
+    await client.query("COMMIT");
+    return { ok: true };
+  } catch (err) {
+    await rollbackQuietly(client);
+    return { ok: false, error: driverFailure("over-privileged connection check failed", dsnEnvVar, resolvedDsn, err) };
   } finally {
-    // No verdict: clear it so the next call retries — unless a newer check has replaced it.
-    if (!verdict && current.check === check) current.check = undefined;
+    client.release();
   }
 }
 
@@ -289,9 +370,9 @@ function gucName(prefix: string, claim: string): string {
 /**
  * Invoke a compiled capability against its Postgres backend.
  *
- * One invocation = exactly one transaction: `BEGIN; SET TRANSACTION READ ONLY;
- * set_config(...) per identity claim; <declared query>; COMMIT` (or `ROLLBACK` on any error,
- * D-4). Performs NO AUTHORIZATION beyond the identity-adapter fail-closed gate below (D-3) —
+ * One invocation = exactly one transaction: `BEGIN; SET TRANSACTION READ ONLY; <D-9 read>;
+ * [<D-9 layer 4>]; set_config(...) per identity claim; <declared query>; COMMIT` (or `ROLLBACK`
+ * on a refusal or any error, D-4). Performs NO AUTHORIZATION beyond the identity-adapter fail-closed gate below (D-3) —
  * `policies:[authenticated]`/rate-limiting/lifecycle gating all live upstream, exactly as they
  * do for `invokeRest`.
  */
@@ -334,16 +415,15 @@ export async function invokeSql(tool: IRTool, input: Record<string, unknown>, op
 
   // Never throws: a pool that cannot be created comes back as `pool: undefined` with its
   // failure already scrubbed through `driverFailure`.
-  const connection = await ensureConnection(dsnEnvVar, resolvedDsn, opts);
+  const connection = ensureConnection(dsnEnvVar, resolvedDsn, opts);
   if (connection.pool === undefined) {
-    return { ok: false, status: 0, error: connection.check.error };
+    return { ok: false, status: 0, error: connection.error };
   }
-  // D-9 layers 3/4 — the check itself runs once per DSN, until a verdict is reached (cached above);
-  // its RESULT then gates every subsequent invocation against that same DSN, for the life of
-  // the process — a refusal holds for the connection's whole lifetime, not just its opening
-  // moment, and no flag exists anywhere in this module to bypass either check.
-  if (!connection.check.ok) {
-    return { ok: false, status: 0, error: connection.check.error };
+  // D-9 ruling 3: a refusal already reached for this DSN — at startup or by an earlier
+  // transaction — refuses every later call before a connection is checked out, for the life of
+  // the process. No flag exists anywhere in this module to bypass it.
+  if (connection.refusal !== undefined) {
+    return { ok: false, status: 0, error: connection.refusal };
   }
 
   let client: PgPoolClient;
@@ -354,11 +434,24 @@ export async function invokeSql(tool: IRTool, input: Record<string, unknown>, op
     // unbounded queuing, no silent hang.
     return { ok: false, status: 0, error: driverFailure("pool checkout failed", dsnEnvVar, resolvedDsn, err) };
   }
+  // D-9 ruling 3, again: a refusal cached while this call waited for a client (another
+  // transaction reached it) refuses it before anything runs on that client.
+  if (connection.entry.refusal !== undefined) {
+    client.release();
+    return { ok: false, status: 0, error: connection.entry.refusal };
+  }
 
   const gucPrefix = opts.sqlSessionGucPrefix ?? "app.";
   try {
     await client.query("BEGIN");
     await client.query("SET TRANSACTION READ ONLY"); // D-9 layer 2, D-4
+    // D-9 layers 3 and 4, in this transaction, on the backend about to run the query — before
+    // any claim is set (rulings 1–2). A read that fails throws into the catch below.
+    const refusal = await judgeTransaction(client, connection.entry, dsnEnvVar);
+    if (refusal !== undefined) {
+      await rollbackQuietly(client);
+      return { ok: false, status: 0, error: refusal };
+    }
     for (const [key, value] of Object.entries(claims)) {
       // set_config(..., true): transaction-scoped (`is_local`). Postgres resets it the instant
       // the transaction ends, whether COMMIT or ROLLBACK — no cleanup code to get wrong, and no
@@ -370,12 +463,9 @@ export async function invokeSql(tool: IRTool, input: Record<string, unknown>, op
     await client.query("COMMIT");
     return { ok: true, status: 200, data: result.rows };
   } catch (err) {
-    try {
-      await client.query("ROLLBACK");
-    } catch {
-      // Best-effort: the connection is about to be released regardless; a failed ROLLBACK
-      // (e.g. the connection itself died) is not a second error worth surfacing.
-    }
+    // D-9 ruling 4: a failed D-9 read or layer-4 query lands here too — a failed call, never a
+    // verdict, and nothing is cached.
+    await rollbackQuietly(client);
     return { ok: false, status: 0, error: driverFailure("query failed", dsnEnvVar, resolvedDsn, err) };
   } finally {
     client.release();
