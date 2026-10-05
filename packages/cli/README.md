@@ -3,7 +3,7 @@
 The `archstone` command — compiles a Capability Definition Language (CDL) manifest to a
 target-agnostic IR and serves it as MCP tools an AI agent can call.
 
-Part of [Archstone](https://github.com/Archstone-Romania/archstone), an open-source
+Part of [Archstone](https://github.com/NousVigil/archstone), an open-source
 **Capability Platform**: a company describes what it can do in CDL (business only, no
 integration code); Archstone compiles that to IR; an emitter turns the IR into tools an
 agent can discover and call.
@@ -32,7 +32,7 @@ archstone build path/to/manifest [--out path]
 
 A manifest directory contains `capabilities.yaml`, `*.capability.yaml`, `*.resource.yaml`,
 and `bindings/*.binding.yaml` — see the
-[main repository README](https://github.com/Archstone-Romania/archstone#readme) and
+[main repository README](https://github.com/NousVigil/archstone#readme) and
 `examples/manifests/` for the full format and worked examples.
 
 ## License

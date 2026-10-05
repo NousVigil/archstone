@@ -4,7 +4,7 @@ Capability inference from an existing API — reads an OpenAPI document, asks th
 spec can answer, and drafts a Capability Definition Language (CDL) manifest that the real
 compiler has already compiled. It writes nothing at all if that manifest does not compile.
 
-Part of [Archstone](https://github.com/Archstone-Romania/archstone), an open-source
+Part of [Archstone](https://github.com/NousVigil/archstone), an open-source
 **Capability Platform**: a company describes what it can do in CDL (business only, no
 integration code); Archstone compiles that to a target-agnostic IR; an emitter turns the IR
 into tools an AI agent can discover and call. This package is the onboarding path into that
@@ -25,7 +25,7 @@ which is diagnostics?), it asks rather than picking. With `--probe` it will also
 read-only call to your real backend and record a genuine fixture, so `archstone verify` has
 something true to replay later.
 
-See the [main repository README](https://github.com/Archstone-Romania/archstone#readme) for
+See the [main repository README](https://github.com/NousVigil/archstone#readme) for
 the full CDL format, worked examples, and a GIF of `init` running end to end against a demo
 spec.
 
