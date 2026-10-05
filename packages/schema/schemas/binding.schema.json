@@ -27,6 +27,20 @@
         },
         "contract": {
           "$ref": "contract.schema.json"
+        },
+        "origins": {
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "description": "Where values of an origin-bound semantic type in this capability's output may point. Implementation, not CDL: a statement about the provider's response data, checked by the response mapper. Each entry is a bare https origin (scheme, host, optional port) — the semantic pass checks the entry syntax.",
+          "properties": {
+            "pages": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "type": "string" },
+              "description": "Origins a `web-page` output value may live on, e.g. https://www.example.com. A value on any other origin is withheld."
+            }
+          }
         }
       }
     }

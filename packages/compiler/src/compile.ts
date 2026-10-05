@@ -5,7 +5,7 @@
 // pass (validateSemantics); it builds what it can regardless.
 
 import type { LoadResult, CapabilityDoc, PolicyDoc } from "@archstone/schema";
-import { SEMANTIC_TYPES, LIFECYCLE_STATES, type IR, type IRTool, type IRField, type IRType, type IRConnector, type IRRestConnector, type IRResourceRegistry, type IRResponseMapping, type IRResponseOnError, type IRDiscriminator, type IRFieldMapping, type IRContract, type IRPolicyRule, type Lifecycle, type SemanticType } from "./ir";
+import { SEMANTIC_TYPES, LIFECYCLE_STATES, type IR, type IRTool, type IRField, type IRType, type IRConnector, type IRRestConnector, type IRResourceRegistry, type IRResponseMapping, type IRResponseOnError, type IRDiscriminator, type IRFieldMapping, type IRContract, type IRPolicyRule, type IROrigins, type Lifecycle, type SemanticType } from "./ir";
 import { JSON_TYPES, type JsonType, type ShapeMap } from "./fingerprint";
 import { domainOf, resolveResourceName, resourceIndex } from "./resolve";
 
@@ -261,6 +261,17 @@ function lowerPolicyRules(docs: PolicyDoc[], capabilityId: string, provider: str
   return rules.length > 0 ? rules : undefined;
 }
 
+/** Lower a shape-valid binding `origins:` verbatim — strings exactly as authored, no parsing (the
+ *  semantic pass has already checked their syntax; the mapper normalises). Absent or empty →
+ *  undefined, so the tool carries no `origins` member at all. */
+function lowerOrigins(raw: unknown): IROrigins | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const pages = (raw as Record<string, unknown>).pages;
+  if (!Array.isArray(pages)) return undefined;
+  const list = pages.filter((p): p is string => typeof p === "string");
+  return list.length > 0 ? { pages: list } : undefined;
+}
+
 /** Read a capability's authored `lifecycle`, defaulting to "stable" when absent or not a
  *  recognized state (same defensive-default style as `raw.required`, ADD-24 D-4). */
 function lowerLifecycle(raw: unknown): Lifecycle {
@@ -272,7 +283,9 @@ export function compile(model: LoadResult): IR {
   const responseByCap = new Map<string, Record<string, unknown>>();
   const extractByCap = new Map<string, Record<string, unknown>>();
   const contractByCap = new Map<string, Record<string, unknown>>();
+  const originsByCap = new Map<string, unknown>();
   for (const b of model.bindings) {
+    if (b.binding.origins) originsByCap.set(b.binding.capabilityId, b.binding.origins);
     const connector = lowerConnector(b.binding.connector);
     if (connector) connectorByCap.set(b.binding.capabilityId, connector);
     if (b.binding.response) responseByCap.set(b.binding.capabilityId, b.binding.response);
@@ -323,6 +336,8 @@ export function compile(model: LoadResult): IR {
       const contract = lowerContract(rawContract);
       if (contract) tool.contract = contract;
     }
+    const origins = lowerOrigins(originsByCap.get(c.id));
+    if (origins) tool.origins = origins;
     return tool;
   });
 

@@ -1,0 +1,357 @@
+{
+  "version": "0",
+  "company": {
+    "id": "bank",
+    "name": "Meridian Bank"
+  },
+  "tools": [
+    {
+      "id": "banking.generate-statement",
+      "description": "Produce an account statement for a period.",
+      "effect": "read",
+      "provider": "statements",
+      "policies": [
+        "authenticated",
+        "tenant-scoped"
+      ],
+      "lifecycle": "deprecated",
+      "input": [
+        {
+          "name": "account",
+          "required": true,
+          "type": {
+            "kind": "resource",
+            "name": "banking.Account",
+            "identity": true
+          }
+        },
+        {
+          "name": "period",
+          "required": true,
+          "type": {
+            "kind": "scalar",
+            "semantic": "date-range"
+          }
+        }
+      ],
+      "output": [
+        {
+          "name": "statement",
+          "required": true,
+          "type": {
+            "kind": "resource",
+            "name": "banking.Statement"
+          }
+        }
+      ]
+    },
+    {
+      "id": "banking.initiate-transfer",
+      "description": "Send money from a customer account to a beneficiary account.",
+      "effect": "irreversible",
+      "provider": "core-banking",
+      "policies": [
+        "authenticated",
+        "human-approval",
+        "rate-limited"
+      ],
+      "lifecycle": "beta",
+      "input": [
+        {
+          "name": "source",
+          "required": true,
+          "type": {
+            "kind": "resource",
+            "name": "banking.Account",
+            "identity": true
+          }
+        },
+        {
+          "name": "beneficiary",
+          "required": true,
+          "type": {
+            "kind": "resource",
+            "name": "banking.Beneficiary",
+            "identity": true
+          }
+        },
+        {
+          "name": "amount",
+          "required": true,
+          "type": {
+            "kind": "scalar",
+            "semantic": "money"
+          }
+        },
+        {
+          "name": "reference",
+          "required": false,
+          "type": {
+            "kind": "scalar",
+            "semantic": "text"
+          }
+        }
+      ],
+      "output": [
+        {
+          "name": "transfer",
+          "required": true,
+          "type": {
+            "kind": "resource",
+            "name": "banking.Transfer"
+          }
+        }
+      ],
+      "connector": {
+        "type": "rest",
+        "rest": {
+          "method": "POST",
+          "path": "/v2/transfers",
+          "baseUrl": "${CORE_BANKING_URL}"
+        }
+      }
+    },
+    {
+      "id": "banking.list-accounts",
+      "description": "List the customer's accounts.",
+      "effect": "read",
+      "provider": "core-banking",
+      "policies": [
+        "authenticated",
+        "tenant-scoped"
+      ],
+      "lifecycle": "stable",
+      "input": [],
+      "output": [
+        {
+          "name": "accounts",
+          "required": true,
+          "type": {
+            "kind": "collection",
+            "of": "banking.Account"
+          }
+        }
+      ],
+      "connector": {
+        "type": "rest",
+        "rest": {
+          "method": "GET",
+          "path": "/v2/accounts",
+          "baseUrl": "${CORE_BANKING_URL}",
+          "headers": {
+            "Authorization": "Bearer ${caller.accessToken}"
+          }
+        }
+      }
+    },
+    {
+      "id": "banking.quote-transfer",
+      "description": "Calculate fees, exchange rate, and arrival estimate for a transfer.",
+      "effect": "read",
+      "provider": "core-banking",
+      "policies": [
+        "authenticated"
+      ],
+      "lifecycle": "stable",
+      "input": [
+        {
+          "name": "source",
+          "required": true,
+          "type": {
+            "kind": "resource",
+            "name": "banking.Account",
+            "identity": true
+          }
+        },
+        {
+          "name": "beneficiary",
+          "required": true,
+          "type": {
+            "kind": "resource",
+            "name": "banking.Beneficiary",
+            "identity": true
+          }
+        },
+        {
+          "name": "amount",
+          "required": true,
+          "type": {
+            "kind": "scalar",
+            "semantic": "money"
+          }
+        }
+      ],
+      "output": [
+        {
+          "name": "quote",
+          "required": true,
+          "type": {
+            "kind": "resource",
+            "name": "banking.TransferQuote"
+          }
+        }
+      ]
+    }
+  ],
+  "resources": {
+    "banking.Account": [
+      {
+        "name": "number",
+        "required": true,
+        "type": {
+          "kind": "scalar",
+          "semantic": "identifier"
+        }
+      },
+      {
+        "name": "currency",
+        "required": true,
+        "type": {
+          "kind": "scalar",
+          "semantic": "enum",
+          "values": [
+            "EUR",
+            "USD",
+            "GBP"
+          ]
+        }
+      },
+      {
+        "name": "balance",
+        "required": true,
+        "type": {
+          "kind": "scalar",
+          "semantic": "money"
+        }
+      },
+      {
+        "name": "status",
+        "required": true,
+        "type": {
+          "kind": "scalar",
+          "semantic": "enum",
+          "values": [
+            "active",
+            "frozen",
+            "closed"
+          ]
+        }
+      }
+    ],
+    "banking.Beneficiary": [
+      {
+        "name": "name",
+        "required": true,
+        "type": {
+          "kind": "scalar",
+          "semantic": "string"
+        }
+      },
+      {
+        "name": "account",
+        "required": true,
+        "type": {
+          "kind": "scalar",
+          "semantic": "identifier"
+        }
+      },
+      {
+        "name": "status",
+        "required": true,
+        "type": {
+          "kind": "scalar",
+          "semantic": "enum",
+          "values": [
+            "pending",
+            "verified",
+            "rejected"
+          ]
+        }
+      }
+    ],
+    "banking.Statement": [
+      {
+        "name": "period",
+        "required": true,
+        "type": {
+          "kind": "scalar",
+          "semantic": "date-range"
+        }
+      },
+      {
+        "name": "issuedAt",
+        "required": true,
+        "type": {
+          "kind": "scalar",
+          "semantic": "date"
+        }
+      }
+    ],
+    "banking.Transfer": [
+      {
+        "name": "amount",
+        "required": true,
+        "type": {
+          "kind": "scalar",
+          "semantic": "money"
+        }
+      },
+      {
+        "name": "status",
+        "required": true,
+        "type": {
+          "kind": "scalar",
+          "semantic": "enum",
+          "values": [
+            "pending",
+            "settled",
+            "failed"
+          ]
+        }
+      },
+      {
+        "name": "settlesAt",
+        "required": true,
+        "type": {
+          "kind": "scalar",
+          "semantic": "datetime"
+        },
+        "description": "When settlement is due — the instant an initiation trigger would watch (RQ-001)."
+      }
+    ],
+    "banking.TransferQuote": [
+      {
+        "name": "amount",
+        "required": true,
+        "type": {
+          "kind": "scalar",
+          "semantic": "money"
+        }
+      },
+      {
+        "name": "fee",
+        "required": true,
+        "type": {
+          "kind": "scalar",
+          "semantic": "money"
+        }
+      },
+      {
+        "name": "arrivesOn",
+        "required": true,
+        "type": {
+          "kind": "scalar",
+          "semantic": "date"
+        }
+      },
+      {
+        "name": "expiresAt",
+        "required": true,
+        "type": {
+          "kind": "scalar",
+          "semantic": "datetime"
+        }
+      }
+    ]
+  }
+}

@@ -40,7 +40,8 @@ function getValidators(): Validators {
     return JSON.parse(readFileSync(join(SCHEMAS_DIR, name), "utf8"));
   }
 
-  const ajv = new Ajv2020({ allErrors: true, strict: false });
+  // `verbose` only so an `enum` error carries the refused value (see `rejectedEnumValue`).
+  const ajv = new Ajv2020({ allErrors: true, strict: false, verbose: true });
   // Env placeholders (${BOOKING_API_URL}) are valid at authoring time; real
   // URL/format checks belong to the binding resolver (#6), not the loader.
   for (const f of ["uri", "uri-reference", "date", "date-time", "email"]) {
@@ -97,7 +98,7 @@ export interface ExecutionValidation {
 export function validateExecution(record: unknown): ExecutionValidation {
   const validate = getValidators().execution;
   const ok = validate(record) as boolean;
-  return { ok, errors: ok ? "" : formatErrors(validate.errors) };
+  return { ok, errors: ok ? "" : formatErrors(validate.errors, false) }; // machine-emitted: echo no value
 }
 
 export interface CapabilitiesFile {
@@ -131,6 +132,7 @@ export interface BindingDoc {
     response?: Record<string, unknown>; // optional response mapping (ADD-12); resolution/lowering is the compiler's
     extract?: Record<string, unknown>; // optional scalar output extraction (extends ADD-12); resolution/lowering is the compiler's
     contract?: Record<string, unknown>; // optional contract snapshot (ADD-18); lowering is the compiler's
+    origins?: { pages?: string[] }; // optional origin lists for origin-bound output types; entry syntax is the semantic pass's
   };
 }
 
@@ -196,10 +198,22 @@ export interface LoadResult {
   issues: LoadIssue[];
 }
 
-function formatErrors(errors: ErrorObject[] | null | undefined): string {
+/** For an `enum` failure on a string, name the value that was refused — "must be equal to one of
+ *  the allowed values" alone does not tell an author that `list: web-page` failed because of
+ *  `web-page`. Only an authored manifest's own text is echoed (never a machine-emitted record's),
+ *  and only for this keyword. */
+function rejectedEnumValue(e: ErrorObject): string {
+  if (e.keyword !== "enum" || typeof e.data !== "string") return "";
+  // JSON-quoted, so a newline or control character prints escaped instead of breaking a terminal
+  // or CI log line; truncated, so a pasted blob cannot flood one.
+  const quoted = JSON.stringify(e.data);
+  return ` (got ${quoted.length > 80 ? `${quoted.slice(0, 77)}…` : quoted})`;
+}
+
+function formatErrors(errors: ErrorObject[] | null | undefined, authored = true): string {
   if (!errors || errors.length === 0) return "invalid";
   return errors
-    .map((e) => `${e.instancePath || "/"} ${e.message ?? ""}`.trim())
+    .map((e) => `${e.instancePath || "/"} ${e.message ?? ""}${authored ? rejectedEnumValue(e) : ""}`.trim())
     .join("; ");
 }
 

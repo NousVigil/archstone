@@ -22,7 +22,7 @@ import {
   type ShapeDiff,
   type ShapeMap,
 } from "@archstone/compiler";
-import { evaluatePolicy, hasIdentityClaims, lifecycleExposure } from "@archstone/emitter-support";
+import { evaluatePolicy, hasIdentityClaims, lifecycleExposure, passThroughRefusal } from "@archstone/emitter-support";
 import { applyResponseMapping } from "./mapping";
 import { invokeConnector, type ConnectorInvokeOptions } from "./connector";
 
@@ -267,6 +267,20 @@ function positiveLegOptions(tool: IRTool, fixture: GoldenFixture, opts?: InvokeO
   return { ...opts, caller: { ...opts?.caller, principal: fixture.identity.principal } };
 }
 
+/** `value outside declared origins in: <fields>` — field names only, never a value. */
+function withheldDetail(withheld: readonly string[]): string {
+  return `value outside declared origins in: ${withheld.join(", ")}`;
+}
+
+/** A violation's detail: the missing required fields, then any withheld ones, each named as what
+ *  it is. With nothing withheld it is exactly the text it always was. */
+function violationDetail(missing: readonly string[], withheld: readonly string[] | undefined): string {
+  if (!withheld) return `missing required field(s) ${missing.join(", ")}`;
+  const parts = missing.length > 0 ? [`missing required field(s) ${missing.join(", ")}`] : [];
+  parts.push(withheldDetail(withheld));
+  return parts.join("; ");
+}
+
 /** Verify one tool's contract against the live backend. Returns green/yellow/red — never
  *  throws (a network/fs failure is itself a red result, not an exception the CLI must catch).
  *
@@ -337,6 +351,9 @@ export async function verifyTool(tool: IRTool, dir: string, resources: IRResourc
   // response back — so every one of them, GREEN included, carries what it observed.
   const observed = { ...base, observedFingerprint: liveFingerprint };
 
+  const unchecked = passThroughRefusal(tool, resources);
+  if (unchecked) return { ...observed, status: "red", detail: unchecked };
+
   if (!tool.response && !tool.extract) {
     // Neither response: nor extract: to validate against — fingerprint drift is all we can see.
     if (!fingerprintChanged) return { ...observed, status: "green", detail: "fingerprint unchanged" };
@@ -346,7 +363,16 @@ export async function verifyTool(tool: IRTool, dir: string, resources: IRResourc
 
   const mapped = applyResponseMapping(tool, result.data, resources);
   if (mapped.status === "violation") {
-    return { ...observed, status: "red", detail: `contract violation: missing required field(s) ${(mapped.missing ?? []).join(", ")}` };
+    return { ...observed, status: "red", detail: `contract violation: ${violationDetail(mapped.missing ?? [], mapped.withheld)}` };
+  }
+
+  // An origin-checked value outside the declared origins is RED even on an optional field. In
+  // production it is silently dropped (the result only degrades), which is exactly why the
+  // operator has to hear it here: the provider's own data already breaks the guarantee. Kept
+  // distinct from the yellow `degraded` text, which means the provider did not send a field.
+  if (mapped.withheld) {
+    const degradedToo = mapped.degraded ? `; degraded: optional field(s) absent — ${mapped.degraded.join(", ")}` : "";
+    return { ...observed, status: "red", detail: `${withheldDetail(mapped.withheld)}${degradedToo}` };
   }
 
   // `collectionNonEmpty` names a `response:` collection field — nothing to check against an
@@ -510,6 +536,10 @@ export interface ContractRecording {
   /** Required fields that came back absent or null. A VIOLATION, and the reason nothing is
    *  written: a manifest that violates on its own recording is not a manifest. */
   missing?: string[];
+  /** Origin-checked fields whose recorded value was outside the declared origins. Always `red`,
+   *  and nothing is kept: a fixture `verify` would report red on its first replay is not worth
+   *  writing down. Names only — the value is never printed. */
+  withheld?: string[];
 }
 
 export interface RecordContractOptions extends InvokeOptions {
@@ -591,6 +621,9 @@ export async function recordContract(
     request: input,
   };
 
+  const unchecked = passThroughRefusal(tool, resources);
+  if (unchecked) return { ...base, outcome: "red", detail: unchecked };
+
   if (!tool.response && !tool.extract) {
     // Nothing to validate against; the fingerprint is still a real, replayable fact.
     return { ...base, outcome: "green", detail: "recorded — no response mapping to validate", fingerprint, shape, fixture };
@@ -605,8 +638,20 @@ export async function recordContract(
     return {
       ...base,
       outcome: "red",
-      detail: `contract violation on the recorded response: missing required field(s) ${(mapped.missing ?? []).join(", ")}`,
+      detail: `contract violation on the recorded response: ${violationDetail(mapped.missing ?? [], mapped.withheld)}`,
       ...(mapped.missing ? { missing: mapped.missing } : {}),
+      ...(mapped.withheld ? { withheld: mapped.withheld } : {}),
+    };
+  }
+  if (mapped.withheld) {
+    // KEEP NOTHING, as for a violation: `verify` reports any withheld value red, so this fixture
+    // would fail its own first replay.
+    return {
+      ...base,
+      outcome: "red",
+      detail: `not recorded: ${withheldDetail(mapped.withheld)}`,
+      withheld: mapped.withheld,
+      ...(mapped.degraded ? { degraded: mapped.degraded } : {}),
     };
   }
   if (mapped.status === "degraded") {

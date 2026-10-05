@@ -84,6 +84,7 @@ interface NormTool {
   connector: IRTool["connector"];
   response: IRTool["response"];
   extract: NonNullable<IRTool["extract"]>;
+  origins: IRTool["origins"];
 }
 
 function normalise(t: IRTool): NormTool {
@@ -100,6 +101,7 @@ function normalise(t: IRTool): NormTool {
     connector: t.connector,
     response: t.response,
     extract: t.extract ?? [],
+    origins: t.origins,
     // `contract` deliberately not copied (D-5).
   };
 }
@@ -402,7 +404,7 @@ function diffPolicyTokens(id: string, before: string[], after: string[], emit: E
 // but no longer invocable, which is "an agent that worked against before can fail against
 // after" (D-2) exactly. §4 does not separate it out; R-1 resolves it toward `breaking`.
 //
-// The response mapping, `extract` and the capability's `provider` are binding-side facts the
+// The response mapping, `extract`, `origins` and the capability's `provider` are binding-side facts the
 // agent never sees either, and are reported under the same kind rather than dropped.
 // ---------------------------------------------------------------------------------------------
 
@@ -421,6 +423,9 @@ function diffBinding(id: string, b: NormTool, a: NormTool, emit: Emit): void {
   }
   if (canonical(b.extract) !== canonical(a.extract)) {
     emit({ kind: "binding-changed", capabilityId: id, path: "extract", detail: "binding extract mapping changed" });
+  }
+  if (canonical(b.origins) !== canonical(a.origins)) {
+    emit({ kind: "binding-changed", capabilityId: id, path: "origins", detail: "binding origins changed" });
   }
   if (b.provider !== a.provider) {
     emit({ kind: "binding-changed", capabilityId: id, path: "provider", before: b.provider, after: a.provider, detail: `provider changed: ${b.provider} → ${a.provider}` });

@@ -174,6 +174,60 @@ defined by the **Semantic Type System**, RFC-0005,
 which versions independently of this grammar. A processor **MUST** reject a `type`
 whose name is neither a registered semantic type nor a defined Resource.
 
+The registered set is `location`, `date-range`, `party`, `preference-set`, `money`,
+`identifier`, `string`, `text`, `time-slot`, `quantity`, `enum`, `date`, `datetime` and
+`web-page`.
+
+#### `web-page` — *Experimental*, output-only
+
+**Definition.** The page where a person can see this resource on the provider's own site:
+meant to be opened by a person, never fetched by the assistant. Examples: a listing page
+(`https://www.example.com/stays/1234`), a product page in a catalogue
+(`https://www.example.com/products/sku-0042`). Not a `web-page`: an API endpoint (a binding
+concern), an image, or a deep link such as `tel:` or `mailto:`.
+
+It is a meaning, not a format. A `string` field can carry any URL at all — including one a
+provider's data, or text typed into a listing by its owner, points anywhere it likes. A
+`web-page` field carries one more fact: the link points at an origin the provider declared.
+
+Normative:
+
+- `web-page` is **output-only**. A processor **MUST** reject it in a capability's `input`,
+  directly or inside a Resource carried there by representation (`type:` / `collection:`).
+  It **MUST NOT** be used as an extraction target.
+- `web-page` **MUST NOT** be a **List** item type (`list: web-page`) in this version.
+- A binding whose capability output reaches a `web-page` field — directly, or through a
+  Resource or Collection at any depth — **MUST** declare `origins.pages` (§5.4) and **MUST**
+  declare `response:` or `extract:`. A pass-through binding is never checked, so it cannot
+  carry the guarantee.
+- A conforming runtime **MUST** check every `web-page` value it emits against the binding's
+  `origins.pages` and **MUST** fail closed. A value passes only if it parses as an
+  **absolute** URL, its scheme is `https`, it carries no userinfo, and its origin (scheme,
+  host, port — after normalisation: lower-cased host, punycode, default port elided) equals a
+  declared origin exactly. No suffix match, no wildcard.
+- A passing value **MUST** be emitted as its normalised form, not the provider's raw string.
+- A failing value **MUST** be treated as absent: an optional field is omitted (the result is
+  degraded), a required field is a contract violation. A processor **MUST** report which
+  fields were withheld, and **MUST NOT** echo a withheld value into any message, result or
+  record — the value is provider-controlled text.
+
+Limits — what the type does *not* guarantee:
+
+- **Only typed fields are checked.** A URL inside a `text` or `string` field is passed
+  through untouched.
+- **Relative references are withheld**, not resolved: `/stays/1234` and `//host/x` have no
+  declared base to resolve against.
+- **Nothing is fetched.** Neither the runtime nor `archstone verify` checks that the page
+  exists or what it says; the origin is the guarantee, not the path or the content.
+- A trailing-dot host (`www.example.com.`) is a different origin and is withheld.
+- A declared origin the runtime cannot normalise (e.g. a host label that is not valid IDNA)
+  matches nothing.
+- The check applies to what the model is shown. A deployer's own response hook (`onResponse`
+  in the reference runtime) runs before it and sees the raw provider body.
+
+`web-page` is Experimental: its meaning may still change before it is frozen with the rest of
+the semantic type system.
+
 ---
 
 ## 5. Manifests
@@ -210,6 +264,28 @@ is modeled as a `fields` entry (a status field of an `enum` type, timestamps of
 Carries connector/implementation detail for one capability. Bindings are **outside
 CDL**; a CDL processor **MUST** validate a capability without reference to any
 binding.
+
+A binding **MAY** declare `origins`, a sibling of `response:` and `extract:`: the origins the
+provider's pages live on, against which every `web-page` output value (§4.7) is checked.
+
+```yaml
+binding:
+  capabilityId: stays.search
+  connector: { ... }
+  response: { ... }
+  origins:
+    pages:
+      - https://www.example.com
+```
+
+- `origins.pages`, if present, **MUST** be a non-empty list. Each entry **MUST** be a bare
+  `https` origin: `https://`, a host, an optional `:port`, and nothing else — no path (not even
+  a trailing `/`), query, fragment, userinfo, wildcard or `${VAR}` placeholder.
+  `https://www.example.com` is valid; `https://www.example.com/stays` is not.
+- Entries are compared after normalisation (lower-cased host, default port elided); two
+  entries naming the same origin are an error.
+- The list is per binding, and is repeated in each binding of a provider by design: there is
+  no provider-level document for it.
 
 ---
 
