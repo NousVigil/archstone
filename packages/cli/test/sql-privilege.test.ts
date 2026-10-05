@@ -87,6 +87,29 @@ describe("checkSqlOverPrivilege", () => {
     expect(connectSpy).toHaveBeenCalledTimes(1);
   });
 
+  it("reports an unreachable database as an error (fail closed), and a later check against the same registry retries rather than replaying it", async () => {
+    const healthy = fakePool({ rolsuper: false, rolbypassrls: false });
+    const connect = vi
+      .fn<() => Promise<PgPoolClient>>()
+      .mockRejectedValueOnce(Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:5432"), { code: "ECONNREFUSED" }))
+      .mockImplementation(() => healthy.connect());
+    const opts = {
+      env: { DATABASE_URL: "postgres://runtime@localhost/app" },
+      pgPoolFactory: () => ({ connect }),
+      connectionRegistry: new Map<string, ConnectionEntry>(),
+    };
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      expect(await checkSqlOverPrivilege([sqlTool("reporting.summary")], opts)).toEqual([
+        "pool checkout failed while checking connection privileges (ECONNREFUSED)",
+      ]);
+    } finally {
+      stderr.mockRestore();
+    }
+    expect(await checkSqlOverPrivilege([sqlTool("reporting.summary")], opts)).toEqual([]);
+    expect(connect).toHaveBeenCalledTimes(2);
+  });
+
   it("skips a tool whose dsn env var is unset — a configuration gap, not a privilege question", async () => {
     const pool = fakePool({ rolsuper: true, rolbypassrls: false });
     const errors = await checkSqlOverPrivilege([sqlTool("reporting.summary")], {

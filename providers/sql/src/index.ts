@@ -53,8 +53,9 @@ export type OverPrivilegeCheck = { ok: true } | { ok: false; error: string };
 
 export interface ConnectionEntry {
   pool: PgPool;
-  /** Cached across every invocation against this DSN for the life of the process — D-9's checks
-   *  run "on first connection per DSN", not on every call. */
+  /** D-9's verdict for this DSN, cached across every invocation for the life of the process once
+   *  reached — the checks run "on first connection per DSN", not on every call. A failure to
+   *  reach one (the checkout or a catalog query failed) is not cached: see `ensureConnection`. */
   check?: Promise<OverPrivilegeCheck>;
 }
 
@@ -143,7 +144,7 @@ function scrubDriverMessage(message: string, resolvedDsn: string): string {
 function driverFailure(context: string, dsnEnvVar: string, resolvedDsn: string, err: unknown): string {
   const { sqlState, errno } = classifyErrorCode(err);
   const detail = sqlState ? `SQLSTATE ${sqlState}` : (errno ?? "error code unknown");
-  // Never throws: inside the D-9 check a throw would cache a rejected promise for this DSN.
+  // Never throws: inside the D-9 check a throw would turn its fail-closed result into a rejection.
   // `String(err)` throws on a null-prototype object, and a non-string `message` breaks the scrub.
   const raw = err instanceof Error ? err.message : err;
   const message = typeof raw === "string" ? raw : "(non-string error)";
@@ -236,31 +237,45 @@ export async function ensureConnection(
     //   and fails closed through `invokeSql`'s catch, `release()` drops the dead client, and an
     //   idle error already logs once through the pool listener above.
     pool.on?.("connect", (client) => client.on?.("error", () => undefined));
-    // Deliberately no eviction of this entry (pool or D-9 `check`): the check is a property of
-    // the role behind the DSN, which a dropped backend does not change, so re-running it buys
-    // nothing; and replacing the pool would orphan clients checked out of the old one and leak
-    // it, never `end()`ed.
+    // Deliberately no eviction of the pool: replacing it would orphan clients checked out of
+    // the old one and leak it, never `end()`ed.
     entry = { pool };
     registry.set(resolvedDsn, entry);
   }
-  if (!entry.check) {
-    entry.check = (async () => {
-      let client: PgPoolClient;
-      try {
-        client = await entry!.pool.connect();
-      } catch (err) {
-        return { ok: false, error: driverFailure("pool checkout failed while checking connection privileges", dsnEnvVar, resolvedDsn, err) };
-      }
-      try {
-        return await checkOverPrivileged(client, dsnEnvVar);
-      } catch (err) {
-        return { ok: false, error: driverFailure("over-privileged connection check failed", dsnEnvVar, resolvedDsn, err) };
-      } finally {
-        client.release();
-      }
-    })();
+  // A VERDICT (`checkOverPrivileged` returned, ok or refused) is cached for the life of the
+  // process: it is a property of the role behind the DSN (D-9: "on first connection per DSN"),
+  // which a dropped backend does not change, so a refusal stays refused. NO verdict — the
+  // checkout or a catalog query failed — is a property of the network at that moment, not of
+  // the role: it fails closed for this call (and every caller sharing the in-flight check), and
+  // the next call re-runs the check (D-5: a checkout failure is a per-call failure, the same
+  // shape as a fetch failure, never a permanent refusal).
+  const current = entry;
+  if (current.check) return { pool: current.pool, check: await current.check };
+  let verdict = false;
+  const check = (async (): Promise<OverPrivilegeCheck> => {
+    let client: PgPoolClient;
+    try {
+      client = await current.pool.connect();
+    } catch (err) {
+      return { ok: false, error: driverFailure("pool checkout failed while checking connection privileges", dsnEnvVar, resolvedDsn, err) };
+    }
+    try {
+      const result = await checkOverPrivileged(client, dsnEnvVar);
+      verdict = true;
+      return result;
+    } catch (err) {
+      return { ok: false, error: driverFailure("over-privileged connection check failed", dsnEnvVar, resolvedDsn, err) };
+    } finally {
+      client.release();
+    }
+  })();
+  current.check = check;
+  try {
+    return { pool: current.pool, check: await check };
+  } finally {
+    // No verdict: clear it so the next call retries — unless a newer check has replaced it.
+    if (!verdict && current.check === check) current.check = undefined;
   }
-  return { pool: entry.pool, check: await entry.check };
 }
 
 /** D-3: `${claim key} -> app.<claim key>` by default. Deployer-configured, never CDL content. */
@@ -315,7 +330,7 @@ export async function invokeSql(tool: IRTool, input: Record<string, unknown>, op
   } catch (err) {
     return { ok: false, status: 0, error: driverFailure("pool checkout failed", dsnEnvVar, resolvedDsn, err) };
   }
-  // D-9 layers 3/4 — the check itself runs once, on first connection per DSN (cached above);
+  // D-9 layers 3/4 — the check itself runs once per DSN, until a verdict is reached (cached above);
   // its RESULT then gates every subsequent invocation against that same DSN, for the life of
   // the process — a refusal holds for the connection's whole lifetime, not just its opening
   // moment, and no flag exists anywhere in this module to bypass either check.

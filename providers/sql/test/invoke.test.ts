@@ -244,6 +244,136 @@ describe("invokeSql — D-9 over-privileged connection detection", () => {
   });
 });
 
+describe("invokeSql — D-9 caches a verdict, retries a failure to reach one", () => {
+  /** A pool whose database can go down and come back, and whose role/ownership answers can
+   *  change between calls — so a test can tell a cached verdict from a re-run check. */
+  function flakyPool() {
+    const state = {
+      checkout: undefined as Error | undefined, // set: connect() rejects with it
+      roleQuery: undefined as Error | undefined, // set: the pg_roles query rejects with it
+      role: { rolsuper: false, rolbypassrls: false } as Record<string, unknown>,
+      owned: [] as Array<Record<string, unknown>>,
+    };
+    const client: PgPoolClient = {
+      query: vi.fn(async (text: string) => {
+        if (text.includes("rolsuper")) {
+          if (state.roleQuery) throw state.roleQuery;
+          return { rows: [state.role] };
+        }
+        if (text.includes("role_table_grants")) return { rows: state.owned };
+        if (text.startsWith("SELECT id")) return { rows: [{ id: "1" }] };
+        return { rows: [] };
+      }),
+      release: vi.fn(),
+    };
+    const connect = vi.fn(async () => {
+      if (state.checkout) throw state.checkout;
+      return client;
+    });
+    const roleChecks = () => (client.query as ReturnType<typeof vi.fn>).mock.calls.filter(([text]: [string]) => text.includes("rolsuper")).length;
+    return { pool: { connect } as PgPool, connect, client, state, roleChecks };
+  }
+  const refused = Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:5432"), { code: "ECONNREFUSED" });
+  const ok = { ok: true, status: 200, data: [{ id: "1" }] };
+
+  async function quietly<T>(fn: () => Promise<T>): Promise<T> {
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      return await fn();
+    } finally {
+      stderr.mockRestore();
+    }
+  }
+
+  it("a checkout failure during the check fails closed for that call, and the next call re-runs the check once the database is back", async () => {
+    const { pool, state, roleChecks } = flakyPool();
+    const opts = baseOpts(pool);
+    state.checkout = refused;
+    expect(await quietly(() => invokeSql(tool, { id: "1" }, opts))).toEqual({
+      ok: false,
+      status: 0,
+      error: "pool checkout failed while checking connection privileges (ECONNREFUSED)",
+    });
+    expect(roleChecks()).toBe(0);
+
+    state.checkout = undefined;
+    expect(await invokeSql(tool, { id: "1" }, opts)).toEqual(ok);
+    expect(roleChecks()).toBe(1);
+  });
+
+  it("a catalog query that fails mid-check fails closed for that call, and the next call re-runs the check", async () => {
+    const { pool, client, state, roleChecks } = flakyPool();
+    const opts = baseOpts(pool);
+    state.roleQuery = Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" });
+    expect(await quietly(() => invokeSql(tool, { id: "1" }, opts))).toEqual({
+      ok: false,
+      status: 0,
+      error: "over-privileged connection check failed (ECONNRESET)",
+    });
+    expect(client.release).toHaveBeenCalledTimes(1);
+
+    state.roleQuery = undefined;
+    expect(await invokeSql(tool, { id: "1" }, opts)).toEqual(ok);
+    expect(roleChecks()).toBe(2);
+  });
+
+  it.each([
+    ["rolsuper", { role: { rolsuper: true, rolbypassrls: false } }, /rolsuper = true/],
+    ["rolbypassrls", { role: { rolsuper: false, rolbypassrls: true } }, /rolbypassrls = true/],
+    ["an owned-and-granted relation", { owned: [{ schema_name: "reporting", relation_name: "portfolio_summary_v" }] }, /owns reporting\.portfolio_summary_v/],
+  ])("a refusal (%s) is a verdict: it stays cached even once the role would pass, and the check is not re-run", async (_label, unsafe, pattern) => {
+    const { pool, connect, state, roleChecks } = flakyPool();
+    const opts = baseOpts(pool);
+    Object.assign(state, unsafe);
+    const first = await invokeSql(tool, { id: "1" }, opts);
+    expect(first.ok).toBe(false);
+    expect(first.error).toMatch(pattern);
+
+    state.role = { rolsuper: false, rolbypassrls: false };
+    state.owned = [];
+    for (let i = 0; i < 3; i++) expect(await invokeSql(tool, { id: "1" }, opts)).toEqual(first);
+    expect(roleChecks()).toBe(1);
+    expect(connect).toHaveBeenCalledTimes(1); // only the check's own checkout — no query ever ran
+  });
+
+  it("concurrent callers share one failing in-flight check (one checkout attempt, all refused), and the following call retries", async () => {
+    const { pool, connect, state, roleChecks } = flakyPool();
+    const opts = baseOpts(pool);
+    let fail!: (err: Error) => void;
+    connect.mockImplementationOnce(() => new Promise((_resolve, reject) => { fail = reject; }));
+    const calls = quietly(() => Promise.all([1, 2, 3].map(() => invokeSql(tool, { id: "1" }, opts))));
+    await vi.waitFor(() => expect(fail).toBeTypeOf("function"));
+    fail(refused);
+    const results = await calls;
+    for (const result of results) {
+      expect(result).toEqual({ ok: false, status: 0, error: "pool checkout failed while checking connection privileges (ECONNREFUSED)" });
+    }
+    expect(connect).toHaveBeenCalledTimes(1);
+
+    expect(state.checkout).toBeUndefined();
+    expect(await invokeSql(tool, { id: "1" }, opts)).toEqual(ok);
+    expect(roleChecks()).toBe(1);
+  });
+
+  it("a failed check that is cleared never clobbers a newer check already in flight", async () => {
+    const { pool, connect, roleChecks } = flakyPool();
+    const opts = baseOpts(pool);
+    const entryOf = () => opts.connectionRegistry.get("postgres://runtime@localhost/app");
+    let fail!: (err: Error) => void;
+    connect.mockImplementationOnce(() => new Promise((_resolve, reject) => { fail = reject; }));
+    const first = quietly(() => invokeSql(tool, { id: "1" }, opts));
+    await vi.waitFor(() => expect(fail).toBeTypeOf("function"));
+    // Simulate a newer check replacing the pending one before it settles.
+    const newer = Promise.resolve({ ok: true } as const);
+    entryOf()!.check = newer;
+    fail(refused);
+    expect((await first).ok).toBe(false);
+    expect(entryOf()!.check).toBe(newer);
+    expect(await invokeSql(tool, { id: "1" }, opts)).toEqual(ok);
+    expect(roleChecks()).toBe(0); // served by the newer verdict, not a re-run
+  });
+});
+
 describe("invokeSql — response mapping surface (D-7)", () => {
   it("returns the driver's row array verbatim as data — undeclared columns are dropped later, by applyResponseMapping, not here", async () => {
     const { pool } = fakePool([{ id: "1", headline: "Q1", internal_notes: "secret" }]);
