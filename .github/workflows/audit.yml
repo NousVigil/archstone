@@ -1,6 +1,6 @@
 name: Dependency audit
 
-# Dependabot watches the PUBLIC mirror (NousVigil/archstone), but the lockfile it
+# Dependabot watches the PUBLIC repository (NousVigil/archstone), but the lockfile it
 # flags is generated here, on the private source of truth — so Dependabot can never open a
 # remediation PR where the fix actually has to land. Remediation is permanently manual from
 # this side (see the audit workflow's own history). This workflow is the missing half: it surfaces the

@@ -3,7 +3,7 @@
 //
 // Every release since 0.11.5 stamped `server.json` and published nothing from it: release.yml
 // had no step that sent it to registry.modelcontextprotocol.io, and no check that would have
-// noticed. `io.github.Archstone-Romania/archstone` sat at 0.11.5 while npm moved on to 0.22.0,
+// noticed. `io.github.NousVigil/archstone` sat at 0.11.5 while npm moved on to 0.22.0,
 // so every client discovering Archstone through the registry was offered a version eleven
 // minors stale — and every release run went green. The publish step that fixes that is only
 // half the fix; the other half is this witness, for the same reason npm-readback.mjs exists
