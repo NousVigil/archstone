@@ -165,11 +165,13 @@ function logIdleClientError(dsnEnvVar: string, err: unknown): void {
  * unit that stays on one backend, on a direct connection and through a session- or
  * transaction-pooling proxy alike, so the answer is about the server that runs the declared query.
  *
- * `server_started` is read as text rather than as a `timestamptz`, which `pg` parses into a
- * millisecond `Date`: the key keeps the microseconds that tell two server processes apart (R-9).
+ * `server_started` is rendered in UTC with a fixed format, not read as a `timestamptz` (which
+ * `pg` parses into a millisecond `Date`) nor cast `::text` (which follows the session's TimeZone
+ * and DateStyle, so one server could yield several keys): the key is the same from every session
+ * and keeps the microseconds that tell two server processes apart (R-9).
  */
 const SERVER_AND_ROLE_READ = `SELECT rolsuper, rolbypassrls,
-       pg_postmaster_start_time()::text AS server_started,
+       to_char(pg_postmaster_start_time() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US') AS server_started,
        (SELECT oid FROM pg_database WHERE datname = current_database()) AS database_oid
 FROM pg_roles WHERE rolname = current_user`;
 
@@ -431,6 +433,12 @@ export async function invokeSql(tool: IRTool, input: Record<string, unknown>, op
     // BR-24 / EC-9: the same fail-closed shape `invokeRest` returns on a fetch failure — no
     // unbounded queuing, no silent hang.
     return { ok: false, status: 0, error: driverFailure("pool checkout failed", dsnEnvVar, resolvedDsn, err) };
+  }
+  // D-9 ruling 3, again: a refusal cached while this call waited for a client (another
+  // transaction reached it) refuses it before anything runs on that client.
+  if (connection.entry.refusal !== undefined) {
+    client.release();
+    return { ok: false, status: 0, error: connection.entry.refusal };
   }
 
   const gucPrefix = opts.sqlSessionGucPrefix ?? "app.";

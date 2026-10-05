@@ -24,7 +24,7 @@ const tool: IRTool = {
 };
 
 /** ADR-0012 D-9 ruling 1's per-transaction read, as a passing role on one server and database. */
-const SERVER_A = { server_started: "2026-10-05 08:00:00.123456+00", database_oid: 16384 };
+const SERVER_A = { server_started: "2026-10-05T08:00:00.123456", database_oid: 16384 };
 const PASSING_ROW = { rolsuper: false, rolbypassrls: false, ...SERVER_A };
 const isRead = (text: string) => text.includes("pg_postmaster_start_time()");
 const isOwnership = (text: string) => text.includes("role_table_grants");
@@ -72,7 +72,9 @@ describe("invokeSql — D-4 transaction mechanics", () => {
     const texts = queries.map((q) => q.text);
     expect(texts[0]).toBe("BEGIN");
     expect(texts[1]).toBe("SET TRANSACTION READ ONLY");
-    expect(texts[2]).toMatch(/^SELECT rolsuper, rolbypassrls,\s+pg_postmaster_start_time\(\)::text AS server_started,\s+\(SELECT oid FROM pg_database WHERE datname = current_database\(\)\) AS database_oid\s+FROM pg_roles WHERE rolname = current_user$/);
+    // The start time is rendered in UTC with a fixed format, so the layer-4 key does not depend
+    // on the session's TimeZone or DateStyle and keeps microseconds.
+    expect(texts[2]).toMatch(/^SELECT rolsuper, rolbypassrls,\s+to_char\(pg_postmaster_start_time\(\) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS\.US'\) AS server_started,\s+\(SELECT oid FROM pg_database WHERE datname = current_database\(\)\) AS database_oid\s+FROM pg_roles WHERE rolname = current_user$/);
     expect(isOwnership(texts[3])).toBe(true); // first transaction on this key: layer 4 runs here
     expect(texts[4]).toBe("SELECT set_config($1, $2, true)");
     expect(queries[4].params).toEqual(["app.tenantId", "acme"]);
@@ -188,11 +190,12 @@ describe("invokeSql — D-9 over-privileged connection detection", () => {
   }
 
   it("refuses a superuser connection, naming rolsuper, before any claim is set or the query runs", async () => {
-    const { pool, queries } = fakePool([{ id: "1" }], { rolsuper: true, rolbypassrls: false });
+    const { pool, queries, released } = fakePool([{ id: "1" }], { rolsuper: true, rolbypassrls: false });
     const result = await invokeSql(tool, { id: "1" }, baseOpts(pool));
     expect(result.ok).toBe(false);
     expect(result.error).toMatch(/rolsuper/);
     expectRefusedInsideTransaction(queries.map((q) => q.text));
+    expect(released).toHaveBeenCalledTimes(1);
   });
 
   it("refuses a BYPASSRLS role, naming rolbypassrls", async () => {
@@ -280,6 +283,7 @@ describe("invokeSql — D-9 re-runs after a server change (ADR-0012, amended 202
   function topologyPool(servers: Record<string, Server>, first: string) {
     const state = { route: first, checkout: undefined as Error | undefined, read: undefined as Error | undefined, ownership: undefined as Error | undefined };
     const log: Array<{ server: string; text: string }> = [];
+    let releases = 0;
     const connect = vi.fn(async (): Promise<PgPoolClient> => {
       if (state.checkout) throw state.checkout;
       const server = state.route;
@@ -298,11 +302,13 @@ describe("invokeSql — D-9 re-runs after a server change (ADR-0012, amended 202
           if (text.startsWith("SELECT id")) return { rows: [{ id: "1" }] };
           return { rows: [] };
         }),
-        release: vi.fn(),
+        release: vi.fn(() => {
+          releases++;
+        }),
       };
     });
     const ownershipRuns = (server?: string) => log.filter((q) => isOwnership(q.text) && (server === undefined || q.server === server)).length;
-    return { pool: { connect } as PgPool, connect, state, log, ownershipRuns };
+    return { pool: { connect } as PgPool, connect, state, log, ownershipRuns, releases: () => releases };
   }
   const ok = { ok: true, status: 200, data: [{ id: "1" }] };
   const call = (opts: ReturnType<typeof baseOpts>) => invokeSql(tool, { id: "1" }, opts);
@@ -317,7 +323,7 @@ describe("invokeSql — D-9 re-runs after a server change (ADR-0012, amended 202
   }
 
   it("a server change (new start time) re-runs layer 4 once, and not again", async () => {
-    const t = topologyPool({ a: passing("2026-10-05 08:00:00.000001+00", 16384), b: passing("2026-10-05 09:30:00.000002+00", 16384) }, "a");
+    const t = topologyPool({ a: passing("2026-10-05T08:00:00.000001", 16384), b: passing("2026-10-05T09:30:00.000002", 16384) }, "a");
     const opts = baseOpts(t.pool);
     expect(await call(opts)).toEqual(ok);
     expect(await call(opts)).toEqual(ok);
@@ -330,7 +336,7 @@ describe("invokeSql — D-9 re-runs after a server change (ADR-0012, amended 202
   });
 
   it("a database change on the same server (new oid, same start time) re-runs layer 4 too", async () => {
-    const started = "2026-10-05 08:00:00.000001+00";
+    const started = "2026-10-05T08:00:00.000001";
     const t = topologyPool({ a: passing(started, 16384), recreated: passing(started, 24576) }, "a");
     const opts = baseOpts(t.pool);
     expect(await call(opts)).toEqual(ok);
@@ -342,7 +348,7 @@ describe("invokeSql — D-9 re-runs after a server change (ADR-0012, amended 202
   });
 
   it("two servers alternating behind one DSN run layer 4 once each", async () => {
-    const t = topologyPool({ a: passing("2026-10-05 08:00:00.000001+00", 16384), b: passing("2026-10-05 08:00:00.000002+00", 16384) }, "a");
+    const t = topologyPool({ a: passing("2026-10-05T08:00:00.000001", 16384), b: passing("2026-10-05T08:00:00.000002", 16384) }, "a");
     const opts = baseOpts(t.pool);
     for (let i = 0; i < 6; i++) {
       t.state.route = i % 2 === 0 ? "a" : "b";
@@ -353,7 +359,7 @@ describe("invokeSql — D-9 re-runs after a server change (ADR-0012, amended 202
   });
 
   it("no set_config is sent before the verdict: the read, then layer 4 when needed, then the claims — on every transaction", async () => {
-    const t = topologyPool({ a: passing("2026-10-05 08:00:00.000001+00", 16384), b: passing("2026-10-05 09:00:00.000001+00", 16384) }, "a");
+    const t = topologyPool({ a: passing("2026-10-05T08:00:00.000001", 16384), b: passing("2026-10-05T09:00:00.000001", 16384) }, "a");
     const opts = baseOpts(t.pool);
     await call(opts);
     await call(opts); // key judged: no layer 4
@@ -372,7 +378,7 @@ describe("invokeSql — D-9 re-runs after a server change (ADR-0012, amended 202
   });
 
   it("concurrent transactions on a key with no verdict await the one in-flight check: layer 4 runs once, and no claim is set before it settles", async () => {
-    const t = topologyPool({ a: passing("2026-10-05 08:00:00.000001+00", 16384) }, "a");
+    const t = topologyPool({ a: passing("2026-10-05T08:00:00.000001", 16384) }, "a");
     const opts = baseOpts(t.pool);
     let settle!: () => void;
     const gate = new Promise<void>((resolve) => { settle = resolve; });
@@ -380,7 +386,7 @@ describe("invokeSql — D-9 re-runs after a server change (ADR-0012, amended 202
       const client: PgPoolClient = {
         query: vi.fn(async (text: string) => {
           t.log.push({ server: "a", text });
-          if (isRead(text)) return { rows: [{ ...PASSING_ROW, server_started: "2026-10-05 08:00:00.000001+00" }] };
+          if (isRead(text)) return { rows: [{ ...PASSING_ROW, server_started: "2026-10-05T08:00:00.000001" }] };
           if (isOwnership(text)) {
             await gate;
             return { rows: [] };
@@ -401,7 +407,7 @@ describe("invokeSql — D-9 re-runs after a server change (ADR-0012, amended 202
   });
 
   it("a role turning rolbypassrls mid-life refuses the next transaction, and every later call without a checkout", async () => {
-    const servers = { a: passing("2026-10-05 08:00:00.000001+00", 16384) };
+    const servers = { a: passing("2026-10-05T08:00:00.000001", 16384) };
     const t = topologyPool(servers, "a");
     const opts = baseOpts(t.pool);
     expect(await call(opts)).toEqual(ok);
@@ -415,6 +421,7 @@ describe("invokeSql — D-9 re-runs after a server change (ADR-0012, amended 202
     });
     expect(t.log.at(-1)!.text).toBe("ROLLBACK");
     expect(t.connect).toHaveBeenCalledTimes(2);
+    expect(t.releases()).toBe(2); // exactly once per checkout, the refused one included
 
     servers.a.rolbypassrls = false; // fixed — but a refusal holds until restart (ruling 3)
     for (let i = 0; i < 3; i++) expect(await call(opts)).toEqual(refused);
@@ -423,11 +430,37 @@ describe("invokeSql — D-9 re-runs after a server change (ADR-0012, amended 202
     expect(t.connect).toHaveBeenCalledTimes(2);
   });
 
+  it("a call queued on a saturated pool is refused once it gets a client, if a refusal was cached while it waited — nothing runs on that client", async () => {
+    const t = topologyPool({ a: { ...passing("2026-10-05T08:00:00.000001", 16384), rolbypassrls: true } }, "a");
+    const opts = baseOpts(t.pool);
+    const original = t.connect.getMockImplementation()!;
+    let grant!: () => void;
+    const freed = new Promise<void>((resolve) => { grant = resolve; });
+    let queued: PgPoolClient | undefined;
+    t.connect.mockImplementationOnce(original).mockImplementationOnce(async () => {
+      await freed; // the pool's one client is busy with the first call
+      queued = await original();
+      return queued;
+    });
+    const first = call(opts);
+    const second = call(opts); // already past the cached-refusal check, waiting in connect()
+    const refused = await first;
+    expect(refused.ok).toBe(false);
+    expect(opts.connectionRegistry.get("postgres://runtime@localhost/app")!.refusal).toBe(refused.error);
+    const queriesBefore = t.log.length;
+    grant();
+    expect(await second).toEqual(refused);
+    expect(queued!.query).not.toHaveBeenCalled();
+    expect(t.log).toHaveLength(queriesBefore);
+    expect(queued!.release).toHaveBeenCalledTimes(1);
+    expect(t.releases()).toBe(2);
+  });
+
   it("a mid-life layer-4 refusal is cached for the DSN and survives routing back to a passing server", async () => {
     const t = topologyPool(
       {
-        a: passing("2026-10-05 08:00:00.000001+00", 16384),
-        b: { ...passing("2026-10-05 09:00:00.000001+00", 16384), owned: [{ schema_name: "reporting", relation_name: "portfolio_summary_v" }] },
+        a: passing("2026-10-05T08:00:00.000001", 16384),
+        b: { ...passing("2026-10-05T09:00:00.000001", 16384), owned: [{ schema_name: "reporting", relation_name: "portfolio_summary_v" }] },
       },
       "a",
     );
@@ -448,12 +481,13 @@ describe("invokeSql — D-9 re-runs after a server change (ADR-0012, amended 202
     ["the D-9 read", "read" as const, Object.assign(new Error("permission denied for function pg_postmaster_start_time"), { code: "42501" }), "query failed (SQLSTATE 42501)"],
     ["layer 4's query", "ownership" as const, Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }), "query failed (ECONNRESET)"],
   ])("a failure of %s fails the call through 'query failed', caches nothing, and the next call reads again", async (_label, which, err, expected) => {
-    const t = topologyPool({ a: passing("2026-10-05 08:00:00.000001+00", 16384) }, "a");
+    const t = topologyPool({ a: passing("2026-10-05T08:00:00.000001", 16384) }, "a");
     const opts = baseOpts(t.pool);
     t.state[which] = err;
     expect(await quietly(() => call(opts))).toEqual({ ok: false, status: 0, error: expected });
     expect(t.log.some((q) => q.text.startsWith("SELECT set_config"))).toBe(false);
     expect(t.log.at(-1)!.text).toBe("ROLLBACK");
+    expect(t.releases()).toBe(1);
     const entry = opts.connectionRegistry.get("postgres://runtime@localhost/app")!;
     expect(entry.refusal).toBeUndefined();
     expect(entry.ownership.size).toBe(0);
@@ -473,7 +507,7 @@ describe("invokeSql — D-9 re-runs after a server change (ADR-0012, amended 202
   });
 
   it("concurrent transactions sharing a failing in-flight layer-4 check all fail, and the next call runs it again", async () => {
-    const t = topologyPool({ a: passing("2026-10-05 08:00:00.000001+00", 16384) }, "a");
+    const t = topologyPool({ a: passing("2026-10-05T08:00:00.000001", 16384) }, "a");
     const opts = baseOpts(t.pool);
     let fail!: (err: Error) => void;
     const pending = new Promise<never>((_resolve, reject) => { fail = reject; });
@@ -502,9 +536,9 @@ describe("invokeSql — D-9 re-runs after a server change (ADR-0012, amended 202
   });
 
   it("a failed layer-4 check that is cleared never clobbers a newer check already in flight for its key", async () => {
-    const t = topologyPool({ a: passing("2026-10-05 08:00:00.000001+00", 16384) }, "a");
+    const t = topologyPool({ a: passing("2026-10-05T08:00:00.000001", 16384) }, "a");
     const opts = baseOpts(t.pool);
-    const key = "2026-10-05 08:00:00.000001+00|16384";
+    const key = "2026-10-05T08:00:00.000001|16384";
     let fail!: (err: Error) => void;
     const original = t.connect.getMockImplementation()!;
     t.connect.mockImplementationOnce(async () => {
@@ -529,7 +563,7 @@ describe("invokeSql — D-9 re-runs after a server change (ADR-0012, amended 202
   });
 
   it("the startup check records its verdict against the key it reached: a process that never fails over runs layer 4 once", async () => {
-    const t = topologyPool({ a: passing("2026-10-05 08:00:00.000001+00", 16384) }, "a");
+    const t = topologyPool({ a: passing("2026-10-05T08:00:00.000001", 16384) }, "a");
     const opts = baseOpts(t.pool);
     expect(await checkConnectionPrivileges("DATABASE_URL", "postgres://runtime@localhost/app", opts)).toEqual({ ok: true });
     expect(t.log.map((q) => (isRead(q.text) ? "read" : isOwnership(q.text) ? "layer4" : q.text))).toEqual([
@@ -545,18 +579,19 @@ describe("invokeSql — D-9 re-runs after a server change (ADR-0012, amended 202
   });
 
   it("a refusal reached by the startup check refuses every call without a checkout", async () => {
-    const t = topologyPool({ a: { ...passing("2026-10-05 08:00:00.000001+00", 16384), rolsuper: true } }, "a");
+    const t = topologyPool({ a: { ...passing("2026-10-05T08:00:00.000001", 16384), rolsuper: true } }, "a");
     const opts = baseOpts(t.pool);
     const check = await checkConnectionPrivileges("DATABASE_URL", "postgres://runtime@localhost/app", opts);
     expect(check.ok).toBe(false);
     expect(t.log.at(-1)!.text).toBe("ROLLBACK");
+    expect(t.releases()).toBe(1);
     const error = check.ok ? "" : check.error;
     for (let i = 0; i < 2; i++) expect(await call(opts)).toEqual({ ok: false, status: 0, error });
     expect(t.connect).toHaveBeenCalledTimes(1);
   });
 
   it("the startup check fails closed when the read cannot complete, and caches nothing", async () => {
-    const t = topologyPool({ a: passing("2026-10-05 08:00:00.000001+00", 16384) }, "a");
+    const t = topologyPool({ a: passing("2026-10-05T08:00:00.000001", 16384) }, "a");
     const opts = baseOpts(t.pool);
     t.state.read = Object.assign(new Error("permission denied for function pg_postmaster_start_time"), { code: "42501" });
     expect(await quietly(() => checkConnectionPrivileges("DATABASE_URL", "postgres://runtime@localhost/app", opts))).toEqual({
@@ -564,12 +599,13 @@ describe("invokeSql — D-9 re-runs after a server change (ADR-0012, amended 202
       error: "over-privileged connection check failed (SQLSTATE 42501)",
     });
     expect(t.log.at(-1)!.text).toBe("ROLLBACK");
+    expect(t.releases()).toBe(1);
     t.state.read = undefined;
     expect(await checkConnectionPrivileges("DATABASE_URL", "postgres://runtime@localhost/app", opts)).toEqual({ ok: true });
   });
 
   it("the startup check's own checkout failure fails closed and caches nothing", async () => {
-    const t = topologyPool({ a: passing("2026-10-05 08:00:00.000001+00", 16384) }, "a");
+    const t = topologyPool({ a: passing("2026-10-05T08:00:00.000001", 16384) }, "a");
     const opts = baseOpts(t.pool);
     t.state.checkout = Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:5432"), { code: "ECONNREFUSED" });
     expect(await quietly(() => checkConnectionPrivileges("DATABASE_URL", "postgres://runtime@localhost/app", opts))).toEqual({
@@ -581,7 +617,7 @@ describe("invokeSql — D-9 re-runs after a server change (ADR-0012, amended 202
   });
 
   it("refusal strings carry no server start time, database oid, host or driver text", async () => {
-    const started = "2026-10-05 08:00:00.123456+00";
+    const started = "2026-10-05T08:00:00.123456";
     const dsn = "postgres://app_runtime:s3cret@db.internal:5432/app";
     const cases: Array<Partial<Server>> = [
       { rolsuper: true },

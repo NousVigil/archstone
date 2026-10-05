@@ -21,7 +21,7 @@ function sqlTool(id: string, dsn = "${DATABASE_URL}"): IRTool {
 }
 
 /** The server and database half of ADR-0012 D-9 ruling 1's read, which the startup check reads too. */
-const SERVER = { server_started: "2026-10-05 08:00:00.123456+00", database_oid: 16384 };
+const SERVER = { server_started: "2026-10-05T08:00:00.123456", database_oid: 16384 };
 
 function fakePool(roleRow: Record<string, unknown>, ownershipRows: Array<Record<string, unknown>> = []): PgPool {
   const client: PgPoolClient = {

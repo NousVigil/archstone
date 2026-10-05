@@ -238,9 +238,11 @@ describePostgres("invokeSql against a real Postgres", () => {
     expect((await invokeSql(ALL_ROWS, {}, o)).ok).toBe(true);
     expect((await invokeSql(ALL_ROWS, {}, o)).ok).toBe(true);
     const { rows } = await fx.admin(
-      "SELECT pg_postmaster_start_time()::text AS started, oid::text AS oid FROM pg_database WHERE datname = current_database()",
+      // The key is session-independent: UTC, fixed format, microseconds kept.
+      "SELECT to_char(pg_postmaster_start_time() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US') AS started, oid::text AS oid FROM pg_database WHERE datname = current_database()",
     );
     expect(ownershipKeys(o)).toEqual([`${rows[0].started}|${rows[0].oid}`]); // judged once: at startup
+    expect(rows[0].started).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}$/);
   });
 
   it("D-9 R-9: with EXECUTE on pg_postmaster_start_time() revoked, the startup check and every call fail closed, and nothing is cached", async (ctx) => {
@@ -299,6 +301,7 @@ describePostgres("invokeSql against a real Postgres", () => {
     otherAdmin.pathname = `/${other}`;
     const setup = new pg.Client({ connectionString: otherAdmin.toString() });
     const pools: pg.Pool[] = [];
+    let registry: Map<string, ConnectionEntry> | undefined;
     try {
       await setup.connect();
       await setup.query(`CREATE TABLE public.owned_elsewhere (id int4); ALTER TABLE public.owned_elsewhere OWNER TO ${runtimeRole()}`);
@@ -316,6 +319,7 @@ describePostgres("invokeSql against a real Postgres", () => {
         },
       };
       const o = opts("tenant-a", { pgPoolFactory: () => router as unknown as PgPool });
+      registry = o.connectionRegistry;
       const read = sqlTool("SELECT 1 AS one", []);
 
       expect(await invokeSql(read, {}, o)).toEqual({ ok: true, status: 200, data: [{ one: 1 }] });
@@ -329,8 +333,8 @@ describePostgres("invokeSql against a real Postgres", () => {
       expect(ownershipKeys(o)).toHaveLength(2); // one verdict per (server, database) reached
       route = "a";
       expect(await invokeSql(read, {}, o)).toEqual(refused);
-      o.connectionRegistry!.clear(); // its pools are ended below, not by endPools
     } finally {
+      registry?.clear(); // the router has no `end`: its pools are ended below, not by endPools
       await setup.end().catch(() => undefined);
       for (const p of pools) await p.end().catch(() => undefined);
       for (let attempt = 0; ; attempt++) {
