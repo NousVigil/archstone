@@ -22,14 +22,43 @@ export type SemanticType =
   | "quantity"
   | "enum"
   | "date"
-  | "datetime";
+  | "datetime"
+  | "web-page"; // Experimental, output-only — see ORIGIN_BOUND_TYPES below
 
 /** The closed set of semantic types (mirrors cdl.schema.json). A field `type:` not in
  *  this set is a resource-typed reference, not a scalar. Shared by the compiler + resolver. */
 export const SEMANTIC_TYPES: ReadonlySet<SemanticType> = new Set<SemanticType>([
   "location", "date-range", "party", "preference-set", "money", "identifier",
-  "string", "text", "time-slot", "quantity", "enum", "date", "datetime",
+  "string", "text", "time-slot", "quantity", "enum", "date", "datetime", "web-page",
 ]);
+
+/**
+ * A binding's declared origin lists (binding key `origins:`), one list per origin-bound
+ * semantic type. Plain strings exactly as authored — the IR carries no URL type and parses
+ * nothing; the semantic pass checks entry syntax, and the response mapper (emitter-support)
+ * normalises and compares.
+ */
+export interface IROrigins {
+  pages?: string[];
+}
+
+/**
+ * Origin-bound semantic types → the `IROrigins` list their values are checked against.
+ *
+ * A value of one of these types is a link a person will be shown. A plain `string` can carry
+ * any URL at all, so these types exist to say "this one must point at the provider's own
+ * declared origin" — checked on output by the shared response mapper, refused on input and as
+ * an extraction target, and never inferred. Written as a table so a further type with the same
+ * guarantee is one enum member, one entry here and one more `IROrigins` list.
+ */
+export const ORIGIN_BOUND_TYPES: Readonly<Partial<Record<SemanticType, keyof IROrigins>>> = {
+  "web-page": "pages",
+};
+
+/** The origin list a semantic type is bound to, or `undefined` for an ordinary type. */
+export function originListOf(semantic: SemanticType): keyof IROrigins | undefined {
+  return Object.prototype.hasOwnProperty.call(ORIGIN_BOUND_TYPES, semantic) ? ORIGIN_BOUND_TYPES[semantic] : undefined;
+}
 
 /** A capability's authored business-stability fact (RFC-0001 v0.4 §5.5 / D-11, ADD-24 D-1).
  *  Pure, compile-time, always present (default "stable" — compiler-applied, ADD-24 D-4).
@@ -225,6 +254,9 @@ export interface IRTool {
    *  this shape's. */
   extract?: IRFieldMapping[];
   contract?: IRContract; // present iff the binding declares a contract snapshot (ADD-18)
+  /** Present iff the binding declares `origins:`. Absent otherwise, so every IR produced for a
+   *  manifest without origin-bound types is unchanged. */
+  origins?: IROrigins;
 }
 
 /**

@@ -1,0 +1,312 @@
+{
+  "version": "0",
+  "company": {
+    "id": "booking",
+    "name": "Booking Holdings"
+  },
+  "tools": [
+    {
+      "id": "tourism.book",
+      "description": "Reserve accommodation for a guest.",
+      "effect": "write",
+      "provider": "booking-api",
+      "policies": [
+        "authenticated"
+      ],
+      "lifecycle": "stable",
+      "input": [
+        {
+          "name": "accommodation",
+          "required": true,
+          "type": {
+            "kind": "resource",
+            "name": "tourism.Accommodation",
+            "identity": true
+          }
+        },
+        {
+          "name": "travelers",
+          "required": true,
+          "type": {
+            "kind": "scalar",
+            "semantic": "party"
+          }
+        },
+        {
+          "name": "dates",
+          "required": true,
+          "type": {
+            "kind": "scalar",
+            "semantic": "date-range"
+          }
+        }
+      ],
+      "output": [
+        {
+          "name": "booking",
+          "required": true,
+          "type": {
+            "kind": "resource",
+            "name": "tourism.Booking"
+          }
+        }
+      ]
+    },
+    {
+      "id": "tourism.cancel",
+      "description": "Cancel an existing accommodation reservation.",
+      "effect": "write",
+      "provider": "booking-api",
+      "policies": [
+        "authenticated"
+      ],
+      "lifecycle": "stable",
+      "input": [
+        {
+          "name": "booking",
+          "required": true,
+          "type": {
+            "kind": "resource",
+            "name": "tourism.Booking",
+            "identity": true
+          }
+        },
+        {
+          "name": "reason",
+          "required": false,
+          "type": {
+            "kind": "scalar",
+            "semantic": "text"
+          }
+        }
+      ],
+      "output": [
+        {
+          "name": "confirmation",
+          "required": true,
+          "type": {
+            "kind": "scalar",
+            "semantic": "identifier"
+          }
+        }
+      ]
+    },
+    {
+      "id": "tourism.invoice",
+      "description": "Issue an invoice for a completed booking.",
+      "effect": "write",
+      "provider": "payment",
+      "policies": [
+        "authenticated",
+        "tenant-scoped"
+      ],
+      "lifecycle": "stable",
+      "input": [
+        {
+          "name": "booking",
+          "required": true,
+          "type": {
+            "kind": "resource",
+            "name": "tourism.Booking",
+            "identity": true
+          }
+        }
+      ],
+      "output": [
+        {
+          "name": "invoice",
+          "required": true,
+          "type": {
+            "kind": "resource",
+            "name": "tourism.Invoice"
+          }
+        }
+      ]
+    },
+    {
+      "id": "tourism.search",
+      "description": "Find accommodation matching customer preferences.",
+      "effect": "read",
+      "provider": "booking-api",
+      "policies": [
+        "rate-limited"
+      ],
+      "lifecycle": "stable",
+      "input": [
+        {
+          "name": "destination",
+          "required": true,
+          "type": {
+            "kind": "scalar",
+            "semantic": "location"
+          }
+        },
+        {
+          "name": "dates",
+          "required": true,
+          "type": {
+            "kind": "scalar",
+            "semantic": "date-range"
+          }
+        },
+        {
+          "name": "travelers",
+          "required": true,
+          "type": {
+            "kind": "scalar",
+            "semantic": "party"
+          }
+        },
+        {
+          "name": "preferences",
+          "required": false,
+          "type": {
+            "kind": "scalar",
+            "semantic": "preference-set"
+          }
+        }
+      ],
+      "output": [
+        {
+          "name": "accommodations",
+          "required": true,
+          "type": {
+            "kind": "collection",
+            "of": "tourism.Accommodation"
+          }
+        }
+      ],
+      "connector": {
+        "type": "rest",
+        "rest": {
+          "method": "POST",
+          "path": "/api/v1/hotels/search",
+          "baseUrl": "${BOOKING_API_URL}"
+        }
+      }
+    }
+  ],
+  "resources": {
+    "tourism.Accommodation": [
+      {
+        "name": "name",
+        "required": true,
+        "type": {
+          "kind": "scalar",
+          "semantic": "text"
+        },
+        "description": "The property's display name."
+      },
+      {
+        "name": "location",
+        "required": true,
+        "type": {
+          "kind": "scalar",
+          "semantic": "location"
+        },
+        "description": "Where the property is — city, region, or address."
+      },
+      {
+        "name": "pricePerNight",
+        "required": true,
+        "type": {
+          "kind": "scalar",
+          "semantic": "money"
+        },
+        "description": "Nightly rate."
+      },
+      {
+        "name": "rating",
+        "required": false,
+        "type": {
+          "kind": "scalar",
+          "semantic": "quantity"
+        },
+        "description": "Guest review score, when available."
+      }
+    ],
+    "tourism.Booking": [
+      {
+        "name": "reference",
+        "required": true,
+        "type": {
+          "kind": "scalar",
+          "semantic": "identifier"
+        },
+        "description": "The booking reference code."
+      },
+      {
+        "name": "accommodation",
+        "required": true,
+        "type": {
+          "kind": "resource",
+          "name": "tourism.Accommodation",
+          "identity": true
+        },
+        "description": "The reserved accommodation."
+      },
+      {
+        "name": "dates",
+        "required": true,
+        "type": {
+          "kind": "scalar",
+          "semantic": "date-range"
+        },
+        "description": "Stay window for the reservation."
+      },
+      {
+        "name": "status",
+        "required": true,
+        "type": {
+          "kind": "scalar",
+          "semantic": "enum",
+          "values": [
+            "confirmed",
+            "pending",
+            "cancelled"
+          ]
+        },
+        "description": "Current reservation state."
+      }
+    ],
+    "tourism.Invoice": [
+      {
+        "name": "number",
+        "required": true,
+        "type": {
+          "kind": "scalar",
+          "semantic": "identifier"
+        },
+        "description": "The invoice number."
+      },
+      {
+        "name": "booking",
+        "required": true,
+        "type": {
+          "kind": "resource",
+          "name": "tourism.Booking",
+          "identity": true
+        },
+        "description": "The booking this invoice bills for."
+      },
+      {
+        "name": "total",
+        "required": true,
+        "type": {
+          "kind": "scalar",
+          "semantic": "money"
+        },
+        "description": "Total amount due."
+      },
+      {
+        "name": "issuedAt",
+        "required": true,
+        "type": {
+          "kind": "scalar",
+          "semantic": "datetime"
+        },
+        "description": "When the invoice was issued."
+      }
+    ]
+  }
+}

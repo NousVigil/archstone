@@ -10,6 +10,7 @@ import { domainOf, referencedResourceName, resolveResourceName, resourceIndex } 
 import { parsePath } from "./path";
 import { policyScopesCapability } from "./compile";
 import { UNENFORCED_POLICY_TOKENS } from "./unenforced-tokens";
+import { originListOf, type IROrigins, type SemanticType } from "./ir";
 
 export type Severity = "error" | "warning";
 
@@ -470,6 +471,9 @@ export function validateSemantics(model: LoadResult): Diagnostic[] {
     }
   }
 
+  // 5b. Origin-bound output types (`web-page`). See `checkOriginBound` below for the rules.
+  diags.push(...checkOriginBound(model, byId, index));
+
   // 6. Policy documents (#43 / ADD-43 §8.4). Every policy diagnostic lives here — the compiler
   // resolves scope and lowers verbatim, this pass decides what is authorable at all. Errors
   // block `apply`/`build`/`serve`; warnings inform and never block. Nothing here evaluates a
@@ -697,5 +701,252 @@ export function validateSemantics(model: LoadResult): Diagnostic[] {
     }
   }
 
+  return diags;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Origin-bound output types (`web-page`)
+//
+// A `web-page` value is a link a person will be shown. A `string` field can carry any URL, so this
+// type promises more: the value points at an origin the binding declares (`origins.pages`), and the
+// shared response mapper withholds anything else. Each rule below closes one way that promise
+// could be made without being kept:
+//
+//   web-page-in-input               error    the model would be the one supplying the link
+//   web-page-no-origins             error    nothing to check a value against
+//   web-page-needs-mapping          error    a pass-through binding never runs the mapper
+//   origins-malformed               error    an entry that is not a bare https origin, or a duplicate
+//   origins-unused                  warning  origins declared, no origin-bound field reachable
+//   web-page-required-in-collection warning  one off-origin row fails the whole response
+//
+// Every code is derived from the semantic type's own name, so a further origin-bound type gets
+// the same six rules from the `ORIGIN_BOUND_TYPES` table without a second copy of this pass.
+// Pure and syntactic: no URL is parsed or fetched here.
+// ---------------------------------------------------------------------------------------------
+
+/** One origin-bound field a capability's input or output reaches. */
+interface OriginBoundHit {
+  semantic: SemanticType;
+  list: keyof IROrigins;
+  /** The field name, dotted through any resource it is reached by (`stays.host.profileUrl`). */
+  path: string;
+  /** The first resource the walk went through, if any — named in input refusals. */
+  via?: string;
+  /** Required at its own level. */
+  required: boolean;
+  /** Reached through a `collection:` somewhere on the way. */
+  inCollection: boolean;
+  /** Directly a field of the resource a `response:` maps (one level below the output field). */
+  topField?: string;
+}
+
+/**
+ * Every origin-bound field reachable from a field map: directly, or through a resource carried by
+ * representation (`type: Resource`, `collection: Resource`), recursively. A `ref:` field is a bare
+ * identifier and carries no resource fields, so it is not walked — the same rule the lowering and
+ * the exposure report apply.
+ */
+function originBoundFields(
+  fields: Record<string, unknown> | undefined,
+  domain: string,
+  index: ReadonlySet<string>,
+  resourceFields: ReadonlyMap<string, Record<string, unknown>>,
+  prefix = "",
+  via: string | undefined = undefined,
+  inCollection = false,
+  visited: ReadonlySet<string> = new Set(),
+  depth = 0,
+): OriginBoundHit[] {
+  const hits: OriginBoundHit[] = [];
+  for (const [name, value] of Object.entries(fields ?? {})) {
+    const raw = (value ?? {}) as Record<string, unknown>;
+    const path = prefix ? `${prefix}.${name}` : name;
+    if (typeof raw.type === "string") {
+      const list = originListOf(raw.type as SemanticType);
+      if (list) {
+        hits.push({
+          semantic: raw.type as SemanticType,
+          list,
+          path,
+          ...(via ? { via } : {}),
+          required: typeof raw.required === "boolean" ? raw.required : true,
+          inCollection,
+          ...(depth === 1 ? { topField: name } : {}),
+        });
+        continue;
+      }
+    }
+    if (typeof raw.ref === "string") continue; // by identity — a bare id, never expanded
+    const ref = referencedResourceName(raw);
+    if (!ref) continue;
+    const resolved = resolveResourceName(ref, domain, index);
+    if (!resolved.ok || visited.has(resolved.canonical)) continue; // unknown-resource reports the first; a cycle adds nothing new
+    hits.push(
+      ...originBoundFields(
+        resourceFields.get(resolved.canonical),
+        domainOf(resolved.canonical),
+        index,
+        resourceFields,
+        path,
+        via ?? resolved.canonical,
+        inCollection || typeof raw.collection === "string",
+        new Set(visited).add(resolved.canonical),
+        depth + 1,
+      ),
+    );
+  }
+  return hits;
+}
+
+/** `https://` + host + optional port, nothing else. Host labels are letters (any script, so an
+ *  internationalised name may be written as such), digits and inner hyphens; no empty label and no
+ *  trailing dot. Anything a URL could add — path, query, fragment, userinfo, a wildcard, a `${VAR}`
+ *  placeholder, another scheme — fails the pattern. */
+const ORIGIN_ENTRY_RE = /^https:\/\/([^/?#@\s:*$[\]\\{}]+)(?::(\d{1,5}))?$/u;
+const HOST_LABEL_RE = /^[\p{L}\p{N}](?:[\p{L}\p{N}-]*[\p{L}\p{N}])?$/u;
+
+/** The comparison key of a well-formed origin entry (lower-cased host, default port elided), or
+ *  `undefined` when the entry is malformed. Syntactic only — the mapper does the full WHATWG
+ *  normalisation (including punycode) when it compares a value. */
+export function originEntryKey(entry: string): string | undefined {
+  const m = ORIGIN_ENTRY_RE.exec(entry);
+  if (!m) return undefined;
+  const host = m[1].toLowerCase();
+  if (!host.split(".").every((label) => HOST_LABEL_RE.test(label))) return undefined;
+  if (m[2] !== undefined) {
+    const port = Number(m[2]);
+    if (port < 1 || port > 65535) return undefined;
+    return port === 443 ? `https://${host}` : `https://${host}:${port}`;
+  }
+  return `https://${host}`;
+}
+
+function checkOriginBound(
+  model: LoadResult,
+  byId: ReadonlyMap<string, CapabilityDoc>,
+  index: ReadonlySet<string>,
+): Diagnostic[] {
+  const diags: Diagnostic[] = [];
+  const resourceFields = new Map(model.resourceDocs.map((r) => [r.resource.name, (r.resource.fields ?? {}) as Record<string, unknown>]));
+
+  // web-page-in-input — output-only, wherever in the input it appears.
+  for (const d of model.capabilityDocs) {
+    const cid = d.capability.id;
+    for (const hit of originBoundFields(d.capability.input, domainOf(cid), index, resourceFields)) {
+      const through = hit.via ? ` through resource '${hit.via}'` : "";
+      diags.push({
+        severity: "error",
+        code: `${hit.semantic}-in-input`,
+        message: `capability '${cid}' (${d.file}) input field '${hit.path}'${through} is of type ${hit.semantic}, which is output-only — a link the model supplies is exactly what the type exists to prevent`,
+      });
+    }
+  }
+
+  for (const b of model.bindings) {
+    const cid = b.binding.capabilityId;
+    const at = `binding ${b.file} (capability '${cid}')`;
+    const origins = (b.binding.origins ?? {}) as Record<string, unknown>;
+
+    // origins-malformed — entry syntax and duplicates, per declared list.
+    const declared = new Set<keyof IROrigins>();
+    for (const [list, entries] of Object.entries(origins)) {
+      if (!Array.isArray(entries)) continue;
+      if (entries.length > 0) declared.add(list as keyof IROrigins);
+      const seen = new Map<string, string>();
+      for (const entry of entries) {
+        const shown = typeof entry === "string" ? entry : JSON.stringify(entry);
+        const key = typeof entry === "string" ? originEntryKey(entry) : undefined;
+        if (!key) {
+          diags.push({
+            severity: "error",
+            code: "origins-malformed",
+            message: `${at}: origins.${list} entry '${shown}' is not a bare https origin — write https://host or https://host:port, with no path, query, fragment, userinfo, trailing slash, wildcard or \${VAR} placeholder`,
+          });
+          continue;
+        }
+        const first = seen.get(key);
+        if (first !== undefined) {
+          diags.push({
+            severity: "error",
+            code: "origins-malformed",
+            message: `${at}: origins.${list} entry '${shown}' duplicates '${first}' (the same origin once normalised)`,
+          });
+        } else {
+          seen.set(key, shown);
+        }
+      }
+    }
+
+    const cap = byId.get(cid);
+    if (!cap) continue; // binding-without-capability already reported
+    const domain = domainOf(cid);
+    const hits = originBoundFields(cap.capability.output, domain, index, resourceFields);
+
+    // An error row is mapped against `onError.errorResource` and lands in the same output field,
+    // so an origin-bound field there is reached exactly like one in the success resource.
+    const resp = b.binding.response as Record<string, unknown> | undefined;
+    const onError = resp?.onError as Record<string, unknown> | undefined;
+    if (onError && typeof onError.errorResource === "string") {
+      const resolved = resolveResourceName(onError.errorResource, domain, index);
+      if (resolved.ok) {
+        hits.push(
+          ...originBoundFields(resourceFields.get(resolved.canonical), domainOf(resolved.canonical), index, resourceFields, "", resolved.canonical, typeof resp?.collection === "string", new Set([resolved.canonical]), 1),
+        );
+      }
+    }
+
+    const mapped = Boolean(b.binding.response || b.binding.extract);
+    const reachedLists = new Set(hits.map((h) => h.list));
+    for (const semantic of new Set(hits.map((h) => h.semantic))) {
+      const fieldsOf = hits.filter((h) => h.semantic === semantic).map((h) => h.path);
+      const named = [...new Set(fieldsOf)].map((f) => `'${f}'`).join(", ");
+      const list = originListOf(semantic)!;
+      if (!mapped) {
+        diags.push({
+          severity: "error",
+          code: `${semantic}-needs-mapping`,
+          message: `${at}: output reaches ${semantic} field(s) ${named}, but the binding declares neither response: nor extract: — a pass-through response is never checked, so the origin guarantee could not hold. Map the output with response: or extract:`,
+        });
+      }
+      if (!declared.has(list)) {
+        diags.push({
+          severity: "error",
+          code: `${semantic}-no-origins`,
+          message: `${at}: output reaches ${semantic} field(s) ${named}, but the binding declares no origins.${list} — there is nothing to check a value against. Declare the origin(s) these pages live on`,
+        });
+      }
+    }
+
+    // origins-unused — a declared list no origin-bound field reaches.
+    for (const list of declared) {
+      if (reachedLists.has(list)) continue;
+      diags.push({
+        severity: "warning",
+        code: "origins-unused",
+        message: `${at}: declares origins.${list}, but capability '${cid}''s output reaches no field whose type is checked against it`,
+      });
+    }
+
+    // web-page-required-in-collection — without onError, one off-origin row fails every row.
+    if (!onError) {
+      const loosened = new Set(
+        Object.entries((resp?.map ?? {}) as Record<string, unknown>)
+          .filter(([, v]) => typeof v === "object" && v !== null && (v as Record<string, unknown>).required === false)
+          .map(([k]) => k),
+      );
+      const reported = new Set<string>();
+      for (const hit of hits) {
+        if (!hit.inCollection || !hit.required) continue;
+        if (hit.topField !== undefined && loosened.has(hit.topField)) continue;
+        if (reported.has(hit.path)) continue;
+        reported.add(hit.path);
+        diags.push({
+          severity: "warning",
+          code: `${hit.semantic}-required-in-collection`,
+          message: `${at}: ${hit.semantic} field '${hit.path}' is required inside a collection and the response mapping has no onError — one row whose value is outside the declared origins fails the whole response. Consider making the field optional (required: false), so that row only loses the link`,
+        });
+      }
+    }
+  }
   return diags;
 }
