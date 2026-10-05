@@ -110,6 +110,32 @@ describe("checkSqlOverPrivilege", () => {
     expect(connect).toHaveBeenCalledTimes(2);
   });
 
+  it("reports a pool that cannot be created as a failed check — resolved, not rejected, with the DSN and its password kept out of both the error and stderr", async () => {
+    const dsn = "postgres://app_runtime:s3cret@db.internal:5432/app";
+    const opts = {
+      env: { DATABASE_URL: dsn },
+      pgPoolFactory: (): PgPool => {
+        throw new Error(`invalid connection string ${dsn}`);
+      },
+      connectionRegistry: new Map<string, ConnectionEntry>(),
+    };
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    let errors: string[];
+    let lines: string[];
+    try {
+      errors = await checkSqlOverPrivilege([sqlTool("reporting.summary")], opts);
+      lines = stderr.mock.calls.map((c) => c.join(" "));
+    } finally {
+      stderr.mockRestore();
+    }
+    expect(errors).toEqual(["pool creation failed (error code unknown)"]);
+    for (const secret of [dsn, "s3cret"]) expect(errors.join("\n")).not.toContain(secret);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("[dsn]");
+    expect(lines[0]).not.toContain("s3cret");
+    expect(opts.connectionRegistry.size).toBe(0);
+  });
+
   it("skips a tool whose dsn env var is unset — a configuration gap, not a privilege question", async () => {
     const pool = fakePool({ rolsuper: true, rolbypassrls: false });
     const errors = await checkSqlOverPrivilege([sqlTool("reporting.summary")], {

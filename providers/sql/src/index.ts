@@ -203,32 +203,43 @@ async function checkOverPrivileged(client: PgClient, dsnEnvVar: string): Promise
   return { ok: true };
 }
 
+/** What `ensureConnection` resolves to. `pool` is `undefined` exactly when no pool could be
+ *  created for the DSN — the check is then a failure by construction, with nothing to check. */
+export type EnsuredConnection = { pool: PgPool; check: OverPrivilegeCheck } | { pool: undefined; check: { ok: false; error: string } };
+
 /**
  * Get (or lazily create) this DSN's pool + cached over-privileged check. Exported so `verify`/
  * `serve` startup and `archstone init`'s introspection connection can all run the SAME check
  * against the SAME cache entry (D-9: "the same entry points... never `apply`").
+ *
+ * Does not throw on a driver failure. A pool that cannot be created (the factory, or `pg`'s Pool constructor, threw —
+ * its message can carry the DSN and its password) is a failed check scrubbed through
+ * `driverFailure` like every other driver failure, and is not cached: no registry entry is made,
+ * so the next call retries (D-5, the same "no verdict is not cached" rule as a checkout failure).
  */
-export async function ensureConnection(
-  dsnEnvVar: string,
-  resolvedDsn: string,
-  opts: SqlInvokeOptions,
-): Promise<{ pool: PgPool; check: OverPrivilegeCheck }> {
+export async function ensureConnection(dsnEnvVar: string, resolvedDsn: string, opts: SqlInvokeOptions): Promise<EnsuredConnection> {
   const registry = opts.connectionRegistry ?? defaultRegistry;
   let entry = registry.get(resolvedDsn);
   if (!entry) {
-    const pool = opts.pgPoolFactory ? opts.pgPoolFactory(resolvedDsn) : defaultPoolFactory(resolvedDsn, opts.poolConfig);
-    // D-5: a connection whose backend dies (restart, failover, `pg_terminate_backend`,
-    // `idle_session_timeout`) emits 'error', and an unlistened 'error' event takes the whole
-    // `serve` process down. Attached once, here, so the default factory and an injected
-    // `pgPoolFactory` are covered alike.
-    // - IDLE: pg-pool re-emits on the pool and has already dropped the client; the next
-    //   `connect()` opens a fresh one.
-    pool.on?.("error", (err) => logIdleClientError(dsnEnvVar, err));
-    // - CHECKED OUT (mid-call): pg-pool detaches its own idle listener on checkout, so the
-    //   client needs a permanent one of its own. Silent on purpose: the in-flight query rejects
-    //   and fails closed through `invokeSql`'s catch, `release()` drops the dead client, and an
-    //   idle error already logs once through the pool listener above.
-    pool.on?.("connect", (client) => client.on?.("error", () => undefined));
+    let pool: PgPool;
+    try {
+      pool = opts.pgPoolFactory ? opts.pgPoolFactory(resolvedDsn) : defaultPoolFactory(resolvedDsn, opts.poolConfig);
+      // D-5: a connection whose backend dies (restart, failover, `pg_terminate_backend`,
+      // `idle_session_timeout`) emits 'error', and an unlistened 'error' event takes the whole
+      // `serve` process down. Attached once, here, so the default factory and an injected
+      // `pgPoolFactory` are covered alike.
+      // - IDLE: pg-pool re-emits on the pool and has already dropped the client; the next
+      //   `connect()` opens a fresh one.
+      pool.on?.("error", (err) => logIdleClientError(dsnEnvVar, err));
+      // - CHECKED OUT (mid-call): pg-pool detaches its own idle listener on checkout, so the
+      //   client needs a permanent one of its own. Silent on purpose: the in-flight query rejects
+      //   and fails closed through `invokeSql`'s catch, `release()` drops the dead client, and an
+      //   idle error already logs once through the pool listener above.
+      pool.on?.("connect", (client) => client.on?.("error", () => undefined));
+    } catch (err) {
+      // Inside the try so a pool without its 'error' listener never enters the registry.
+      return { pool: undefined, check: { ok: false, error: driverFailure("pool creation failed", dsnEnvVar, resolvedDsn, err) } };
+    }
     // Deliberately no eviction of the pool: replacing it would orphan clients checked out of
     // the old one and leak it, never `end()`ed.
     entry = { pool };
@@ -321,11 +332,11 @@ export async function invokeSql(tool: IRTool, input: Record<string, unknown>, op
     return { ok: false, status: 0, error: `capability '${tool.id}': no dsn resolved` };
   }
 
-  let connection: { pool: PgPool; check: OverPrivilegeCheck };
-  try {
-    connection = await ensureConnection(dsnEnvVar, resolvedDsn, opts);
-  } catch (err) {
-    return { ok: false, status: 0, error: driverFailure("pool checkout failed", dsnEnvVar, resolvedDsn, err) };
+  // Never throws: a pool that cannot be created comes back as `pool: undefined` with its
+  // failure already scrubbed through `driverFailure`.
+  const connection = await ensureConnection(dsnEnvVar, resolvedDsn, opts);
+  if (connection.pool === undefined) {
+    return { ok: false, status: 0, error: connection.check.error };
   }
   // D-9 layers 3/4 — the check itself runs once per DSN, until a verdict is reached (cached above);
   // its RESULT then gates every subsequent invocation against that same DSN, for the life of

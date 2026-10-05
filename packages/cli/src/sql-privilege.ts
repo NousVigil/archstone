@@ -36,12 +36,10 @@ export async function checkSqlOverPrivilege(tools: IRTool[], opts: SqlInvokeOpti
     const resolvedDsn = (opts?.env ?? process.env)[dsnEnvVar];
     if (resolvedDsn === undefined || seen.has(resolvedDsn)) continue;
     seen.add(resolvedDsn);
-    try {
-      const { check } = await ensureConnection(dsnEnvVar, resolvedDsn, opts ?? {});
-      if (!check.ok) errors.push(check.error);
-    } catch (err) {
-      errors.push(`connection for '${dsnEnvVar}' could not be checked: ${(err as Error).message}`);
-    }
+    // No catch: `ensureConnection` does not throw on a driver failure. A pool that cannot be created is a failed check
+    // like any other, its message already scrubbed of the DSN and its password (`driverFailure`).
+    const { check } = await ensureConnection(dsnEnvVar, resolvedDsn, opts ?? {});
+    if (!check.ok) errors.push(check.error);
   }
   return errors;
 }
