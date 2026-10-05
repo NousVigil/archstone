@@ -18,6 +18,30 @@ All notable changes to Archstone are documented here. Format loosely follows
 
 ## [Unreleased]
 
+## [0.27.2]
+
+### Fixed
+
+- **A connection pool that could not be created no longer prints its raw error at `serve`/`verify`
+  startup.** The ADR-0012 D-9 startup check echoed the pool factory's (or the `pg` Pool
+  constructor's) own message unscrubbed, and that message can carry the DSN and its password.
+  `ensureConnection` in `@archstone/provider-sql` no longer throws: a pool that cannot be created
+  is a failed check, reported through the same path as every other driver failure — the error
+  code only, with the DSN and its password scrubbed from the one stderr line — and is not cached,
+  so the next call retries. The string for this case is now `pool creation failed (…)` at startup
+  and at invocation; invocation previously said `pool checkout failed (…)`.
+  Terminal hygiene: the unscrubbed message never reached the model.
+
+### Security
+
+- **`@archstone/provider-sql` could echo a literal DSN to the model.** When a binding's `dsn` was
+  not a `${VAR}` reference, `invokeSql` used the DSN itself, password included, where the env var
+  name belongs, and the over-privileged connection refusals (`rolsuper`, `rolbypassrls`, an owned
+  relation) returned it to the caller. `apply` already refuses that shape, so this was reachable
+  only past it. Now `invokeSql` refuses a non-`${VAR}` dsn before any connection is used, with an
+  error that names no part of it, and the refusals from the exported `ensureConnection` name a
+  DSN that is not an env var name as `(unnamed dsn)`.
+
 ## [0.27.1]
 
 ### Fixed
