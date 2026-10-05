@@ -23,6 +23,31 @@ Decision text is edited in place; this list is what moved:
 5. **D-6, location.** `invokeConnector` ships from `@archstone/runtime/connector`, not an
    `@archstone/emitter-support/connector` subpath — correcting drift, no behaviour change.
 
+**Amended (2026-10-05),** deciding #123 (should D-9 re-run after a failover onto a server where
+the role may differ?). This amendment is ratified (2026-10-05); ADR-0012 as a whole stays Draft.
+Not yet implemented: #132. Decision text is edited in place; this list is what moved:
+
+1. **D-9 layer 3, when it runs.** The role-attribute check (`rolsuper`, `rolbypassrls`) runs
+   inside **every** transaction `providers/sql` opens, on the backend that is about to run the
+   query — no longer "on first connection per DSN" and cached.
+2. **D-9 layer 4, what a verdict is about.** The ownership verdict is cached per DSN **and per
+   server and database**, keyed by `pg_postmaster_start_time()` and the current database's oid,
+   read in that same per-transaction statement. A transaction that lands on a key with no
+   verdict yet runs layer 4 in that transaction, before the declared query. `invokeSql`'s lazy
+   pre-check on a separate checkout goes; the eager startup/`verify` check stays.
+3. **D-9, a refusal reached mid-life is the DSN's verdict.** It is cached and refuses every later
+   call against that DSN until the process restarts, exactly as a refusal at startup does. A
+   per-transaction read that fails is a failed call, never a verdict (#127, unchanged).
+4. **D-4, the transaction.** Gains the read above as its own statement, after
+   `SET TRANSACTION READ ONLY` and before any claim is set, plus layer 4's query when the key has
+   no verdict yet.
+5. **D-10, introspection.** `introspectCatalog`'s transaction makes the same read and, when
+   needed, runs layer 4, like any other transaction.
+6. **Risks.** R-8 names what this does not cover: ownership or grants changed on the *same*
+   server (`ALTER … OWNER TO`, a new `GRANT`) while a process is running. R-9 names the new
+   dependency on `pg_postmaster_start_time()` and the database oid being readable by the runtime
+   role, memory-snapshot clones, and a same-microsecond start.
+
 **Note:** two independent architect drafts of this decision existed. This one — with connector
 dispatch centralized once in a new subpath (D-6) — was chosen by Adrian on 2026-09-24 over the
 alternative, which kept dispatch per-consumer. The superseded draft is kept for reference at
@@ -244,6 +269,11 @@ One invocation of a `sql`-bound capability is exactly one Postgres transaction:
 ```
 BEGIN;
 SET TRANSACTION READ ONLY;                          -- D-9, structural read-only enforcement
+SELECT rolsuper, rolbypassrls, pg_postmaster_start_time(),   -- D-9 layer 3, every transaction,
+       (SELECT oid FROM pg_database                           -- and the (server, database) key
+        WHERE datname = current_database())                   -- for layer 4's cached verdict
+FROM pg_roles WHERE rolname = current_user;
+<D-9 layer 4 ownership query>;                       -- only when that key has no verdict yet
 SELECT set_config('app.tenant_id', $1, true);        -- one call per resolved identity claim
                                                       -- ... (one per key identityAdapter returned)
 <the declared, parameterized SELECT>;
@@ -267,10 +297,19 @@ COMMIT;                                              -- or ROLLBACK on any error
   exactly like `bearerToken`/`allowedHosts` — a manifest author cannot see it, let alone change
   it, from any CDL or binding file. This is D-1's "no identity placeholder in the grammar"
   restated from the runtime side.
-- **`SET TRANSACTION READ ONLY`** is a second, independent read-only enforcement (D-9): even a
+- **`SET TRANSACTION READ ONLY`** (or `BEGIN READ ONLY`, the same enforcement in one statement;
+  either form satisfies D-9 layer 2) is a second, independent read-only enforcement (D-9): even a
   query that somehow slipped past the compile-time `statementKind`/leading-keyword check (a
   comment-obfuscated statement, say) fails at the database with a read-only-transaction error,
   because Postgres enforces this per-transaction unconditionally, not by trusting the query text.
+- **The role and the server are read inside the transaction (D-9, amended 2026-10-05).** One
+  statement of its own, before any claim is set, reads the connecting role's
+  `rolsuper`/`rolbypassrls`, the server's `pg_postmaster_start_time()` and the current
+  database's oid. It runs inside the transaction because a transaction is the one
+  unit guaranteed to stay on one backend — through a proxy in session or transaction pooling
+  mode as much as on a direct connection — so the answer is about the server that runs the
+  declared query, not about one the pool or a proxy happened to reach earlier. A refusal rolls the
+  transaction back before any claim is set or any declared query runs.
 - **Exclusivity.** A connection is checked out of the pool for the duration of exactly one
   transaction and is never shared concurrently across two invocations; standard pool
   checkout/release semantics already guarantee this — no new locking is introduced.
@@ -464,8 +503,10 @@ Four independent enforcements, layered rather than relying on any single one:
    query text says, defeating comment obfuscation or multi-statement smuggling the static check
    might miss.
 3. **Role-level, superuser/BYPASSRLS (live, at `archstone verify` and at `serve`/`serve --http`
-   startup — never at `apply`, which is offline).** On first connection per DSN, run
-   `SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user`. If either is
+   startup, and inside every transaction after that — never at `apply`, which is offline).** At
+   startup, and again inside every transaction `providers/sql` opens (D-4; amended 2026-10-05),
+   read the connecting role's `rolsuper` and `rolbypassrls` from `pg_roles` — the query is
+   ruling 1's in "When layers 3 and 4 re-run" below. If either is
    `true`, refuse — fail closed, loudly, naming the exact violated property
    ("connection for '<dsn-env-var>' uses a role with `rolbypassrls = true`; the runtime role must
    not bypass row-level security — see the topology guide") and refuse to serve or to verify any
@@ -474,16 +515,18 @@ Four independent enforcements, layered rather than relying on any single one:
    with ADR-0005's "the compile-and-run path never requires a network call *to Archstone*,"
    which is a different claim from "a deployed server never calls the customer's own backend"
    and is not in tension with it: `serve` already calls the customer's REST backend on every
-   real invocation; a one-time role check against the customer's own database at that same
-   surface's startup is the same category of call, not a new dependency on Archstone.
-4. **Relation-level, ownership (live, same entry points as 3 — `archstone verify` and
-   `serve`/`serve --http` startup, never `apply`).** Ownership cannot be checked against
-   `pg_roles`; it has to be checked against `pg_class` for specific relations, and the question
-   this design needs answered is not "does this role own anything in the database" (true of
-   almost every real Postgres instance, for objects the runtime role never touches) but "does
-   this role own anything **it can also read**" — which is exactly the set of relations a bound
-   `sql` capability could actually reach, without parsing any query text to find out. That set is
-   already recorded by Postgres itself, as the connecting role's own grants:
+   real invocation; a role check against the customer's own database, at that surface's startup
+   and inside its transactions, is the same category of call, not a new dependency on Archstone.
+4. **Relation-level, ownership (live, at `archstone verify` and `serve`/`serve --http` startup, and
+   again on the first transaction that lands on a server and database with no verdict yet — never
+   `apply`).** The verdict is cached per DSN and per (server, database) (amended 2026-10-05, see
+   below), not re-run on every transaction: it is the expensive one of the two. Ownership cannot be
+   checked against `pg_roles`; it has to be checked against `pg_class` for specific relations, and
+   the question this design needs answered is not "does this role own anything in the database"
+   (true of almost every real Postgres instance, for objects the runtime role never touches) but
+   "does this role own anything **it can also read**" — which is exactly the set of relations a
+   bound `sql` capability could actually reach, without parsing any query text to find out. That set
+   is already recorded by Postgres itself, as the connecting role's own grants:
 
    ```sql
    SELECT n.nspname AS schema_name, c.relname AS relation_name
@@ -523,6 +566,166 @@ particular, checks 3 and 4 answer two different questions ("is this role inheren
 powerful" vs. "does this specific role/grant combination let it read something it owns") and
 neither one is a substitute for the other.
 
+#### When layers 3 and 4 re-run — amended 2026-10-05 (#123)
+
+**The question.** Layers 3 and 4 were written to run "on first connection per DSN" and to be
+cached for the life of the process. That rests on an assumption the text never stated: that a DSN
+identifies one role on one server for as long as the process lives. Until #119, a dropped
+connection usually crashed `serve`, and a supervisor's restart re-ran D-9 as a side effect. #119
+made the pool survive a dropped connection, rightly, and deliberately did not evict the cached
+verdict; #127 then fixed the rule to "cache a verdict, never the absence of one." After both, a
+long-lived process (`serve --http`, embedded `execute()`, D-5) keeps the verdict it reached at
+startup through any failover or re-point behind its DSN. Nothing re-runs D-9.
+
+**When the server behind a DSN can actually differ.**
+
+- **Physical (streaming) replication.** A standby is a block-level copy of the whole cluster,
+  shared catalogs included: `pg_authid` (role attributes) and every database's `pg_class`
+  (ownership) are the primary's, up to the last change replayed. A promoted standby cannot carry
+  different attributes or ownership. Managed high-availability failovers that replicate at the
+  physical or storage level are this case; this ruling does not depend on any given service
+  being one of them.
+- **Logical replication.** Replicates row changes of published tables only. Roles are global
+  objects and are not replicated, and neither are DDL, ownership or grants. A subscriber's runtime
+  role, its attributes and who owns each relation are whatever was set up on the subscriber, and
+  can differ from the publisher in every respect D-9 checks.
+- **Blue/green cut-overs.** Inherit whichever of the two they are built on. One built on logical
+  replication is the logical case. One whose green side was cloned from a snapshot starts with
+  identical roles and ownership and can diverge before the switch.
+- **A re-pointed name.** A DNS name, a proxy's target (PgBouncer, a managed proxy) or a load
+  balancer moved to another cluster can land anywhere: a different role with the same name, a
+  different owner, a different cluster altogether. Behind a proxy this happens **without a new
+  client connection**: the process's connection to the proxy outlives the server behind it, so
+  pg-pool opens nothing and emits nothing.
+
+So the assumption holds for physical failover and fails for the rest, and the rest are ordinary
+operations, not exotic ones.
+
+**The ruling.**
+
+1. **Layer 3 runs inside every transaction.** Every transaction `providers/sql` opens — an
+   invocation's (D-4) and `introspectCatalog`'s (D-10) — reads the row below as a statement of
+   its own, after `SET TRANSACTION READ ONLY` and before any claim is set; the startup and
+   `verify` check reads the same row:
+
+   ```sql
+   SELECT rolsuper, rolbypassrls,
+          pg_postmaster_start_time() AS server_started,
+          (SELECT oid FROM pg_database WHERE datname = current_database()) AS database_oid
+   FROM pg_roles WHERE rolname = current_user;
+   ```
+
+   `rolsuper` or `rolbypassrls` true is a refusal, with layer 3's existing text. The read runs
+   *inside* the transaction because a transaction is the one unit that stays on one backend, on
+   a direct connection and through a proxy in session or transaction pooling mode alike (a proxy
+   in statement mode cannot carry D-4's transaction at all). So the answer is about the server
+   that is about to run the declared query.
+2. **Layer 4's verdict is about a server and a database, not only a DSN.** `server_started`
+   identifies the server process the transaction landed on; `pg_class` is per database, so the
+   key also carries `database_oid`, which changes when a proxy alias is re-pointed at another
+   database on the same server or a database is dropped and recreated. Each DSN keeps one layer-4
+   verdict per key it has reached. A transaction whose key has no verdict runs layer 4's query in
+   that same read-only transaction; every transaction awaits a verdict for its key — its own, or
+   one already in flight for that key — before any claim is set or the declared query runs. A key
+   already judged is not judged again. The startup and `verify` check records its verdict against
+   the key it reached, so a process that never fails over runs layer 4 once, as today.
+   `invokeSql`'s lazy pre-check — `ensureConnection` checking out a separate client on the first
+   call when no startup check ran (embedded `execute()`) — is dropped: it judges whichever backend
+   that checkout reached, and the first transaction now judges its own. `ensureConnection` keeps
+   one job, returning the pool and the DSN's cached refusal. The eager check becomes a separate
+   entry point, on a separate checkout, called only at `serve`/`serve --http`/`verify` startup,
+   so `serve` still refuses before accepting a connection.
+3. **A refusal, wherever it is reached, is the DSN's verdict.** A layer-3 or layer-4 refusal
+   mid-life rolls back its transaction, fails that call closed with the existing refusal text,
+   and is cached for the DSN for the life of the process: every later call against that DSN is
+   refused before a connection is checked out, exactly as a refusal at startup is. It does not
+   lift when routing moves back to a server that would pass. The unit a deployer configures is
+   the DSN, and D-9 refuses "to serve or to verify any `sql`-bound capability on that
+   connection"; a refusal that held on some servers and not others would make a misconfigured
+   fleet flap instead of stopping. Recovery is the same as from a startup refusal: fix the role,
+   restart the process — for embedded `execute()`, the deployer's own application.
+4. **A read that fails is not a verdict (#127, unchanged).** If the per-transaction read or a
+   layer-4 query errors — the backend died mid-transaction, the function is not executable — the
+   transaction rolls back and that call fails closed through the existing
+   `query failed (<detail>)` path. Nothing is cached; the next call reads again.
+5. **No flag, no mode.** The read is unconditional on every surface. There is no setting to turn
+   it off, to fall back to per-DSN caching, or to mark a deployment as having a fixed topology.
+
+**What a mid-life refusal does to work already in flight.** The transaction that observed it is
+rolled back; its call is refused. Every other transaction makes its own read on its own backend,
+so a call holding another client is refused by its own read if its backend is over-privileged,
+and by the cached DSN refusal if it had not yet checked out. A transaction already past its read
+when the refusal is cached runs to completion; it ran on a backend whose own read passed. Nothing
+is cancelled, and the window is at most one transaction per client.
+
+**Evidence.**
+
+- *No pg-pool hook gates the right thing.* In the `pg-pool` resolved here (3.14.0), the
+  `'connect'` (new client) and `'acquire'` (every checkout) events are emitted synchronously and
+  their listeners are not awaited, so a check started there races the caller's first query. The
+  `onConnect` and `verify` constructor options do gate the checkout, but only of a new physical
+  connection, and as constructor options an injected `pgPoolFactory` never runs them. Every hook
+  is either unable to gate or blind to a re-point behind a proxy.
+- *The per-transaction read is cheap, but it is one more statement.* One row from `pg_roles` by
+  the unique index on `rolname`, one from `pg_database` by `datname`, and a value fixed at server
+  start: one more round trip per invocation. It must stay a statement of its own, ahead of every
+  `set_config`, so that no claim is set before the verdict and layer 4 can run in between. An
+  implementation may send `BEGIN READ ONLY; <the read>` as one unparameterised simple-protocol
+  message in place of `BEGIN` + `SET TRANSACTION READ ONLY` + the read, keeping the round-trip
+  count flat; checked with `pg` 8.23 against Postgres 16, which returns both results and leaves
+  the transaction read-only. It is permitted, not required, and cannot carry a bound parameter.
+- *`pg_postmaster_start_time()` and `pg_control_system()` are executable by an unprivileged role
+  on stock Postgres.* Checked on 16.15 and 17.11: both have the default `PUBLIC` `EXECUTE`
+  (`proacl` null), and a `LOGIN NOSUPERUSER NOBYPASSRLS` role read both. Not checked on any
+  managed service, which may revoke it; that dependency is R-9.
+- *Why the start time and not the cluster identity.* `system_identifier` (from
+  `pg_control_system()`) is fixed at `initdb` and carried by every physical copy: a standby, a
+  base backup, a snapshot restore. A cluster cloned from a snapshot and since diverged — the green
+  side of a snapshot-built blue/green — reports the same value as the original. The start time
+  differs for a different server process, including a server started from a copied data
+  directory — but not for a memory-snapshot clone (CRIU, a VM instant clone) that resumes the
+  running postmaster, which keeps both values (R-9). It also changes on a plain restart
+  and on a physical failover, which re-runs layer 4 once against an unchanged catalog: a wasted
+  query, accepted, and cheaper than a rule that tries to tell the cases apart.
+
+**Rejected alternatives.**
+
+| Alternative | Why rejected |
+|---|---|
+| Document the assumption (a DSN is one role on one server) and change no code | The assumption is false for logical replication, logical blue/green and any re-pointed name, which are routine operations. It would turn a checked guarantee into a runbook instruction, the opposite of this ADR's "provable, not merely documented" |
+| Re-validate on a schedule | An interval has no correct value: long enough to be cheap leaves a window of that length, short enough to close it is a per-call check by another name. It adds a timer to a library that runs inside a caller's process, and a configurable interval is a setting someone will make "never" |
+| Re-validate after N reconnects | Reconnects track load (`idleTimeoutMillis`, churn), not topology. Blind to a re-point behind a proxy, which reconnects nothing |
+| Layer 3 on every new physical connection (pg-pool `'connect'`/`onConnect`), layer 4 cached per DSN (#123's option 3) | `'connect'` cannot gate the checkout; `onConnect` misses an injected pool; both miss a proxy re-point; layer 4 would stay unchecked on the new server in every case where ownership, not attributes, differs |
+| Re-run layers 3 and 4 when `system_identifier` changes | Readable, but misses a snapshot or base-backup clone, which keeps the original's identifier: precisely the blue/green case |
+| Re-run on `inet_server_addr()` changing | Null over a Unix socket; behind NAT, containers or a proxy it names an address, not a server |
+| Run layer 4 in every transaction too | Its query joins `information_schema.role_table_grants`, whose cost grows with the catalog. Not measured: this is a judgment that per-call cost for a fact that changes with the server, the database or DDL is not proportionate. It is also the only way to close R-8, and is the one to revisit if R-8 proves likely |
+| Evict the pool, or its verdict, on a pool error | Re-argues #119 (eviction orphans checked-out clients and leaks the old pool) |
+| A refusal that holds only for the server that produced it | A fleet with one over-privileged server would serve some calls and refuse others depending on routing. The DSN is the configured unit; a refusal stops it, as at startup |
+
+**What this does not cover, stated plainly.** Layer 4 is re-run when the *server or database*
+changes, not when the *catalog* does. An `ALTER TABLE … OWNER TO` the runtime role, or a new
+`GRANT` to it on a relation it already owns, in the same database on the same running server, is
+not seen by a process that has already judged that key. That is R-8, and it is a residual, not
+something this ruling claims to close.
+Layer 3, by running in every transaction, does see an `ALTER ROLE … SUPERUSER` or `BYPASSRLS` on
+the same server; that is a consequence of where the read runs, not the reason for it.
+
+**Interactions.**
+
+- **D-5.** One rule on every surface. Long-lived processes (`serve --http`, embedded `execute()`)
+  are where it matters; a stdio `serve` process lives for one conversation and gets the same
+  read, with no special case for being short.
+- **#127.** "Cache a verdict, never the absence of one" is unchanged and now applies per key:
+  a verdict (ok or refused) is cached, a failed read or failed layer-4 query is not.
+- **#119.** Unchanged: no pool eviction on error.
+- **The CLI startup check** (`serve`, `serve --http`, `verify`) reads the same row, so it now also
+  fails — fail closed, exit 1 — when `pg_postmaster_start_time()` is not executable, or the
+  database oid cannot be read (R-9).
+- **#120/#125, #121.** No new caller-facing text. Refusals reuse layer 3's and layer 4's existing
+  strings, so a fix for #121's unfiltered `dsnEnvVar` covers them. A failed read goes through the
+  existing scrubbed `query failed (<detail>)`. The server start time and database oid are never
+  put in a caller-facing error.
+
 ### D-10. `archstone init`'s Postgres adapter — compile-and-probe loop, not a one-shot generator
 
 Follows the precedent internal ADD-37 already established for the OpenAPI adapter, and reuses
@@ -541,20 +744,20 @@ its machinery rather than duplicating it:
   lecture (the product brief's journey 5.1).
 - **Reads the catalog through `providers/sql`, not a bespoke ad-hoc `pg` client inside
   `packages/init`.** The host issues its catalog queries through `providers/sql`'s
-  `introspectCatalog`, which shares `ensureConnection` (D-9 layers 3–4: the same pool cache, the
-  same check, the same messages) and D-4's read-only transaction; the adapter itself stays a
-  pure function of the snapshot it is handed. It sets no session identity because it runs no
-  declared query: D-3's gate protects tenant rows read by a declared query, and the catalog has
-  no tenant rows, is not subject to RLS, and is read with constant query text no author or
-  caller can influence. It does **not** go through `invokeConnector` over a synthetic
-  `IRTool` — that would need a fabricated `identityAdapter` to pass D-3's gate (a hole in the
-  very gate it exists for), would move SQL authoring out of the one package that owns `pg`, and
-  would push a meaningless tool through the policy evaluator and response mapper. An
-  "introspection" flag on the invocation path was refused for the same reason: a flag on the
-  invocation path is a flag someone will set on a real invocation. Either way there is never a
-  second, parallel connection/role-check implementation, so D-9's over-privileged check runs
-  for `init`'s own introspection connection for free: pointing `init` at a superuser DSN
-  refuses immediately, consistently with everywhere else.
+  `introspectCatalog`, which shares `ensureConnection` (the same pool and the DSN's cached refusal)
+  and D-4's read-only transaction, so it gets D-9's per-transaction read (layer 3, and layer 4 when
+  its key has no verdict yet) with the same messages (amended 2026-10-05). The adapter itself stays
+  a pure function of the snapshot it is handed. It sets no session identity because it runs no
+  declared query: D-3's gate protects tenant rows read by a declared query, and the catalog has no
+  tenant rows, is not subject to RLS, and is read with constant query text no author or caller can
+  influence. It does **not** go through `invokeConnector` over a synthetic `IRTool` — that would
+  need a fabricated `identityAdapter` to pass D-3's gate (a hole in the very gate it exists for),
+  would move SQL authoring out of the one package that owns `pg`, and would push a meaningless tool
+  through the policy evaluator and response mapper. An "introspection" flag on the invocation path
+  was refused for the same reason: a flag on the invocation path is a flag someone will set on a
+  real invocation. Either way there is never a second, parallel connection/role-check
+  implementation, so D-9's over-privileged check runs for `init`'s own introspection connection for
+  free: pointing `init` at a superuser DSN refuses immediately, consistently with everywhere else.
 - **Column → CDL semantic type**, from `information_schema.columns` ground truth (`is_nullable`,
   `data_type`) rather than a spec's possibly-stale declaration — actually *more* reliable than
   the OpenAPI adapter's declared/observed distinction, since this is the catalog itself. Required
@@ -628,6 +831,11 @@ change above is binding/provider/IR-side.
 - The SQL provider adds exactly one new IR field (`IRConnector.sql`) and reuses every other IR
   concept (`IRResponseMapping`, `IRContract`, `IRField`) unmodified — the compiler's target
   neutrality is undisturbed.
+- D-9 re-runs after a server change (2026-10-05), at a cost. Every invocation runs one more
+  statement, unless folded into `BEGIN` (D-9). Layer 4 re-runs after every server restart, not
+  only after a failover, which is frequent where a service scales to zero. A refusal reached
+  mid-life holds until the host process restarts — for embedded `execute()`, the deployer's own
+  application.
 
 **Rejected alternatives:**
 
@@ -640,6 +848,7 @@ change above is binding/provider/IR-side.
 | Putting `invokeConnector` in `@archstone/emitter-support` (root or subpath) | The root breaks that package's own "IR-only: no MCP SDK, no fs, no HTTP" contract for every existing pure consumer; a subpath makes a circular workspace dependency, since both providers depend on `emitter-support`. A `@archstone/runtime` subpath (precedent: ADD-37 R-2) solves both |
 | `init` introspection through `invokeConnector` over a synthetic `IRTool`, or an "introspection" flag on `invokeSql` | The first needs a fabricated `identityAdapter` to pass D-3's gate and authors SQL outside `providers/sql`; the second is a flag on the invocation path that someone will set on a real invocation. `introspectCatalog` shares `ensureConnection` and D-4's read-only transaction instead (D-10) |
 | RLS/GUC session state as an explicit binding-authored `SET LOCAL` statement, symmetric with the declared query | Reopens exactly the "manifest author is part of the security boundary" problem this design exists to close — a binding author could omit or mis-author the `SET`, and nothing would catch it |
+| D-9 layers 3–4 cached once per DSN for the life of the process, with the topology assumption documented (#123) | The server behind a DSN can change under a running process — logical replication, logical blue/green, a re-pointed name or proxy — and a cached verdict then describes a server the process no longer talks to. Layer 3 runs per transaction and layer 4 per (server, database) instead (D-9, "When layers 3 and 4 re-run"), where the other alternatives considered are also listed |
 
 ---
 
@@ -654,6 +863,8 @@ change above is binding/provider/IR-side.
 | R-5 | `init`'s Postgres adapter ships before `providers/sql` (`ensureConnection`, `introspectCatalog`) (D-1–D-6, D-10), forcing it to open its own ad-hoc connection and duplicating the exact mechanism this ADR centralizes | L (sequencing is stated) | H | D-10 states the dependency order explicitly; implementation guidance below sequences accordingly |
 | R-6 | Premature Phase-2 (edge/Hyperdrive) complexity creeps into v1 because "it would be nice to also run this on Workers" | L | M | D-5 draws the exclusion boundary now and builds no accommodation for it; a data-proxy decision is explicitly deferred to a real customer demand, per the product brief |
 | R-7 | The ownership check (D-9, layer 4) misses a grant the connecting role holds but that is not visible in the checking session — most plausibly a `NOINHERIT` role membership the connection has not `SET ROLE`'d into, or a path to data reached through a `SECURITY DEFINER` function rather than a direct table/view grant | L | H | Named explicitly in D-9 rather than folded into a general "best effort" disclaimer, so the topology guide can say precisely what is and is not covered. The mitigation is operational, not code: the documented default topology (a runtime role granted directly on a curated view schema, no role-membership indirection, no `SECURITY DEFINER` in the exposed surface) is exactly the shape under which this check is complete, and `archstone init`'s own output never produces the shape that would evade it |
+| R-8 | Ownership or grants change in the *same* database on the *same* running server — `ALTER TABLE … OWNER TO` the runtime role, or a new `GRANT` to it on a relation it already owns — after a long-lived process (`serve --http`, embedded `execute()`) has judged that (server, database); layer 4 is not re-run, so the process keeps serving a role that now owns a relation it can read. Layer 3's attributes are not affected: they are read in every transaction | L | H | Named in D-9 rather than implied away. Operational: the topology guide states that layer 4 is judged once per server and database per process, that ownership of exposed relations belongs to a separate owner role, and that an ownership or grant change touching the runtime role is followed by a restart of long-lived processes. `archstone verify` re-runs layer 4, which helps only where it reaches the production server and database, which CI usually does not. A per-transaction layer 4 would close it and was rejected as a judgment on cost, not a measurement (D-9) |
+| R-9 | A managed Postgres service revokes `EXECUTE` on `pg_postmaster_start_time()` from ordinary roles, or returns something other than the server process's start time; or a server is a memory-snapshot clone (CRIU, a VM instant clone) of a running one, which keeps the same start time (and `system_identifier`) while it diverges; or two servers start in the same microsecond (theoretical). Verified only on stock Postgres 16 and 17, where it is `PUBLIC` | L | M if revoked (every call fails closed — an outage, never a bypass); H if the key does not change across a server change (layer 4 would not re-run on a re-point) | Revoked: fails closed by D-9 ruling 4, loudly (until #133 is fixed, the startup error prints it as "over-privileged") — at `serve`/`serve --http`/`verify` startup before any call is served; under embedded `execute()`, which has no startup check, on every call from the first. The Postgres integration suite pins the stock behaviour; the topology guide lists the function among what the runtime role needs. A service whose value does not track the server is not detectable from inside the session; if one is found, the fix is a different server identity in the same place, not a fallback to per-DSN caching |
 
 ---
 
@@ -703,3 +914,39 @@ change above is binding/provider/IR-side.
 7. **Docs**: the topology guide (curated-view default, RLS-on-base-tables alternative, the
    fail-closed role check's exact error text) — a tech-writer follow-up once the mechanism above
    is implemented, not before.
+8. **D-9 re-run after a server change (#123, amended 2026-10-05).** Ratified 2026-10-05; not started,
+   tracked in #132. In order:
+   1. *`providers/sql`*: `checkOverPrivileged` reads ruling 1's row, returning the
+      (`server_started`, `database_oid`) key. `ConnectionEntry` keeps a DSN-level refusal and, per
+      key, a layer-4 verdict (or an in-flight check); #127's verdict-versus-absence handling and
+      its "never clobber a newer check" guard carry over per key. `ensureConnection` returns the
+      pool and the DSN's cached refusal, and runs no check. A separate eager-check entry point,
+      on a separate checkout, is called only by `serve`/`serve --http`/`verify` startup.
+   2. *`invokeSql` and `introspectCatalog`*: after `SET TRANSACTION READ ONLY`, the
+      per-transaction read as its own statement (D-4), or folded into `BEGIN READ ONLY` as D-9
+      permits; refuse on `rolsuper`/`rolbypassrls`; await the key's layer-4 verdict, running
+      layer 4 in this transaction when none exists or is in flight, before any `set_config`;
+      cache any refusal as the DSN's; on a failed read, roll back through the existing
+      `query failed (<detail>)` path and cache nothing. Remove `invokeSql`'s lazy pre-check on a
+      separate checkout; keep the eager CLI startup check. No option on `SqlInvokeOptions`
+      controls any of it.
+   3. *Unit tests* (`providers/sql/test/invoke.test.ts`, fake pool): a server change (new start
+      time) re-runs layer 4 once and not again; a database change on the same server (new oid,
+      same start time) re-runs it too; no `set_config` is sent before the verdict; a role turning
+      `rolbypassrls` mid-life refuses the next transaction and every later call without a
+      checkout; a mid-life layer-4 refusal is cached for the DSN and survives routing back to a
+      passing server; a failed read fails the call and caches nothing; two servers alternating
+      behind one DSN run layer 4 once each; refusal strings carry no start time, host or driver
+      text.
+   4. *Postgres integration suite* (`providers/sql/test/postgres.integration.test.ts`): an
+      unprivileged runtime role can execute the read, and the CLI startup check fails closed if it
+      cannot; `ALTER ROLE … BYPASSRLS` on the runtime role while a pool is live refuses the next
+      call and every later one. If the suite's harness allows it: restarting the server under a live
+      pool re-runs layer 4 once (new start time), and a second container standing in for a
+      re-pointed name is judged on its own.
+   5. *Docs*: the topology guide gains the assumption that is now checked, what is not (R-8), the
+      restart after an ownership change, and `pg_postmaster_start_time()` among the runtime role's
+      requirements (R-9).
+
+   Separately, the CLI's startup error mislabels a check that could not complete as
+   "over-privileged"; that is its own bug, #133, not part of this step.
