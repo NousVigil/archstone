@@ -67,6 +67,13 @@ export interface ToolVerification {
    */
   policyDenied?: true;
   /**
+   * #146: dotted names (never values) of undeclared keys the response mapper dropped from nested
+   * values on this replay — `host.phone`. Informational: it never affects `status`. Present only
+   * when non-empty, so the published `--json` shape is unchanged for a manifest that declares
+   * everything it receives.
+   */
+  undeclaredNested?: string[];
+  /**
    * #114 (ADD-114 D-4): which paths the provider gained, lost or retyped since the contract was
    * recorded. Present only when the binding recorded a `contract.shape`, that shape is
    * consistent with its own fingerprint (D-3), and something actually moved.
@@ -361,9 +368,13 @@ export async function verifyTool(tool: IRTool, dir: string, resources: IRResourc
     return { ...observed, status: "yellow", detail, ...(drift ? { drift } : {}) };
   }
 
-  const mapped = applyResponseMapping(tool, result.data, resources);
+  // #146: ask the mapper for the names of undeclared keys it dropped from nested values, so an
+  // operator can find what an under-declaring manifest used to rely on. Informational only: it
+  // rides on whatever result this returns and never changes its status. Names, never values.
+  const mapped = applyResponseMapping(tool, result.data, resources, { collectUndeclared: true });
+  const seen = { ...observed, ...(mapped.undeclaredNested ? { undeclaredNested: mapped.undeclaredNested } : {}) };
   if (mapped.status === "violation") {
-    return { ...observed, status: "red", detail: `contract violation: ${violationDetail(mapped.missing ?? [], mapped.withheld)}` };
+    return { ...seen, status: "red", detail: `contract violation: ${violationDetail(mapped.missing ?? [], mapped.withheld)}` };
   }
 
   // An origin-checked value outside the declared origins is RED even on an optional field. In
@@ -372,7 +383,7 @@ export async function verifyTool(tool: IRTool, dir: string, resources: IRResourc
   // distinct from the yellow `degraded` text, which means the provider did not send a field.
   if (mapped.withheld) {
     const degradedToo = mapped.degraded ? `; degraded: optional field(s) absent — ${mapped.degraded.join(", ")}` : "";
-    return { ...observed, status: "red", detail: `${withheldDetail(mapped.withheld)}${degradedToo}` };
+    return { ...seen, status: "red", detail: `${withheldDetail(mapped.withheld)}${degradedToo}` };
   }
 
   // `collectionNonEmpty` names a `response:` collection field — nothing to check against an
@@ -381,17 +392,17 @@ export async function verifyTool(tool: IRTool, dir: string, resources: IRResourc
     const field = tool.response.field;
     const value = mapped.data?.[field];
     const empty = Array.isArray(value) ? value.length === 0 : value === undefined || value === null;
-    if (empty) return { ...observed, status: "red", detail: `expected a non-empty '${field}' collection; got none` };
+    if (empty) return { ...seen, status: "red", detail: `expected a non-empty '${field}' collection; got none` };
   }
 
   if (mapped.status === "degraded") {
-    return { ...observed, status: "yellow", detail: `degraded: optional field(s) absent — ${(mapped.degraded ?? []).join(", ")}` };
+    return { ...seen, status: "yellow", detail: `degraded: optional field(s) absent — ${(mapped.degraded ?? []).join(", ")}` };
   }
   if (fingerprintChanged) {
     const { detail, drift } = narrateShapeChange(contract, liveShape, liveFingerprint);
-    return { ...observed, status: "yellow", detail: `mapping still resolves; ${detail}`, ...(drift ? { drift } : {}) };
+    return { ...seen, status: "yellow", detail: `mapping still resolves; ${detail}`, ...(drift ? { drift } : {}) };
   }
-  return { ...observed, status: "green", detail: "fingerprint unchanged, mapping OK" };
+  return { ...seen, status: "green", detail: "fingerprint unchanged, mapping OK" };
 }
 
 /**

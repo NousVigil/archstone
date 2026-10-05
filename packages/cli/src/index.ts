@@ -742,6 +742,8 @@ async function runVerifyCmd(dir: string, json: boolean, sandbox: boolean, connec
   }
   for (const r of results) {
     console.log(`  ${HEALTH_ICON[r.status]} ${r.capabilityId} — ${r.detail}`);
+    // #146: informational, never part of the verdict — names only, never values.
+    if (r.undeclaredNested) console.log(`      nested keys not declared (dropped): ${r.undeclaredNested.join(", ")}`);
   }
   for (const s of skipped) {
     console.log(`  ${SKIP_ICON} ${s.capabilityId} — ${s.detail}`);

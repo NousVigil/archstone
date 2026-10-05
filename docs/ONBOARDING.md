@@ -460,7 +460,9 @@ does not — another host, a lookalike host, `http:`, a relative path, `javascri
   `note: field(s) withheld — value outside the declared origins: <fields>` line;
 - a **required** field makes the result a **VIOLATION**; the `_meta` contract-violation object
   carries `withheld: [<fields>]`, and the message says the value was outside the declared
-  origins rather than missing.
+  origins rather than missing. Inside a nested resource value, a required field that is withheld
+  makes that value absent instead: the nearest **optional** field above it is dropped (DEGRADED);
+  only with no optional field on the way up is the result a VIOLATION.
 
 No message, result, audit record or `verify` line ever contains the withheld value — it is
 provider-controlled text. `archstone verify` reports any withheld value **red**
