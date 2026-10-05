@@ -1,6 +1,6 @@
 {
   "name": "@archstone/emitter-support",
-  "version": "0.26.0",
+  "version": "0.27.0",
   "private": false,
   "type": "module",
   "description": "Shared substrate for Archstone emitters: IR indexing, semantic-type to JSON Schema lowering, and response mapping. No MCP SDK, no filesystem.",
