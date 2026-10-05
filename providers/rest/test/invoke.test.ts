@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import type { IRTool } from "@archstone/compiler";
 import { invokeRest, hostMatchesPattern, type FetchLike, type CallerContext } from "../src/index";
 
@@ -517,9 +517,14 @@ describe("invokeRest — onResponse hook (#39)", () => {
       const fetchImpl: FetchLike = async () => {
         throw new Error("network down");
       };
-      const r = await invokeRest(search, {}, { env: { BOOKING_API_URL: "https://api.example.com" }, fetchImpl, onResponse: (i) => { calls.push(i); } });
-      expect(r.ok).toBe(false);
-      expect(calls).toHaveLength(0);
+      const stderr = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      try {
+        const r = await invokeRest(search, {}, { env: { BOOKING_API_URL: "https://api.example.com" }, fetchImpl, onResponse: (i) => { calls.push(i); } });
+        expect(r).toEqual({ ok: false, status: 0, error: "request failed (error code unknown)" });
+        expect(calls).toHaveLength(0);
+      } finally {
+        stderr.mockRestore();
+      }
     });
   });
 
@@ -574,6 +579,170 @@ describe("invokeRest — onResponse hook (#39)", () => {
       expect(r.ok).toBe(true);
       expect(sideEffect).toBe(1);
     });
+  });
+});
+
+describe("invokeRest — fetch errors never reach the caller", () => {
+  const ENV = { BOOKING_API_URL: "https://api.internal:8443" };
+
+  async function run(
+    thrown: () => unknown,
+    opts: { tool?: IRTool; input?: Record<string, unknown>; env?: Record<string, string>; caller?: CallerContext; onResponse?: () => void } = {},
+  ) {
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const stdout = vi.spyOn(process.stdout, "write");
+    const log = vi.spyOn(console, "log");
+    const fetchImpl: FetchLike = async () => {
+      throw thrown();
+    };
+    try {
+      const result = await invokeRest(opts.tool ?? search, opts.input ?? {}, {
+        env: opts.env ?? ENV,
+        fetchImpl,
+        caller: opts.caller,
+        onResponse: opts.onResponse,
+      });
+      return { result, lines: stderr.mock.calls.map((c) => c.join(" ")), stdoutCalls: stdout.mock.calls.length, logCalls: log.mock.calls.length };
+    } finally {
+      stderr.mockRestore();
+      stdout.mockRestore();
+      log.mockRestore();
+    }
+  }
+
+  it("undici's `fetch failed`: the cause's errno code only to the caller, the cause chain (host included) to stderr", async () => {
+    const onResponse = vi.fn();
+    const { result, lines, stdoutCalls, logCalls } = await run(
+      () => new TypeError("fetch failed", { cause: Object.assign(new Error("getaddrinfo ENOTFOUND api.internal"), { code: "ENOTFOUND" }) }),
+      { onResponse },
+    );
+    expect(result).toEqual({ ok: false, status: 0, error: "request failed (ENOTFOUND)" });
+    expect(result.error).not.toContain("api.internal");
+    expect(lines).toEqual(["archstone: request failed for capability 'tourism.search' (ENOTFOUND): fetch failed: getaddrinfo ENOTFOUND api.internal"]);
+    expect(onResponse).not.toHaveBeenCalled(); // BR-4
+    expect(stdoutCalls).toBe(0);
+    expect(logCalls).toBe(0);
+  });
+
+  it("an errno code on the thrown error itself is used; an IP and port in the message stay off the caller's error", async () => {
+    const { result, lines } = await run(() => Object.assign(new Error("connect ECONNREFUSED 10.0.3.7:443"), { code: "ECONNREFUSED" }));
+    expect(result.error).toBe("request failed (ECONNREFUSED)");
+    expect(lines).toEqual(["archstone: request failed for capability 'tourism.search' (ECONNREFUSED): connect ECONNREFUSED 10.0.3.7:443"]);
+  });
+
+  it("the request URL, header credentials, URL userinfo, query values and the caller's token are scrubbed from stderr", async () => {
+    const API_KEY = "sk_live_9f8e7d6c";
+    const TOKEN = "caller-tok-abc123";
+    const STATIC = "static-key-xyz";
+    const keyed: IRTool = {
+      ...search,
+      id: "tourism.lookup",
+      connector: {
+        type: "rest",
+        rest: {
+          baseUrl: "https://svc:pa%24%24word@api.internal",
+          method: "GET",
+          path: "/hotels",
+          headers: { Authorization: "Bearer ${caller.accessToken}", "X-Api-Key": "${STATIC_KEY}" },
+        },
+      },
+    };
+    const url = `https://svc:pa%24%24word@api.internal/hotels?api_key=${API_KEY}&q=a%2Fb`;
+    const message = [
+      `request to ${url} failed`,
+      `header Bearer ${TOKEN} / ${STATIC}`,
+      `bare token ${TOKEN}, key ${API_KEY}, user svc, password pa$$word / pa%24%24word, query a/b`,
+      "second line",
+    ].join("\n");
+    const { result, lines } = await run(() => new Error(message), {
+      tool: keyed,
+      input: { api_key: API_KEY, q: "a/b" },
+      env: { STATIC_KEY: STATIC },
+      caller: { accessToken: TOKEN },
+    });
+    expect(result).toEqual({ ok: false, status: 0, error: "request failed (error code unknown)" });
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toBe(
+      "archstone: request failed for capability 'tourism.lookup' (error code unknown): " +
+        "request to [url] failed " +
+        "header [redacted] / [redacted] " +
+        "bare token [redacted], key [redacted], user [redacted], password [redacted] / [redacted], query [redacted] " +
+        "second line",
+    );
+    for (const secret of [API_KEY, TOKEN, STATIC, "pa$$word", "pa%24%24word", "a%2Fb", "\n"]) {
+      expect(lines[0]).not.toContain(secret);
+      expect(result.error).not.toContain(secret);
+    }
+  });
+
+  it("an undici code, an AbortError and a TimeoutError are reported by name", async () => {
+    const timeout = await run(() => new TypeError("fetch failed", { cause: Object.assign(new Error("Connect Timeout Error"), { code: "UND_ERR_CONNECT_TIMEOUT" }) }));
+    expect(timeout.result.error).toBe("request failed (UND_ERR_CONNECT_TIMEOUT)");
+    const abort = await run(() => new DOMException("This operation was aborted", "AbortError"));
+    expect(abort.result.error).toBe("request failed (AbortError)");
+    const timedOut = await run(() => new DOMException("The operation was aborted due to timeout", "TimeoutError"));
+    expect(timedOut.result.error).toBe("request failed (TimeoutError)");
+  });
+
+  it("a code that is not code-shaped is unknown and never echoed to the caller", async () => {
+    const { result, lines } = await run(() => Object.assign(new Error("boom"), { code: "ECONN host=x" }));
+    expect(result.error).toBe("request failed (error code unknown)");
+    expect(lines).toEqual(["archstone: request failed for capability 'tourism.search' (error code unknown): boom"]);
+  });
+
+  it("a thrown string, a null-prototype object, null, a non-string message, a cause cycle and a throwing getter never throw", async () => {
+    const str = await run(() => "connect to api.internal refused");
+    expect(str.result.error).toBe("request failed (error code unknown)");
+    expect(str.lines).toEqual(["archstone: request failed for capability 'tourism.search' (error code unknown): connect to api.internal refused"]);
+
+    const bare = await run(() => Object.create(null));
+    expect(bare.result.error).toBe("request failed (error code unknown)");
+    expect(bare.lines).toEqual(["archstone: request failed for capability 'tourism.search' (error code unknown): (non-string error)"]);
+
+    const nul = await run(() => null);
+    expect(nul.result.error).toBe("request failed (error code unknown)");
+    expect(nul.lines).toEqual(["archstone: request failed for capability 'tourism.search' (error code unknown): (non-string error)"]);
+
+    const odd = await run(() => Object.assign(new Error(), { message: { host: "10.0.3.7" } }));
+    expect(odd.result.error).toBe("request failed (error code unknown)");
+    expect(odd.lines[0]).not.toContain("10.0.3.7");
+
+    const cyclic = new Error("outer") as Error & { cause?: unknown };
+    const inner = new Error("inner") as Error & { cause?: unknown };
+    cyclic.cause = inner;
+    inner.cause = cyclic;
+    const cycle = await run(() => cyclic);
+    expect(cycle.lines).toEqual(["archstone: request failed for capability 'tourism.search' (error code unknown): outer: inner"]);
+
+    const hostile = Object.defineProperties({}, {
+      code: { get: () => { throw new Error("getter"); } },
+      message: { get: () => { throw new Error("getter"); } },
+      cause: { get: () => { throw new Error("getter"); } },
+    });
+    const getters = await run(() => hostile);
+    expect(getters.result.error).toBe("request failed (error code unknown)");
+    expect(getters.lines).toEqual(["archstone: request failed for capability 'tourism.search' (error code unknown): (non-string error)"]);
+  });
+
+  it("a response body that fails to read takes the same path, and onResponse does not fire", async () => {
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const onResponse = vi.fn();
+    const fetchImpl: FetchLike = async () =>
+      ({
+        ok: true,
+        status: 200,
+        text: () => Promise.reject(Object.assign(new Error("other side closed 10.0.3.7:443"), { code: "UND_ERR_SOCKET" })),
+      }) as unknown as Response;
+    try {
+      const r = await invokeRest(search, {}, { env: ENV, fetchImpl, onResponse });
+      expect(r).toEqual({ ok: false, status: 0, error: "request failed (UND_ERR_SOCKET)" });
+      expect(stderr.mock.calls.map((c) => c.join(" "))).toEqual([
+        "archstone: request failed for capability 'tourism.search' (UND_ERR_SOCKET): other side closed 10.0.3.7:443",
+      ]);
+      expect(onResponse).not.toHaveBeenCalled();
+    } finally {
+      stderr.mockRestore();
+    }
   });
 });
 
