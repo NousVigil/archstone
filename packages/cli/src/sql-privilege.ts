@@ -83,3 +83,25 @@ export function formatSqlPrivilegeFindings(prefix: string, findings: SqlPrivileg
   }
   return lines;
 }
+
+/** `verify --json`'s payload for a run the eager check stopped. */
+export interface SqlPrivilegeJson {
+  error: "sql_over_privileged" | "sql_privilege_check_incomplete";
+  errors: string[];
+  refused: string[];
+  incomplete: string[];
+}
+
+/**
+ * `verify --json`'s payload for a run the eager check stopped. `error` names a refusal if there
+ * is one, and `sql_privilege_check_incomplete` only when no verdict was reached anywhere (#133).
+ * `errors` stays the flat list existing consumers read, refusals first. Pure: the caller prints.
+ */
+export function sqlPrivilegeJson(findings: SqlPrivilegeFindings): SqlPrivilegeJson {
+  return {
+    error: findings.refused.length > 0 ? "sql_over_privileged" : "sql_privilege_check_incomplete",
+    errors: [...findings.refused, ...findings.incomplete],
+    refused: [...findings.refused],
+    incomplete: [...findings.incomplete],
+  };
+}

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import type { IRTool } from "@archstone/compiler";
 import type { PgPool, PgPoolClient, ConnectionEntry } from "@archstone/provider-sql";
-import { checkSqlOverPrivilege, dsnEnvVarName, formatSqlPrivilegeFindings, sqlPrivilegeBlocksStartup, type SqlPrivilegeFindings } from "../src/sql-privilege";
+import { checkSqlOverPrivilege, dsnEnvVarName, formatSqlPrivilegeFindings, sqlPrivilegeBlocksStartup, sqlPrivilegeJson, type SqlPrivilegeFindings } from "../src/sql-privilege";
 
 // ADR-0012 D-9 (BF-3) — the eager over-privileged-connection check `runServeHttp`/the stdio
 // `serve` path/`runVerifyCmd` all call BEFORE accepting a connection or reporting a result.
@@ -293,5 +293,37 @@ describe("formatSqlPrivilegeFindings — refusal vs. a check that could not comp
 
   it("prints nothing when there is nothing to report", () => {
     expect(formatSqlPrivilegeFindings(PREFIX, { refused: [], incomplete: [] })).toEqual([]);
+  });
+});
+
+describe("sqlPrivilegeJson — verify --json's payload (#133)", () => {
+  const REFUSAL = "connection for 'PRIMARY_URL' uses a role with rolsuper = true; the runtime role must not be a superuser — see the topology guide";
+  const NO_VERDICT = "pool checkout failed while checking connection privileges (ECONNREFUSED)";
+
+  it("a refusal only is sql_over_privileged", () => {
+    expect(sqlPrivilegeJson({ refused: [REFUSAL], incomplete: [] })).toEqual({
+      error: "sql_over_privileged",
+      errors: [REFUSAL],
+      refused: [REFUSAL],
+      incomplete: [],
+    });
+  });
+
+  it("a check that could not complete, only, is sql_privilege_check_incomplete", () => {
+    expect(sqlPrivilegeJson({ refused: [], incomplete: [NO_VERDICT] })).toEqual({
+      error: "sql_privilege_check_incomplete",
+      errors: [NO_VERDICT],
+      refused: [],
+      incomplete: [NO_VERDICT],
+    });
+  });
+
+  it("a mixed run is sql_over_privileged, with errors listing refusals first", () => {
+    expect(sqlPrivilegeJson({ refused: [REFUSAL], incomplete: [NO_VERDICT] })).toEqual({
+      error: "sql_over_privileged",
+      errors: [REFUSAL, NO_VERDICT],
+      refused: [REFUSAL],
+      incomplete: [NO_VERDICT],
+    });
   });
 });

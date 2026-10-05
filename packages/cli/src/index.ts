@@ -45,7 +45,7 @@ import { runVerify, type HealthStatus } from "@archstone/runtime/verify";
 // stdio `serve` path's `connector` override (never into `serve --http`, which must stay
 // edge-safe per D-5's literal exclusion of `@archstone/runtime`'s `/http` subpath).
 import { invokeConnector, type ConnectorInvokeOptions } from "@archstone/runtime/connector";
-import { checkSqlOverPrivilege, formatSqlPrivilegeFindings, sqlPrivilegeBlocksStartup } from "./sql-privilege";
+import { checkSqlOverPrivilege, formatSqlPrivilegeFindings, sqlPrivilegeBlocksStartup, sqlPrivilegeJson } from "./sql-privilege";
 import { INIT_USAGE, runInitCmd } from "./init";
 import { runAuditCmd } from "./audit-cmd";
 import { diagnose, formatReport } from "./doctor";
@@ -691,15 +691,7 @@ async function runVerifyCmd(dir: string, json: boolean, sandbox: boolean, connec
   const privilege = await checkSqlOverPrivilege(registry.listCapabilities(), connectorOpts);
   if (sqlPrivilegeBlocksStartup(privilege)) {
     if (json) {
-      // `error` names a refusal if there is one; `errors` stays the flat list existing consumers read.
-      console.log(
-        JSON.stringify({
-          error: privilege.refused.length > 0 ? "sql_over_privileged" : "sql_privilege_check_incomplete",
-          errors: [...privilege.refused, ...privilege.incomplete],
-          refused: privilege.refused,
-          incomplete: privilege.incomplete,
-        }),
-      );
+      console.log(JSON.stringify(sqlPrivilegeJson(privilege)));
     } else {
       for (const line of formatSqlPrivilegeFindings(`archstone verify ${dir}: refusing`, privilege)) console.error(line);
     }
