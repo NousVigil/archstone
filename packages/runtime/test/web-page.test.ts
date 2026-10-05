@@ -70,7 +70,7 @@ async function withClient(registry: Registry, url: unknown, fn: (client: Client)
   }
 }
 
-const textOf = (result: { content?: unknown }) => ((result.content ?? []) as { text?: string }[]).map((c) => c.text ?? "").join("\n");
+const textOf = (result: object): string => (((result as { content?: unknown }).content ?? []) as { text?: string }[]).map((c) => c.text ?? "").join("\n");
 
 describe("S-B.6: over MCP, a required withheld value is a violation carried in _meta, never structuredContent", () => {
   it("callTool returns an error whose _meta names the withheld field", async () => {
@@ -85,7 +85,9 @@ describe("S-B.6: over MCP, a required withheld value is a violation carried in _
 
   it("the audit record names the field and never carries the value", async () => {
     const records: ExecutionRecord[] = [];
-    const sink: AuditSink = (rec) => records.push(rec);
+    const sink: AuditSink = (rec) => {
+      records.push(rec);
+    };
     await callTool(registryFor(true), "shop_search", {}, { ...opts(EVIL), auditSink: sink });
     expect(records).toHaveLength(1);
     expect(records[0].status.phase).toBe("failed");
@@ -125,7 +127,7 @@ describe("S-C.2: the lowered outputSchema accepts the emitted (normalised) value
   it("a declared-origin value with a space in its path passes the reference client's validation", async () => {
     await withClient(registryFor(true), "https://WWW.example.com/stays/my stay", async (client) => {
       const { tools } = await client.listTools();
-      const schema = tools.find((t) => t.name === "shop_search")!.outputSchema as { properties: { stays: { items: { properties: Record<string, unknown> } } } };
+      const schema = tools.find((t) => t.name === "shop_search")!.outputSchema as unknown as { properties: { stays: { items: { properties: Record<string, unknown> } } } };
       expect(schema.properties.stays.items.properties.listingUrl).toEqual({ type: "string", format: "uri" });
 
       const result = await client.callTool({ name: "shop_search", arguments: {} });
