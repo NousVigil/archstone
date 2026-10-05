@@ -1,6 +1,6 @@
 {
   "name": "@archstone/schema",
-  "version": "0.27.0",
+  "version": "0.27.1",
   "private": false,
   "type": "module",
   "description": "Load and shape-validate Archstone CDL manifests — the JSON Schema for the Capability Definition Language.",
