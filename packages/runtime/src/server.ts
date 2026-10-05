@@ -24,6 +24,8 @@ import {
   objectJsonSchema,
   applyResponseMapping,
   contractViolationMessage,
+  passThroughRefusal,
+  withheldNote,
   evaluatePolicy,
   evaluateRateLimit,
   auditNow,
@@ -420,7 +422,7 @@ export async function callTool(
       const missing = mapped.missing ?? [];
       // The text is unchanged byte-for-byte; it moved into a shared helper (#44) only so the
       // embedded consumer, whose own result carries no text, records the identical sentence.
-      const text = contractViolationMessage(tool.id, missing);
+      const text = contractViolationMessage(tool.id, missing, mapped.withheld);
       // #19 (ADD-19 Rev 2 D-3′/D-6): structured error object lives in `_meta`, never
       // `structuredContent` — the reference SDK client validates `structuredContent` against
       // the tool's `outputSchema` unconditionally (not gated on `isError`), so a VIOLATION
@@ -434,19 +436,37 @@ export async function callTool(
       audit({ phase: "failed", message: text, reachedConnector: true });
       return {
         content: [{ type: "text", text }],
-        _meta: { [CONTRACT_VIOLATION_META_KEY]: { error: "contract_violation", capability: tool.id, missing } },
+        // `withheld` (field names only) rides along only when a value was withheld by the origin
+        // check, so every other violation keeps exactly the shape shipped clients assert.
+        _meta: {
+          [CONTRACT_VIOLATION_META_KEY]: {
+            error: "contract_violation",
+            capability: tool.id,
+            missing,
+            ...(mapped.withheld ? { withheld: mapped.withheld } : {}),
+          },
+        },
         isError: true,
       };
     }
     const content: CallResult["content"] = [{ type: "text", text: JSON.stringify(mapped.data, null, 2) }];
-    if (mapped.status === "degraded") {
+    if (mapped.status === "degraded" && (mapped.degraded ?? []).length > 0) {
       content.push({ type: "text", text: `note: optional field(s) absent (degraded): ${(mapped.degraded ?? []).join(", ")}` });
     }
+    if (mapped.withheld) content.push({ type: "text", text: withheldNote(mapped.withheld) });
     // #44: `degraded` records `succeeded`, NOT `failed` — every *required* field was present and
     // an optional one was not, so the invocation succeeded. Pinned in a comment because
     // "degraded" reads like a failure and the next reader will guess otherwise.
     audit({ phase: "succeeded" });
     return { content, structuredContent: mapped.data, isError: false };
+  }
+
+  // An origin-checked output on a pass-through tool: the compiler refuses this, so only a
+  // hand-written IR gets here — and the raw body would carry the unchecked link. Fail closed.
+  const refusal = passThroughRefusal(tool, registry.ir.resources);
+  if (refusal) {
+    audit({ phase: "failed", message: refusal, reachedConnector: true });
+    return { content: [{ type: "text", text: refusal }], isError: true };
   }
 
   // Neither `response:` nor `extract:`: today's raw pass-through (rollout-safe). The declared
