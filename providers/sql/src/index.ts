@@ -92,20 +92,73 @@ function defaultPoolFactory(dsn: string, poolConfig?: SqlInvokeOptions["poolConf
   return new Pool({ connectionString: dsn, ...poolConfig }) as unknown as PgPool;
 }
 
+/** The DSN's env var name, or `(unnamed dsn)`. `invokeSql` falls back to the literal `dsn` when
+ *  it is not `${VAR}`-shaped (apply refuses that shape; defensive only) — never echo that value. */
+function safeDsnName(dsnEnvVar: string): string {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(dsnEnvVar) ? dsnEnvVar : "(unnamed dsn)";
+}
+
+/** Classify a driver error's `code`. A SQLSTATE is five of [0-9A-Z]; Postgres has no class
+ *  starting with "E", so a five-letter errno such as EPIPE is a socket code. Anything else not
+ *  errno-shaped — absent, or a code carrying arbitrary text — is unknown. */
+function classifyErrorCode(err: unknown): { sqlState?: string; errno?: string } {
+  const code = (err as { code?: unknown } | null)?.code;
+  if (typeof code !== "string") return {};
+  if (/^[0-9A-Z]{5}$/.test(code) && !/^E[A-Z]{4}$/.test(code)) return { sqlState: code };
+  if (/^E[A-Z0-9_]{1,31}$/.test(code)) return { errno: code };
+  return {};
+}
+
+/** Remove the DSN, and the password inside it (raw and URL-decoded), from a driver message, and
+ *  keep it to one line. Defensive: `pg` does not normally echo either, but a parse error can. */
+function scrubDriverMessage(message: string, resolvedDsn: string): string {
+  let out = resolvedDsn ? message.split(resolvedDsn).join("[dsn]") : message;
+  let password = "";
+  try {
+    password = new URL(resolvedDsn).password;
+  } catch {
+    // Not a URL-shaped DSN — no password to locate.
+  }
+  if (password) {
+    const secrets = [password];
+    try {
+      secrets.push(decodeURIComponent(password));
+    } catch {
+      // Malformed percent-encoding — the raw form is still scrubbed.
+    }
+    for (const secret of secrets) if (secret) out = out.split(secret).join("[redacted]");
+  }
+  return out.replace(/[\r\n]+/g, " ");
+}
+
+/**
+ * The caller-facing failure for a driver error, and one operator line on stderr — never stdout,
+ * which stdio `serve` reserves for MCP.
+ *
+ * The CALLER (whose `InvokeResult.error` reaches the model) gets `<context> (<code>)` only — a
+ * SQLSTATE, a socket code such as ECONNREFUSED, or `error code unknown` — never the driver's
+ * message, which can carry the host, port, role and schema names. STDERR gets the DSN's env var
+ * name, the same code, and the driver's message with the DSN and its password scrubbed out.
+ */
+function driverFailure(context: string, dsnEnvVar: string, resolvedDsn: string, err: unknown): string {
+  const { sqlState, errno } = classifyErrorCode(err);
+  const detail = sqlState ? `SQLSTATE ${sqlState}` : (errno ?? "error code unknown");
+  // Never throws: inside the D-9 check a throw would cache a rejected promise for this DSN.
+  // `String(err)` throws on a null-prototype object, and a non-string `message` breaks the scrub.
+  const raw = err instanceof Error ? err.message : err;
+  const message = typeof raw === "string" ? raw : "(non-string error)";
+  console.error(`archstone: ${context} for '${safeDsnName(dsnEnvVar)}' (${detail}): ${scrubDriverMessage(message, resolvedDsn)}`);
+  return `${context} (${detail})`;
+}
+
 /** One line on stderr — never stdout, which stdio `serve` reserves for MCP. Names the DSN's env
  *  var and the error code only (a SQLSTATE, or a socket code such as ECONNRESET): never the DSN,
- *  and never the driver's message, which can carry the host and user. */
+ *  and — unlike `driverFailure` — never the driver's message, even scrubbed: nobody asked for
+ *  this connection, so there is no in-flight call whose diagnosis it serves. */
 function logIdleClientError(dsnEnvVar: string, err: unknown): void {
-  const code = (err as { code?: unknown } | null)?.code;
-  // `invokeSql` falls back to the literal `dsn` when it is not `${VAR}`-shaped (apply refuses
-  // that shape; defensive only) — never echo that value.
-  const name = /^[A-Za-z_][A-Za-z0-9_]*$/.test(dsnEnvVar) ? dsnEnvVar : "(unnamed dsn)";
-  // A SQLSTATE is five of [0-9A-Z]; Postgres has no class starting with "E", so a five-letter
-  // errno such as EPIPE is a socket code. Anything else not errno-shaped is reported as unknown.
-  const isSqlState = typeof code === "string" && /^[0-9A-Z]{5}$/.test(code) && !/^E[A-Z]{4}$/.test(code);
-  const isSocketCode = typeof code === "string" && /^E[A-Z0-9_]{1,31}$/.test(code);
-  const detail = isSqlState ? `SQLSTATE ${code}` : isSocketCode ? `error code ${code}` : "error code unknown";
-  console.error(`archstone: an idle connection for '${name}' failed (${detail}); discarded it, the pool keeps serving`);
+  const { sqlState, errno } = classifyErrorCode(err);
+  const detail = sqlState ? `SQLSTATE ${sqlState}` : errno ? `error code ${errno}` : "error code unknown";
+  console.error(`archstone: an idle connection for '${safeDsnName(dsnEnvVar)}' failed (${detail}); discarded it, the pool keeps serving`);
 }
 
 /**
@@ -196,12 +249,12 @@ export async function ensureConnection(
       try {
         client = await entry!.pool.connect();
       } catch (err) {
-        return { ok: false, error: `pool checkout failed while checking connection privileges: ${(err as Error).message}` };
+        return { ok: false, error: driverFailure("pool checkout failed while checking connection privileges", dsnEnvVar, resolvedDsn, err) };
       }
       try {
         return await checkOverPrivileged(client, dsnEnvVar);
       } catch (err) {
-        return { ok: false, error: `over-privileged connection check failed: ${(err as Error).message}` };
+        return { ok: false, error: driverFailure("over-privileged connection check failed", dsnEnvVar, resolvedDsn, err) };
       } finally {
         client.release();
       }
@@ -260,7 +313,7 @@ export async function invokeSql(tool: IRTool, input: Record<string, unknown>, op
   try {
     connection = await ensureConnection(dsnEnvVar, resolvedDsn, opts);
   } catch (err) {
-    return { ok: false, status: 0, error: `pool checkout failed: ${(err as Error).message}` };
+    return { ok: false, status: 0, error: driverFailure("pool checkout failed", dsnEnvVar, resolvedDsn, err) };
   }
   // D-9 layers 3/4 — the check itself runs once, on first connection per DSN (cached above);
   // its RESULT then gates every subsequent invocation against that same DSN, for the life of
@@ -276,7 +329,7 @@ export async function invokeSql(tool: IRTool, input: Record<string, unknown>, op
   } catch (err) {
     // BR-24 / EC-9: the same fail-closed shape `invokeRest` returns on a fetch failure — no
     // unbounded queuing, no silent hang.
-    return { ok: false, status: 0, error: `pool checkout failed: ${(err as Error).message}` };
+    return { ok: false, status: 0, error: driverFailure("pool checkout failed", dsnEnvVar, resolvedDsn, err) };
   }
 
   const gucPrefix = opts.sqlSessionGucPrefix ?? "app.";
@@ -300,7 +353,7 @@ export async function invokeSql(tool: IRTool, input: Record<string, unknown>, op
       // Best-effort: the connection is about to be released regardless; a failed ROLLBACK
       // (e.g. the connection itself died) is not a second error worth surfacing.
     }
-    return { ok: false, status: 0, error: `query failed: ${(err as Error).message}` };
+    return { ok: false, status: 0, error: driverFailure("query failed", dsnEnvVar, resolvedDsn, err) };
   } finally {
     client.release();
   }
