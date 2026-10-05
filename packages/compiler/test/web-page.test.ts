@@ -88,8 +88,10 @@ describe("S-A.1 / S-A.2: a web-page output field with declared origins compiles"
 });
 
 describe("S-A.3: a manifest without origins compiles to an unchanged IR", () => {
-  // The goldens were produced by the compiler as it was before `web-page` and `origins:` existed,
-  // from the shipped example manifests, none of which uses either.
+  // The goldens were produced by the compiler and loader as they were before `web-page` and
+  // `origins:` existed (commit 1e574d8, run from a throwaway checkout of that commit's
+  // packages/schema/src + packages/compiler/src over these example manifests, written as
+  // `JSON.stringify(ir, null, 2) + "\n"`), none of which uses either.
   for (const name of ["tourism", "booking", "bank"]) {
     it(`${name}: no tool carries an origins member, and the IR is byte-identical to the previous one`, () => {
       const ir = compile(load(join(manifests, name)));
@@ -298,6 +300,14 @@ describe("S-A.15: `list: web-page` is refused for now", () => {
     const model = load(dir);
     expect(model.ok).toBe(false);
     const issue = model.issues.find((i) => i.file === "shop.search.capability.yaml");
-    expect(issue?.message).toMatch(/\/capability\/output\/links\/list must be equal to one of the allowed values \(got 'web-page'\)/);
+    expect(issue?.message).toMatch(/\/capability\/output\/links\/list must be equal to one of the allowed values \(got "web-page"\)/);
+  });
+
+  it("the echoed value is JSON-quoted and truncated, so it cannot break an output line", () => {
+    const dir = manifest({ output: `  output:\n    links:\n      list: "web-page\\n${"x".repeat(200)}"\n` });
+    const issue = load(dir).issues.find((i) => i.file === "shop.search.capability.yaml");
+    expect(issue?.message).toContain('(got "web-page\\nxxx');
+    expect(issue?.message).not.toContain("\n");
+    expect(issue?.message).toMatch(/…\)/);
   });
 });

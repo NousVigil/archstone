@@ -220,6 +220,10 @@ Limits — what the type does *not* guarantee:
 - **Nothing is fetched.** Neither the runtime nor `archstone verify` checks that the page
   exists or what it says; the origin is the guarantee, not the path or the content.
 - A trailing-dot host (`www.example.com.`) is a different origin and is withheld.
+- A declared origin the runtime cannot normalise (e.g. a host label that is not valid IDNA)
+  matches nothing.
+- The check applies to what the model is shown. A deployer's own response hook (`onResponse`
+  in the reference runtime) runs before it and sees the raw provider body.
 
 `web-page` is Experimental: its meaning may still change before it is frozen with the rest of
 the semantic type system.

@@ -476,7 +476,10 @@ with no `onError` (`web-page-required-in-collection`): there, one off-origin row
 response, so make the field optional and that row just loses its link.
 
 What it does not do: a URL inside a `text` or `string` field is not checked; relative links are
-withheld rather than resolved; nothing fetches the page to see whether it exists.
+withheld rather than resolved; nothing fetches the page to see whether it exists. A deployer's
+own `onResponse` hook runs before the origin check and sees the raw provider body, unchecked.
+An origin entry the runtime cannot normalise (for example a host label that is not valid IDNA)
+matches nothing, so every value checked against it is withheld.
 `archstone init` never infers `web-page` (an OpenAPI `format: uri` stays `string`) — the
 document cannot tell it which origins are yours.
 

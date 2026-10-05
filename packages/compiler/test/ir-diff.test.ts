@@ -279,6 +279,14 @@ describe("diffIR — ADD-309 §4, one test per row", () => {
     expect(e).toMatchObject({ severity: "breaking", kind: "binding-changed", path: "connector" });
     expect(only(base(), edit((_ir, t) => { delete t.connector; }))).toMatchObject({ severity: "compatible", kind: "binding-changed" });
   });
+
+  it("origins added, changed or removed (binding-changed, path origins) → compatible", () => {
+    const withOrigins = edit((_ir, t) => { t.origins = { pages: ["https://www.example.com"] }; });
+    expect(only(withOrigins)).toMatchObject({ severity: "compatible", kind: "binding-changed", path: "origins" });
+    expect(only(edit((_ir, t) => { t.origins = { pages: ["https://shop.example.com"] }; }), withOrigins)).toMatchObject({ kind: "binding-changed", path: "origins" });
+    expect(only(base(), withOrigins)).toMatchObject({ kind: "binding-changed", path: "origins" });
+    expect(diffIR(withOrigins, edit((_ir, t) => { t.origins = { pages: ["https://www.example.com"] }; })).entries).toEqual([]);
+  });
 });
 
 describe("diffIR — shape of the result", () => {

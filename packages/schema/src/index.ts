@@ -203,7 +203,11 @@ export interface LoadResult {
  *  `web-page`. Only an authored manifest's own text is echoed (never a machine-emitted record's),
  *  and only for this keyword. */
 function rejectedEnumValue(e: ErrorObject): string {
-  return e.keyword === "enum" && typeof e.data === "string" ? ` (got '${e.data}')` : "";
+  if (e.keyword !== "enum" || typeof e.data !== "string") return "";
+  // JSON-quoted, so a newline or control character prints escaped instead of breaking a terminal
+  // or CI log line; truncated, so a pasted blob cannot flood one.
+  const quoted = JSON.stringify(e.data);
+  return ` (got ${quoted.length > 80 ? `${quoted.slice(0, 77)}…` : quoted})`;
 }
 
 function formatErrors(errors: ErrorObject[] | null | undefined, authored = true): string {
