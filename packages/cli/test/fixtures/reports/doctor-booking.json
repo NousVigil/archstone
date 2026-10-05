@@ -1,0 +1,62 @@
+{
+  "findings": [
+    {
+      "severity": "warning",
+      "code": "unbound-capability",
+      "capability": "tourism.book",
+      "message": "declared but has no binding, so it is not invocable",
+      "because": "A capability with no binding compiles and then does nothing. That is fine while you are drafting and a defect at go-live."
+    },
+    {
+      "severity": "advisory",
+      "code": "authenticated-needs-principal",
+      "capability": "tourism.book",
+      "message": "requires an authenticated caller",
+      "because": "The surface serving it must carry a per-request principal — `resolveCaller` on HTTP or the embedded SDK. `archstone serve` (stdio) has one static caller for the whole process, so it cannot serve this capability to more than one identity."
+    },
+    {
+      "severity": "warning",
+      "code": "unbound-capability",
+      "capability": "tourism.cancel",
+      "message": "declared but has no binding, so it is not invocable",
+      "because": "A capability with no binding compiles and then does nothing. That is fine while you are drafting and a defect at go-live."
+    },
+    {
+      "severity": "advisory",
+      "code": "authenticated-needs-principal",
+      "capability": "tourism.cancel",
+      "message": "requires an authenticated caller",
+      "because": "The surface serving it must carry a per-request principal — `resolveCaller` on HTTP or the embedded SDK. `archstone serve` (stdio) has one static caller for the whole process, so it cannot serve this capability to more than one identity."
+    },
+    {
+      "severity": "warning",
+      "code": "unbound-capability",
+      "capability": "tourism.invoice",
+      "message": "declared but has no binding, so it is not invocable",
+      "because": "A capability with no binding compiles and then does nothing. That is fine while you are drafting and a defect at go-live."
+    },
+    {
+      "severity": "advisory",
+      "code": "authenticated-needs-principal",
+      "capability": "tourism.invoice",
+      "message": "requires an authenticated caller",
+      "because": "The surface serving it must carry a per-request principal — `resolveCaller` on HTTP or the embedded SDK. `archstone serve` (stdio) has one static caller for the whole process, so it cannot serve this capability to more than one identity."
+    },
+    {
+      "severity": "warning",
+      "code": "no-contract",
+      "capability": "tourism.search",
+      "message": "bound, but records no contract fixture",
+      "because": "`archstone verify` replays a recorded fixture against the live backend. With no fixture there is nothing to replay, so backend drift is found by an agent, in front of a customer, instead of by CI."
+    },
+    {
+      "severity": "advisory",
+      "code": "env-baseurl",
+      "capability": "tourism.search",
+      "message": "baseUrl comes from the environment (${BOOKING_API_URL})",
+      "because": "Nothing wrong with it — but the deployment, not the manifest, decides where this capability points. Confirm the variable is set to the intended backend in every environment that runs it."
+    }
+  ],
+  "checked": 4,
+  "ok": true
+}

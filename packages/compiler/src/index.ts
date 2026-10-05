@@ -9,4 +9,5 @@ export * from "./shape-diff";
 export * from "./exposure";
 export * from "./ir-diff";
 export * from "./validate";
+export * from "./lint";
 export * from "./compile";
