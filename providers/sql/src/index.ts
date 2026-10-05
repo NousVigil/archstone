@@ -30,9 +30,18 @@ export interface PgClient {
 }
 export interface PgPoolClient extends PgClient {
   release(err?: unknown): void;
+  /** A checked-out `pg.Client` emits its own 'error' when its backend dies mid-call. Optional,
+   *  like `PgPool.on`, so a minimal fake need not implement it. */
+  on?(event: "error", listener: (err: Error) => void): unknown;
 }
 export interface PgPool {
   connect(): Promise<PgPoolClient>;
+  /** `pg.Pool` re-emits an IDLE client's error as 'error' (backend terminated by a restart,
+   *  failover, `pg_terminate_backend`, `idle_session_timeout`) and announces every new client as
+   *  'connect'. Optional so a minimal fake need not implement it; a pool without it gets no
+   *  listeners. */
+  on?(event: "error", listener: (err: Error) => void): unknown;
+  on?(event: "connect", listener: (client: PgPoolClient) => void): unknown;
 }
 
 export type PgPoolFactory = (dsn: string) => PgPool;
@@ -81,6 +90,22 @@ function resolveDsn(dsn: string, env: Record<string, string | undefined>): { val
 
 function defaultPoolFactory(dsn: string, poolConfig?: SqlInvokeOptions["poolConfig"]): PgPool {
   return new Pool({ connectionString: dsn, ...poolConfig }) as unknown as PgPool;
+}
+
+/** One line on stderr — never stdout, which stdio `serve` reserves for MCP. Names the DSN's env
+ *  var and the error code only (a SQLSTATE, or a socket code such as ECONNRESET): never the DSN,
+ *  and never the driver's message, which can carry the host and user. */
+function logIdleClientError(dsnEnvVar: string, err: unknown): void {
+  const code = (err as { code?: unknown } | null)?.code;
+  // `invokeSql` falls back to the literal `dsn` when it is not `${VAR}`-shaped (apply refuses
+  // that shape; defensive only) — never echo that value.
+  const name = /^[A-Za-z_][A-Za-z0-9_]*$/.test(dsnEnvVar) ? dsnEnvVar : "(unnamed dsn)";
+  // A SQLSTATE is five of [0-9A-Z]; Postgres has no class starting with "E", so a five-letter
+  // errno such as EPIPE is a socket code. Anything else not errno-shaped is reported as unknown.
+  const isSqlState = typeof code === "string" && /^[0-9A-Z]{5}$/.test(code) && !/^E[A-Z]{4}$/.test(code);
+  const isSocketCode = typeof code === "string" && /^E[A-Z0-9_]{1,31}$/.test(code);
+  const detail = isSqlState ? `SQLSTATE ${code}` : isSocketCode ? `error code ${code}` : "error code unknown";
+  console.error(`archstone: an idle connection for '${name}' failed (${detail}); discarded it, the pool keeps serving`);
 }
 
 /**
@@ -146,6 +171,22 @@ export async function ensureConnection(
   let entry = registry.get(resolvedDsn);
   if (!entry) {
     const pool = opts.pgPoolFactory ? opts.pgPoolFactory(resolvedDsn) : defaultPoolFactory(resolvedDsn, opts.poolConfig);
+    // D-5: a connection whose backend dies (restart, failover, `pg_terminate_backend`,
+    // `idle_session_timeout`) emits 'error', and an unlistened 'error' event takes the whole
+    // `serve` process down. Attached once, here, so the default factory and an injected
+    // `pgPoolFactory` are covered alike.
+    // - IDLE: pg-pool re-emits on the pool and has already dropped the client; the next
+    //   `connect()` opens a fresh one.
+    pool.on?.("error", (err) => logIdleClientError(dsnEnvVar, err));
+    // - CHECKED OUT (mid-call): pg-pool detaches its own idle listener on checkout, so the
+    //   client needs a permanent one of its own. Silent on purpose: the in-flight query rejects
+    //   and fails closed through `invokeSql`'s catch, `release()` drops the dead client, and an
+    //   idle error already logs once through the pool listener above.
+    pool.on?.("connect", (client) => client.on?.("error", () => undefined));
+    // Deliberately no eviction of this entry (pool or D-9 `check`): the check is a property of
+    // the role behind the DSN, which a dropped backend does not change, so re-running it buys
+    // nothing; and replacing the pool would orphan clients checked out of the old one and leak
+    // it, never `end()`ed.
     entry = { pool };
     registry.set(resolvedDsn, entry);
   }
