@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { describe, it, expect, vi } from "vitest";
 import type { IRTool } from "@archstone/compiler";
-import { invokeSql, type PgPool, type PgPoolClient, type ConnectionEntry } from "../src/index";
+import { invokeSql, ensureConnection, type PgPool, type PgPoolClient, type ConnectionEntry } from "../src/index";
 
 const tool: IRTool = {
   id: "reporting.portfolio-summary",
@@ -515,6 +515,15 @@ describe("invokeSql — connection lifecycle (D-5, BR-24)", () => {
     expect(result.error).toMatch(/missing env var\(s\): DATABASE_URL/);
   });
 
+  it("an empty-string dsn env var fails closed with 'no dsn resolved', before any pool is made", async () => {
+    const { pool } = fakePool([]);
+    const pgPoolFactory = vi.fn(() => pool);
+    const result = await invokeSql(tool, { id: "1" }, baseOpts(pool, { env: { DATABASE_URL: "" }, pgPoolFactory }));
+    expect(result).toEqual({ ok: false, status: 0, error: "capability 'reporting.portfolio-summary': no dsn resolved" });
+    expect(pgPoolFactory).not.toHaveBeenCalled();
+    expect(pool.connect).not.toHaveBeenCalled();
+  });
+
   it("has no SQL connector -> a clean, consistent failure", async () => {
     const restTool: IRTool = { ...tool, connector: { type: "rest" } };
     const { pool } = fakePool([]);
@@ -673,5 +682,62 @@ describe("invokeSql — driver errors never reach the caller (#120)", () => {
     expect(second.lines).toEqual([
       "archstone: pool checkout failed while checking connection privileges for 'DATABASE_URL' (error code unknown): (non-string error)",
     ]);
+  });
+});
+
+describe("a literal (non-${VAR}) dsn is never echoed (#121)", () => {
+  const LITERAL_DSN = "postgres://app:s3cr3tPW@db.internal:5432/app";
+  const LEAKS = [LITERAL_DSN, "s3cr3tPW", "db.internal", "app:", "postgres://", "5432"];
+  const literalTool: IRTool = { ...tool, connector: { type: "sql", sql: { ...tool.connector!.sql!, dsn: LITERAL_DSN } } };
+
+  it("invokeSql refuses a literal dsn before any connection is used, naming no part of it", async () => {
+    const { pool } = fakePool([]);
+    const pgPoolFactory = vi.fn(() => pool);
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const result = await invokeSql(literalTool, { id: "1" }, baseOpts(pool, { pgPoolFactory }));
+      expect(result).toEqual({
+        ok: false,
+        status: 0,
+        error: "capability 'reporting.portfolio-summary': sql dsn is not a ${VAR} reference; refusing before any connection is used",
+      });
+      for (const leak of LEAKS) expect(result.error).not.toContain(leak);
+      expect(pgPoolFactory).not.toHaveBeenCalled();
+      expect(pool.connect).not.toHaveBeenCalled();
+      for (const call of stderr.mock.calls) for (const leak of LEAKS) expect(call.join(" ")).not.toContain(leak);
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+
+  it.each([
+    ["rolsuper", { rolsuper: true, rolbypassrls: false }, undefined, /^connection for '\(unnamed dsn\)' uses a role with rolsuper = true/],
+    ["rolbypassrls", { rolsuper: false, rolbypassrls: true }, undefined, /^connection for '\(unnamed dsn\)' uses a role with rolbypassrls = true/],
+    ["ownership", undefined, { schema_name: "reporting", relation_name: "portfolio_summary_v" }, /^connection for '\(unnamed dsn\)' owns reporting\.portfolio_summary_v/],
+  ])("ensureConnection called directly with a literal dsn as dsnEnvVar names it '(unnamed dsn)' in the %s refusal", async (_label, roleRow, ownedRow, expected) => {
+    const client: PgPoolClient = {
+      query: vi.fn(async (text: string) => {
+        if (text.includes("rolsuper")) return { rows: [roleRow ?? { rolsuper: false, rolbypassrls: false }] };
+        if (text.includes("role_table_grants")) return { rows: ownedRow ? [ownedRow] : [] };
+        return { rows: [] };
+      }),
+      release: vi.fn(),
+    };
+    const pool: PgPool = { connect: vi.fn(async () => client) };
+    const { check } = await ensureConnection(LITERAL_DSN, LITERAL_DSN, { pgPoolFactory: () => pool, connectionRegistry: new Map() });
+    expect(check.ok).toBe(false);
+    const error = check.ok ? "" : check.error;
+    expect(error).toMatch(expected);
+    for (const leak of LEAKS) expect(error).not.toContain(leak);
+  });
+
+  it.each([
+    ["rolsuper", { rolsuper: true, rolbypassrls: false }],
+    ["rolbypassrls", { rolsuper: false, rolbypassrls: true }],
+  ])("a ${DATABASE_URL} dsn still names DATABASE_URL in the %s refusal", async (_label, roleRow) => {
+    const { pool } = fakePool([], roleRow);
+    const result = await invokeSql(tool, { id: "1" }, baseOpts(pool));
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/^connection for 'DATABASE_URL' uses a role with /);
   });
 });
