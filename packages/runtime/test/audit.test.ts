@@ -311,7 +311,7 @@ describe("callTool — one record per attempt, on every termination point (BR-2,
     };
     await callTool(registryOf(tool()), "bank.list", {}, { auditSink: s.sink, fetchImpl });
     expect(s.records[0].status.phase).toBe("failed");
-    expect(s.records[0].status.message).toMatch(/^request failed:/);
+    expect(s.records[0].status.message).toBe("request failed (error code unknown)");
     expect(s.records[0].metadata.completedAt).toBeTruthy();
   });
 

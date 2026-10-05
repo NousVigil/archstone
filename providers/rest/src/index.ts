@@ -25,6 +25,8 @@ export interface InvokeResult {
   ok: boolean;
   status: number;
   data?: unknown;
+  /** Reaches the model. Never carries a transport's own message: a fetch failure is
+   *  `request failed (<code>)`, with the detail on stderr for the operator. */
   error?: string;
 }
 
@@ -276,6 +278,138 @@ function safeJson(text: string): unknown {
   }
 }
 
+/** Read one property of a thrown value without throwing — a getter or a Proxy trap may. */
+function readProp(value: unknown, key: string): unknown {
+  if (value === null || (typeof value !== "object" && typeof value !== "function")) return undefined;
+  try {
+    return (value as Record<string, unknown>)[key];
+  } catch {
+    return undefined;
+  }
+}
+
+/** The thrown value and up to two levels of `cause` — undici's `fetch failed` puts the socket
+ *  error, and its code, on `cause`. Stops at a cycle or a primitive. */
+function errorChain(err: unknown): unknown[] {
+  const chain: unknown[] = [err];
+  let current = err;
+  for (let depth = 0; depth < 2; depth++) {
+    const cause = readProp(current, "cause");
+    if (cause === undefined || cause === null || chain.includes(cause)) break;
+    chain.push(cause);
+    current = cause;
+  }
+  return chain;
+}
+
+/** Classify a fetch failure's code: the first errno-shaped (`ECONNREFUSED`) or undici-shaped
+ *  (`UND_ERR_CONNECT_TIMEOUT`) `code` along the cause chain, else an `AbortError` /
+ *  `TimeoutError` name on the thrown value itself. Anything else — absent, non-string, or a
+ *  code carrying arbitrary text — is unknown. */
+function classifyFetchErrorCode(err: unknown): string | undefined {
+  for (const link of errorChain(err)) {
+    const code = readProp(link, "code");
+    if (typeof code !== "string") continue;
+    if (/^E[A-Z0-9_]{1,31}$/.test(code) || /^UND_ERR_[A-Z0-9_]{1,40}$/.test(code)) return code;
+  }
+  const name = readProp(err, "name");
+  if (name === "AbortError" || name === "TimeoutError") return name;
+  return undefined;
+}
+
+/** The thrown value's message, then each cause's (`fetch failed: getaddrinfo ENOTFOUND
+ *  api.internal`) — `fetch failed` alone tells an operator nothing. A thrown string is its own
+ *  message; anything else without a string message is `(non-string error)`. */
+function fetchErrorMessage(err: unknown): string {
+  const [head, ...causes] = errorChain(err);
+  const headMessage = typeof head === "string" ? head : readProp(head, "message");
+  const parts = [typeof headMessage === "string" ? headMessage : "(non-string error)"];
+  for (const cause of causes) {
+    const message = typeof cause === "string" ? cause : readProp(cause, "message");
+    if (typeof message === "string" && message && message !== parts[parts.length - 1]) parts.push(message);
+  }
+  return parts.join(": ");
+}
+
+/** Every value of the request that can carry a credential, paired with what replaces it: the
+ *  full URL, each resolved header value (and the credential after an auth scheme such as
+ *  `Bearer`), the URL's userinfo and query-param values (raw and decoded), and the caller's
+ *  access token. Short values such as `page=1` are scrubbed too — over-redacting an operator
+ *  line is cheap, a leaked key is not. */
+function requestSecrets(url: string, headers: Record<string, string>, caller: CallerContext | undefined): Map<string, string> {
+  const secrets = new Map<string, string>();
+  const redact = (value: string | undefined): void => {
+    if (!value) return;
+    if (!secrets.has(value)) secrets.set(value, "[redacted]");
+    try {
+      const decoded = decodeURIComponent(value);
+      if (decoded && !secrets.has(decoded)) secrets.set(decoded, "[redacted]");
+    } catch {
+      // Malformed percent-encoding — the raw form is still scrubbed.
+    }
+  };
+  for (const value of Object.values(headers)) {
+    redact(value);
+    const scheme = /^\S+\s+(\S+)$/.exec(value);
+    if (scheme) redact(scheme[1]);
+  }
+  try {
+    const parsed = new URL(url);
+    redact(parsed.username);
+    redact(parsed.password);
+    for (const pair of parsed.search.slice(1).split("&")) redact(pair.slice(pair.indexOf("=") + 1 || pair.length));
+    for (const value of parsed.searchParams.values()) redact(value);
+  } catch {
+    // Not URL-shaped — `fetch` would have refused it; nothing beyond the whole URL to locate.
+  }
+  redact(caller?.accessToken);
+  // The URL last, so it is named `[url]` rather than `[redacted]` when it is also a secret.
+  if (url) secrets.set(url, "[url]");
+  return secrets;
+}
+
+/** Replace every secret in one pass, longest first, so a short secret never matches inside a
+ *  longer one or inside a replacement already made; and keep the message to one line. */
+function scrubFetchMessage(message: string, secrets: Map<string, string>): string {
+  const keys = [...secrets.keys()].sort((a, b) => b.length - a.length);
+  let out = message;
+  if (keys.length > 0) {
+    const pattern = new RegExp(keys.map((k) => k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "g");
+    out = out.replace(pattern, (match) => secrets.get(match) ?? "[redacted]");
+  }
+  return out.replace(/[\r\n]+/g, " ");
+}
+
+/**
+ * The caller-facing failure for a `doFetch` / `response.text()` throw, and one operator line on
+ * stderr — never stdout, which stdio `serve` reserves for MCP.
+ *
+ * The CALLER (whose `InvokeResult.error` reaches the model) gets `request failed (<code>)` only —
+ * a socket code such as ENOTFOUND, an undici code, AbortError/TimeoutError, or `error code
+ * unknown` — never the error's message, which can name the backend's host, port and IP. STDERR
+ * gets the capability id, the same code, and the message with its cause chain, the request URL,
+ * header values, URL credentials, query values and the caller's access token scrubbed out.
+ */
+function fetchFailure(
+  capabilityId: string,
+  url: string,
+  headers: Record<string, string>,
+  caller: CallerContext | undefined,
+  err: unknown,
+): string {
+  const detail = classifyFetchErrorCode(err) ?? "error code unknown";
+  // Never throws: a custom `fetchImpl` may throw anything — `String(err)` throws on a
+  // null-prototype object, and a getter or Proxy on the thrown value may throw too.
+  let line: string;
+  try {
+    line = scrubFetchMessage(fetchErrorMessage(err), requestSecrets(url, headers, caller));
+  } catch {
+    line = "(message could not be scrubbed)";
+  }
+  console.error(`archstone: request failed for capability '${capabilityId}' (${detail}): ${line}`);
+  return `request failed (${detail})`;
+}
+
 /**
  * Invoke a compiled capability against its REST backend.
  *
@@ -441,6 +575,8 @@ export async function invokeRest(
       error: response.ok ? undefined : `backend returned ${response.status}`,
     };
   } catch (err) {
-    return { ok: false, status: 0, error: `request failed: ${(err as Error).message}` };
+    // A fetch or body-read failure: the code only to the caller, the message to stderr — the
+    // same rule `providers/sql`'s `driverFailure` follows. onResponse never fires here (BR-4).
+    return { ok: false, status: 0, error: fetchFailure(tool.id, url, headers, opts.caller, err) };
   }
 }

@@ -1335,7 +1335,9 @@ The result mirrors the same **OK/DEGRADED/VIOLATION/ERROR** semantics from
 - **VIOLATION** — a required field missing; `missing` lists it (structured, not prose), so agents
   can branch deterministically.
 - **ERROR** — transport failure (missing env var, network error, non-2xx response); `error` contains
-  a human-readable message.
+  a human-readable message. A network error is `request failed (<code>)` only — `ENOTFOUND`,
+  `UND_ERR_CONNECT_TIMEOUT`, `error code unknown` — never the transport's own message, which can
+  name the backend's host; that goes to one stderr line, with credentials scrubbed.
 
 `execute()` accepts an optional `env` object (Workers-style, never `process.env`) for
 injecting environment variables into `${VAR}` placeholders in your bindings — useful for
