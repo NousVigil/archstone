@@ -411,3 +411,136 @@ describe("S-D.6: the response fingerprint is unaffected by origins", () => {
     expect(fingerprintShape(on)).toBe(fingerprintShape(off));
   });
 });
+
+describe("fail closed on a value whose shape does not match its declared type (S-B.13 / S-B.14 layer)", () => {
+  // Stay{name, listingUrl?, host?: Host, rooms?: collection Host}, Host{profileUrl?: web-page}.
+  const resources: IRResourceRegistry = {
+    Stay: [
+      { name: "name", required: true, type: { kind: "scalar", semantic: "text" } },
+      { name: "listingUrl", required: false, type: { kind: "scalar", semantic: "web-page" } },
+      { name: "host", required: false, type: { kind: "resource", name: "Host" } },
+      { name: "rooms", required: false, type: { kind: "collection", of: "Host" } },
+    ],
+    Host: [{ name: "profileUrl", required: false, type: { kind: "scalar", semantic: "web-page" } }],
+  };
+  const tool = (): IRTool => {
+    const t = singleTool();
+    t.response!.fields = [
+      { name: "name", path: "$.name" },
+      { name: "host", path: "$.host" },
+      { name: "rooms", path: "$.rooms" },
+    ];
+    return t;
+  };
+
+  for (const [label, body, field] of [
+    ["an array where a resource is declared", { name: "A", host: [{ profileUrl: EVIL }] }, "host"],
+    ["an object where a collection is declared", { name: "A", rooms: { profileUrl: EVIL } }, "rooms"],
+    ["nested arrays inside a collection", { name: "A", rooms: [[{ profileUrl: EVIL }]] }, "rooms"],
+    ["a non-object row among object rows", { name: "A", rooms: [{ profileUrl: "https://www.example.com/r" }, "https://evil.example.net/x"] }, "rooms"],
+    ["a string where a resource is declared", { name: "A", host: EVIL }, "host"],
+  ] as const) {
+    it(`${label}: withheld whole, never forwarded`, () => {
+      const r = applyResponseMapping(tool(), body, resources);
+      expect(r.status).toBe("degraded");
+      expect(r.withheld).toEqual([field]);
+      expect(r.data).toEqual({ stay: { name: "A" } });
+      expect(JSON.stringify(r)).not.toContain("evil.example.net");
+    });
+  }
+
+  it("a required field of the wrong shape is a violation", () => {
+    const required = { ...resources, Stay: resources.Stay.map((f) => (f.name === "host" ? { ...f, required: true } : f)) };
+    const r = applyResponseMapping(tool(), { name: "A", host: [{ profileUrl: EVIL }] }, required);
+    expect(r.status).toBe("violation");
+    expect(r.withheld).toEqual(["host"]);
+  });
+
+  it("the extract: variant — an output field typed as a resource, given an array", () => {
+    const t: IRTool = {
+      ...singleTool(),
+      output: [{ name: "host", required: false, type: { kind: "resource", name: "Host" } }],
+      response: undefined,
+      extract: [{ name: "host", path: "$.host" }],
+    };
+    const r = applyResponseMapping(t, { host: [{ profileUrl: EVIL }] }, resources);
+    expect(r.status).toBe("degraded");
+    expect(r.withheld).toEqual(["host"]);
+    expect(r.data).toEqual({});
+    expect(JSON.stringify(r)).not.toContain("evil.example.net");
+  });
+
+  it("a type that reaches no origin-bound field keeps today's behaviour for a mismatched shape", () => {
+    const plain: IRResourceRegistry = {
+      Stay: [
+        { name: "name", required: true, type: { kind: "scalar", semantic: "text" } },
+        { name: "host", required: false, type: { kind: "resource", name: "Plain" } },
+      ],
+      Plain: [{ name: "x", required: false, type: { kind: "scalar", semantic: "text" } }],
+    };
+    const t = singleTool();
+    t.response!.fields = [{ name: "name", path: "$.name" }, { name: "host", path: "$.host" }];
+    const r = applyResponseMapping(t, { name: "A", host: ["anything"] }, plain);
+    expect(r).toEqual({ status: "ok", data: { stay: { name: "A", host: ["anything"] } } });
+  });
+});
+
+describe("reachability through a resource cycle is a fixed point, not a cut-off", () => {
+  it("Stay → Host → Agency → Host: the web-page declared AFTER the cyclic field is still checked at depth", () => {
+    const resources: IRResourceRegistry = {
+      Stay: [
+        { name: "name", required: true, type: { kind: "scalar", semantic: "text" } },
+        { name: "host", required: false, type: { kind: "resource", name: "Host" } },
+      ],
+      Host: [
+        { name: "agency", required: false, type: { kind: "resource", name: "Agency" } },
+        { name: "profileUrl", required: false, type: { kind: "scalar", semantic: "web-page" } },
+      ],
+      Agency: [{ name: "owner", required: false, type: { kind: "resource", name: "Host" } }],
+    };
+    const t = singleTool();
+    t.response!.fields = [{ name: "name", path: "$.name" }, { name: "host", path: "$.host" }];
+    const body = { name: "A", host: { profileUrl: EVIL, agency: { owner: { profileUrl: "https://evil.example.net/deeper" } } } };
+    const r = applyResponseMapping(t, body, resources);
+    expect(r.withheld?.sort()).toEqual(["host.agency.owner.profileUrl", "host.profileUrl"]);
+    expect(r.data).toEqual({ stay: { name: "A", host: { agency: { owner: {} } } } });
+    expect(JSON.stringify(r)).not.toContain("evil.example.net");
+  });
+});
+
+describe("identity (ref:) slots whose resource reaches web-page", () => {
+  const resources: IRResourceRegistry = {
+    Stay: [
+      { name: "name", required: true, type: { kind: "scalar", semantic: "text" } },
+      { name: "host", required: false, type: { kind: "resource", name: "Host", identity: true } },
+    ],
+    Host: [{ name: "profileUrl", required: false, type: { kind: "scalar", semantic: "web-page" } }],
+  };
+  const t = (): IRTool => {
+    const x = singleTool();
+    x.response!.fields = [{ name: "name", path: "$.name" }, { name: "host", path: "$.host" }];
+    return x;
+  };
+
+  it("a scalar id passes untouched", () => {
+    expect(applyResponseMapping(t(), { name: "A", host: "h_1" }, resources)).toEqual({ status: "ok", data: { stay: { name: "A", host: "h_1" } } });
+  });
+
+  it("an object or array in the id's place is withheld, not forwarded", () => {
+    for (const host of [{ profileUrl: EVIL }, [{ profileUrl: EVIL }]]) {
+      const r = applyResponseMapping(t(), { name: "A", host }, resources);
+      expect(r.withheld).toEqual(["host"]);
+      expect(JSON.stringify(r)).not.toContain("evil.example.net");
+    }
+  });
+
+  it("an identity slot whose resource reaches no web-page keeps today's pass-through", () => {
+    const plain: IRResourceRegistry = { ...resources, Host: [{ name: "x", required: false, type: { kind: "scalar", semantic: "text" } }] };
+    expect(applyResponseMapping(t(), { name: "A", host: { x: 1 } }, plain)).toEqual({ status: "ok", data: { stay: { name: "A", host: { x: 1 } } } });
+  });
+
+  it("passThroughRefusal does not follow ref:, matching the compiler's web-page-needs-mapping", () => {
+    const raw: IRTool = { ...t(), response: undefined, output: [{ name: "host", required: false, type: { kind: "resource", name: "Host", identity: true } }] };
+    expect(passThroughRefusal(raw, resources)).toBeUndefined();
+  });
+});

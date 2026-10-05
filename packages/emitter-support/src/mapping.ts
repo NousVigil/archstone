@@ -94,7 +94,7 @@ interface OriginGuard {
   tool: IRTool;
   resources: IRResourceRegistry;
   allowed: Map<keyof IROrigins, ReadonlySet<string>>;
-  reaches: Map<string, boolean>; // resource name → does its type graph reach an origin-bound type
+  reaches: Map<string, boolean>; // resource name → can a value of it contain an origin-bound value
 }
 
 /** Names collected while checking one value: every withheld field, and the required ones. */
@@ -104,7 +104,9 @@ interface WithheldAcc {
 }
 
 function newGuard(tool: IRTool, resources: IRResourceRegistry): OriginGuard {
-  return { tool, resources, allowed: new Map(), reaches: new Map() };
+  // Recomputed per call, deliberately not cached on the registry object: a stale "no" would be a
+  // fail-open, and the fixed point costs a few passes over a handful of resources.
+  return { tool, resources, allowed: new Map(), reaches: reachingResources(resources) };
 }
 
 function allowedFor(g: OriginGuard, list: keyof IROrigins): ReadonlySet<string> {
@@ -116,21 +118,41 @@ function allowedFor(g: OriginGuard, list: keyof IROrigins): ReadonlySet<string> 
   return set;
 }
 
-/** Can a value of this type contain an origin-bound value anywhere? Static, memoised per resource,
- *  so a tool with no origin-bound type pays one walk of its type graph and nothing per value. */
-function typeReaches(g: OriginGuard, type: IRType, visiting: Set<string> = new Set()): boolean {
+/**
+ * Which resources can contain an origin-bound value anywhere, computed once per call as a least
+ * fixed point over the whole registry: every resource starts at "no" and is raised while one of its
+ * fields reaches an origin-bound type directly or through a resource already known to. A cycle
+ * therefore cannot cut the walk short and leave a wrong "no" behind — `Host → Agency → Host` is
+ * decided by iteration, not by whichever resource the walk happened to enter first.
+ */
+function reachingResources(resources: IRResourceRegistry, throughIdentity = true): Map<string, boolean> {
+  const reaches = new Map<string, boolean>(Object.keys(resources).map((name) => [name, false]));
+  const fieldReaches = (type: IRType): boolean => {
+    if (type.kind === "scalar") return originListOf(type.semantic) !== undefined;
+    if (type.kind === "list") return originListOf(type.items) !== undefined;
+    if (type.kind === "resource" && type.identity && !throughIdentity) return false;
+    return reaches.get(type.kind === "collection" ? type.of : type.name) === true;
+  };
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const [name, fields] of Object.entries(resources)) {
+      if (reaches.get(name)) continue;
+      if (fields.some((f) => fieldReaches(f.type))) {
+        reaches.set(name, true);
+        changed = true;
+      }
+    }
+  }
+  return reaches;
+}
+
+/** Can a value of this type contain an origin-bound value anywhere? An identity (`ref:`) slot
+ *  counts when the resource it names does: a well-formed id carries no link, but a provider that
+ *  puts the whole object there would otherwise route an unchecked one around the check. */
+function typeReaches(g: OriginGuard, type: IRType): boolean {
   if (type.kind === "scalar") return originListOf(type.semantic) !== undefined;
   if (type.kind === "list") return originListOf(type.items) !== undefined;
-  if (type.kind === "resource" && type.identity) return false; // a bare id
-  const name = type.kind === "collection" ? type.of : type.name;
-  const known = g.reaches.get(name);
-  if (known !== undefined) return known;
-  if (visiting.has(name)) return false; // a cycle adds nothing the first visit does not see
-  visiting.add(name);
-  const result = (g.resources[name] ?? []).some((f) => typeReaches(g, f.type, visiting));
-  visiting.delete(name);
-  g.reaches.set(name, result);
-  return result;
+  return g.reaches.get(type.kind === "collection" ? type.of : type.name) === true;
 }
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
@@ -186,15 +208,22 @@ function guardValue(g: OriginGuard, type: IRType, value: unknown, path: string, 
     }
     return { keep: true, value: hrefs };
   }
+  // From here on the declared type can carry an origin-bound value, so a value whose SHAPE does
+  // not match the declaration fails closed: it cannot be walked, so it cannot be checked, and an
+  // unchecked link is exactly what this guard exists to stop. Withheld whole; required-ness decides.
   if (type.kind === "resource") {
-    if (!isPlainObject(value)) return { keep: true, value };
+    if (type.identity) {
+      // A bare id: a scalar passes untouched (nothing to check in an id); anything else is the
+      // resource itself in the id's place — not walked, withheld.
+      return value !== null && typeof value === "object" ? { keep: false, value: undefined } : { keep: true, value };
+    }
+    if (!isPlainObject(value)) return { keep: false, value: undefined };
     return { keep: true, value: guardObject(g, type.name, value, path, acc) };
   }
-  // collection
-  if (!Array.isArray(value)) return { keep: true, value };
+  // collection: an array whose rows are all plain objects, or nothing.
+  if (!Array.isArray(value) || !value.every(isPlainObject)) return { keep: false, value: undefined };
   let changed = false;
-  const rows = value.map((row) => {
-    if (!isPlainObject(row)) return row;
+  const rows = value.map((row: Record<string, unknown>) => {
     const kept = guardObject(g, type.of, row, path, acc);
     if (kept !== row) changed = true;
     return kept;
@@ -465,7 +494,10 @@ export function withheldNote(withheld: readonly string[]): string {
  */
 export function passThroughRefusal(tool: IRTool, resources: IRResourceRegistry): string | undefined {
   if (tool.response || tool.extract) return undefined;
-  const guard = newGuard(tool, resources);
-  if (!tool.output.some((f) => typeReaches(guard, f.type))) return undefined;
+  // Reachability by representation only — the compiler's definition (`web-page-needs-mapping`
+  // does not follow `ref:`), so a manifest the compiler accepts is never refused here.
+  const guard: OriginGuard = { tool, resources, allowed: new Map(), reaches: reachingResources(resources, false) };
+  const reaches = (type: IRType): boolean => !(type.kind === "resource" && type.identity) && typeReaches(guard, type);
+  if (!tool.output.some((f) => reaches(f.type))) return undefined;
   return `capability '${tool.id}' declares an origin-checked output field, but its binding has no response: or extract: mapping, so the value cannot be checked — response withheld.`;
 }
