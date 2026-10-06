@@ -23,13 +23,14 @@ export type SemanticType =
   | "enum"
   | "date"
   | "datetime"
-  | "web-page"; // Experimental, output-only — see ORIGIN_BOUND_TYPES below
+  | "web-page" // Experimental, output-only — see ORIGIN_BOUND_TYPES below
+  | "image"; // Experimental, output-only, origin-bound — an absolute https URL of a picture, shown and never fetched
 
 /** The closed set of semantic types (mirrors cdl.schema.json). A field `type:` not in
  *  this set is a resource-typed reference, not a scalar. Shared by the compiler + resolver. */
 export const SEMANTIC_TYPES: ReadonlySet<SemanticType> = new Set<SemanticType>([
   "location", "date-range", "party", "preference-set", "money", "identifier",
-  "string", "text", "time-slot", "quantity", "enum", "date", "datetime", "web-page",
+  "string", "text", "time-slot", "quantity", "enum", "date", "datetime", "web-page", "image",
 ]);
 
 /**
@@ -40,7 +41,11 @@ export const SEMANTIC_TYPES: ReadonlySet<SemanticType> = new Set<SemanticType>([
  */
 export interface IROrigins {
   pages?: string[];
+  images?: string[];
 }
+
+/** The `IROrigins` keys in the one order they are emitted, so authoring order never changes IR bytes. */
+export const ORIGIN_LIST_KEYS: readonly (keyof IROrigins)[] = ["pages", "images"];
 
 /**
  * Origin-bound semantic types → the `IROrigins` list their values are checked against.
@@ -53,6 +58,7 @@ export interface IROrigins {
  */
 export const ORIGIN_BOUND_TYPES: Readonly<Partial<Record<SemanticType, keyof IROrigins>>> = {
   "web-page": "pages",
+  "image": "images",
 };
 
 /** The origin list a semantic type is bound to, or `undefined` for an ordinary type. */
