@@ -54,6 +54,12 @@ function semanticJsonSchema(semantic: SemanticType, values: string[] | undefined
       // declared origins: the mapper already enforces the stronger rule, and a pattern would only
       // add a way for a strict client to reject a value the mapper accepted.
       return { type: "string", format: "uri" };
+    case "image":
+      // Output-only, origin-checked, same lowering as `web-page`: the mapper emits the normalised
+      // href, so `format: uri` holds; no `pattern`, and (for a list) no `minItems`, so an array
+      // shortened by per-item withholding still validates. The fallback description lives at the
+      // property level (see `imageFallbackDescription`), never on `items`.
+      return { type: "string", format: "uri" };
     case "quantity":
       return { type: "number" };
     case "enum":
@@ -102,6 +108,10 @@ export interface OnErrorFieldSchema {
   errorResource: string;
 }
 
+/** What a model is told about an `image` property when the author wrote no description: the URL
+ *  is for showing to a person, not for fetching. An authored description always wins. */
+const IMAGE_FALLBACK_DESCRIPTION = "An image URL to show a person. Do not fetch it.";
+
 function fieldJsonSchema(
   f: IRField,
   resources: IRResourceRegistry,
@@ -118,7 +128,10 @@ function fieldJsonSchema(
       throw new ExtractionSchemaError(`field '${f.name}' is of type ${semantic}, which is output-only and never an extraction target`);
     }
   }
-  if (f.type.kind === "list") return { ...base, type: "array", items: semanticJsonSchema(f.type.items, f.type.values, strict) };
+  if (f.type.kind === "list") {
+    const fallback = f.type.items === "image" && !f.description ? { description: IMAGE_FALLBACK_DESCRIPTION } : {};
+    return { ...base, ...fallback, type: "array", items: semanticJsonSchema(f.type.items, f.type.values, strict) };
+  }
   if (f.type.kind === "collection") {
     if (onError && onError.field === f.name) {
       const success = taggedRowSchema(resourceJsonSchema(f.type.of, resources, visited, strict), "ok");
@@ -145,6 +158,7 @@ function fieldJsonSchema(
   // (type, format, properties, required, enum) semantic-owned, and keeps emitted key order
   // byte-identical for the fields this does not change.
   const semantic = semanticJsonSchema(f.type.semantic, f.type.values, strict);
+  if (f.type.semantic === "image" && !f.description) return { ...semantic, description: IMAGE_FALLBACK_DESCRIPTION };
   return f.description ? { ...base, ...semantic, description: f.description } : { ...base, ...semantic };
 }
 

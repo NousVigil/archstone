@@ -146,6 +146,12 @@ const MAX_NESTED_DEPTH = 32;
 /** How many undeclared nested key names one mapping collects for `verify`. Names only, deduped. */
 const MAX_UNDECLARED = 50;
 
+/** How many withheld item names one origin-bound `list:` contributes (`photos[0]` … `photos[24]`);
+ *  past it, one overflow entry `photos[…]`. A hostile body can carry thousands of off-origin items
+ *  and the names reach model-facing text. Field names come from the manifest and indices are
+ *  integers, so the names themselves are safe; only their number is bounded. */
+const MAX_WITHHELD_ITEM_NAMES = 25;
+
 /**
  * The declared shape of each composite semantic scalar — the keys its JSON-Schema lowering
  * (lowering.ts) declares, and which of them it requires. The mapper copies only these keys out of
@@ -300,8 +306,33 @@ function projectSemantic(w: Walk, semantic: SemanticType, value: unknown, path: 
 function projectValue(w: Walk, type: IRType, value: unknown, path: string, acc: WalkAcc, depth: number): Projected {
   if (type.kind === "scalar") return projectSemantic(w, type.semantic, value, path, acc);
   if (type.kind === "list") {
-    // All or nothing: a list is never silently shortened. The first failing item names the list.
     if (!Array.isArray(value)) return misfit(w, type, path, acc);
+    const list = originListOf(type.items);
+    if (list !== undefined) {
+      // An origin-bound list withholds PER ITEM: an off-origin item is dropped, the rest keep their
+      // order and become normalised hrefs, and the item is named by its position in the provider's
+      // array (`photos[2]`). The list itself is always present, possibly empty — an empty list
+      // satisfies `required` — so nothing here is absent and no required-ness rule fires; the
+      // names in `withheld` make the result `degraded` (and `verify` red).
+      const allowed = allowedFor(w, list);
+      const kept: unknown[] = [];
+      let named = 0;
+      let overflowed = false;
+      value.forEach((item, i) => {
+        const r = checkOrigin(item, allowed);
+        if (r.ok) {
+          kept.push(r.href);
+        } else if (named < MAX_WITHHELD_ITEM_NAMES) {
+          acc.withheld.push(`${path}[${i}]`);
+          named += 1;
+        } else if (!overflowed) {
+          acc.withheld.push(`${path}[…]`);
+          overflowed = true;
+        }
+      });
+      return ok(kept);
+    }
+    // All or nothing: a list is never silently shortened. The first failing item names the list.
     const items: unknown[] = [];
     for (const item of value) {
       const r = projectSemantic(w, type.items, item, path, acc);
