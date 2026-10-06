@@ -17,21 +17,31 @@
   shortened. This also applies to a required `web-page` withheld inside a nested value. Until
   this release that failed the whole response even under an optional parent.
 
-  To find what a manifest relied on, run `archstone verify`. Under each capability it prints
+  `archstone verify` prints, under each capability,
   `nested keys not declared (dropped): host.phone, …`, with names only and never values. The
   line is informational and does not change the result. `--json` carries the same list as
-  `undeclaredNested`. Declare the keys you need on the nested resource and re-run.
-  `applyResponseMapping` takes an optional fourth argument, `{ collectUndeclared: true }`, which
-  adds `undeclaredNested` to its result. Fingerprints are unaffected, so no fixture needs
-  re-recording.
+  `undeclaredNested`. `applyResponseMapping` takes an optional fourth argument,
+  `{ collectUndeclared: true }`, which adds `undeclaredNested` to its result.
+
+  **Upgrading:**
+  1. Run `archstone verify`, declare on the nested resource each key it lists that you need, and
+     re-run.
+  2. If a binding uses `@archstone/provider-sql` and reads a `date` or `timestamp` column,
+     re-record its fixture: those columns' contract fingerprints change from `object` to
+     `string` (see below). Fingerprints of every other binding are unaffected.
+  3. If you pass your own `pgPoolFactory` to `@archstone/provider-sql`, install its exported
+     `jsonSafeTypeParser` on that pool (`types: { getTypeParser: jsonSafeTypeParser }`).
+     Without it, `date` columns arrive as local-midnight `Date`s and shift by the host's
+     time zone.
 - **`@archstone/provider-sql` returns JSON-safe rows.** `pg` returned `date` and `timestamp`
   columns as JS `Date` objects. The stricter mapper treats a non-JSON object as absent, so a
-  required date field would fail the response. The pool now parses `date` as Postgres's own
-  `YYYY-MM-DD` text, which also removes the one-day shift pg's local-midnight `Date` caused east
-  or west of UTC. A `timestamp` is now its wall-clock ISO text (`2026-10-03T12:34:56`) and a
-  `timestamptz` is an ISO instant in UTC; their array types are parsed the same way. Any value
-  left with no JSON form is `null`, which the mapper treats as absent: `bytea`, `interval`, and
-  other class instances. A `bigint` becomes its decimal string and a non-finite number becomes
-  `null`. `numeric` and `int8` already arrived as strings and are unchanged. Contract fingerprints
-  of SQL bindings with date or timestamp columns change from `object` to `string` for those
-  columns, so re-record them.
+  required date field would fail the response. The default pool now parses a `date` as
+  Postgres's own `YYYY-MM-DD` text, which also removes the one-day shift pg's local-midnight
+  `Date` caused east or west of UTC. A `timestamp` (no time zone) is read as UTC and sent as an
+  ISO instant (`2026-10-03T12:34:56.789Z`); a `timestamptz` is an ISO instant in UTC. Their array
+  types are parsed the same way, and `infinity` or a BC value stays as Postgres prints it. Any
+  value left with no JSON form is `null`, which the mapper treats as absent: `bytea`,
+  `interval`, and other class instances. A required field read from such a column therefore
+  reports missing. A `bigint` becomes its decimal string and a non-finite number becomes `null`.
+  `numeric` and `int8` already arrived as strings and are unchanged. A `jsonb` key named
+  `__proto__` is kept as ordinary data. The parser is exported as `jsonSafeTypeParser`.
