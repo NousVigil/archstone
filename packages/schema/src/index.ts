@@ -132,7 +132,7 @@ export interface BindingDoc {
     response?: Record<string, unknown>; // optional response mapping (ADD-12); resolution/lowering is the compiler's
     extract?: Record<string, unknown>; // optional scalar output extraction (extends ADD-12); resolution/lowering is the compiler's
     contract?: Record<string, unknown>; // optional contract snapshot (ADD-18); lowering is the compiler's
-    origins?: { pages?: string[] }; // optional origin lists for origin-bound output types; entry syntax is the semantic pass's
+    origins?: { pages?: string[]; images?: string[] }; // optional origin lists for origin-bound output types; entry syntax is the semantic pass's
   };
 }
 

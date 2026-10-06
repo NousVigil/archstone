@@ -39,6 +39,12 @@
               "minItems": 1,
               "items": { "type": "string" },
               "description": "Origins a `web-page` output value may live on, e.g. https://www.example.com. A value on any other origin is withheld."
+            },
+            "images": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "type": "string" },
+              "description": "Origins an `image` output value (scalar or list item) may live on, e.g. https://img.example.com. Never shared with `pages`. A value on any other origin is withheld."
             }
           }
         }
