@@ -504,6 +504,22 @@ describePostgres("invokeSql against a real Postgres", () => {
     }
   });
 
+  it("R-3 fix (#146): a timestamp (no zone) is read as UTC and arrives as an ISO instant with Z, independent of the process's TZ", async () => {
+    // `as_of AT TIME ZONE 'UTC'` is a `timestamp without time zone` holding as_of's UTC wall clock,
+    // whatever the session TimeZone is — so read back as UTC it is as_of's own instant.
+    const wallTool = sqlTool("SELECT id, as_of AT TIME ZONE 'UTC' AS wall FROM app.holdings WHERE id = $1", ["id"]);
+    const previous = process.env.TZ;
+    process.env.TZ = "America/Los_Angeles";
+    try {
+      const result = await invokeSql(wallTool, { id: 3 }, opts("tenant-b"));
+      expect(result.ok).toBe(true);
+      expect((result.data as Array<Record<string, unknown>>)[0].wall).toBe("2026-10-03T12:34:56.789Z");
+    } finally {
+      if (previous === undefined) delete process.env.TZ;
+      else process.env.TZ = previous;
+    }
+  });
+
   it("R-3 finding: boolean arrives as a boolean, and CDL has no boolean semantic type to declare it truthfully", async () => {
     const { raw, wire } = await mappedRow(3, "tenant-b");
     expect(raw.active).toBe(true);

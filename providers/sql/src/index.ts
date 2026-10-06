@@ -74,7 +74,9 @@ const defaultRegistry = new Map<string, ConnectionEntry>();
 
 export interface SqlInvokeOptions extends BaseInvokeOptions {
   /** Constructs a pool for a resolved DSN. Defaults to a real `pg.Pool`; a test supplies a fake
-   *  pool that never opens a socket. */
+   *  pool that never opens a socket. A custom REAL pool should install this module's
+   *  `jsonSafeTypeParser` (`types: { getTypeParser: jsonSafeTypeParser }`): without it, `pg`'s
+   *  default parsers return DATE columns as local-midnight `Date`s, shifted by the host's TZ. */
   pgPoolFactory?: PgPoolFactory;
   /** Overrides the process-wide connection cache (pool + cached D-9 verdicts),
    *  primarily for test isolation — each test gets its own registry rather than sharing the
@@ -107,7 +109,14 @@ const pgParser = (oid: number, format?: string): ((value: string) => unknown) =>
     : types.getTypeParser(oid as Parameters<typeof types.getTypeParser>[0]);
 
 const parseDate = (v: string): string => v; // 'YYYY-MM-DD' as Postgres prints it — never a local-midnight Date
-const parseTimestamp = (v: string): string => v.replace(" ", "T"); // wall-clock, no zone: never shifted into one
+/** A `timestamp` (no zone) is read as UTC — the CEO-ratified reading — and sent as an ISO instant
+ *  with `Z`, matching the advertised `format: date-time` and never depending on the host's TZ.
+ *  `infinity`, a BC date or any other text a Date cannot represent stays as Postgres printed it. */
+function parseTimestamp(v: string): string {
+  if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d+)?$/.test(v)) return v;
+  const d = new Date(`${v.replace(" ", "T")}Z`);
+  return Number.isNaN(d.getTime()) ? v : d.toISOString();
+}
 function parseTimestamptz(v: string): string {
   const d: unknown = pgParser(PG_TIMESTAMPTZ)(v);
   return d instanceof Date && !Number.isNaN(d.getTime()) ? d.toISOString() : v; // `infinity` stays text
@@ -117,9 +126,13 @@ function parseTimestamptz(v: string): string {
  * The pool's type parsers (#146): `pg`'s defaults turn date and timestamp columns into JS `Date`
  * objects, which are not JSON, so the response mapper treats them as absent. A DATE comes back as
  * Postgres's own `YYYY-MM-DD` text (pg's default would build a Date at LOCAL midnight and shift the
- * day in any zone west of UTC); a `timestamp` (no zone) as its wall-clock ISO text; a
- * `timestamptz` as an ISO instant in UTC. Their array types get the same treatment per element.
+ * day in any zone west of UTC); a `timestamp` (no zone) is read as UTC and sent as an ISO instant;
+ * a `timestamptz` as an ISO instant in UTC. Their array types get the same treatment per element.
  * Every other type keeps `pg`'s parser; `jsonSafeRows` then covers what remains non-JSON.
+ *
+ * Installed on the default pool. A caller-supplied `pgPoolFactory` must install it itself —
+ * `new pg.Pool({ ..., types: { getTypeParser: jsonSafeTypeParser } })` — or its DATE columns come
+ * back as local-midnight `Date`s, which `jsonSafeRows` can only turn into a shifted ISO instant.
  */
 export function jsonSafeTypeParser(oid: number, format?: string): (value: string) => unknown {
   if (format === "binary") return pgParser(oid, "binary");
@@ -155,8 +168,10 @@ function jsonSafe(v: unknown): unknown {
   if (typeof v === "object") {
     const proto: unknown = Object.getPrototypeOf(v);
     if (proto !== Object.prototype && proto !== null) return null; // Buffer, interval, any class instance
+    // defineProperty, never assignment: a jsonb key named `__proto__` must stay an own data
+    // property, not become `out`'s prototype.
     const out: Record<string, unknown> = {};
-    for (const [k, x] of Object.entries(v)) out[k] = jsonSafe(x);
+    for (const [k, x] of Object.entries(v)) Object.defineProperty(out, k, { value: jsonSafe(x), enumerable: true, writable: true, configurable: true });
     return out;
   }
   return null; // function, symbol

@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { Pool, type PoolConfig } from "pg";
 import { describe, it, expect, vi } from "vitest";
 import type { IRTool } from "@archstone/compiler";
 import { invokeSql, ensureConnection, checkConnectionPrivileges, jsonSafeTypeParser, type PgPool, type PgPoolClient, type ConnectionEntry } from "../src/index";
@@ -1131,6 +1132,7 @@ describe("invokeSql — rows leave the provider JSON-safe (#146)", () => {
         bytes: new Uint8Array([1, 2]),
         span: new Interval(),
         doc: { when: new Date("2026-01-01T00:00:00.000Z"), list: [1, Buffer.from("x")], ok: true },
+        proto: JSON.parse('{"__proto__": {"polluted": true}, "a": 1}') as Record<string, unknown>,
         nothing: null,
       },
     ]);
@@ -1146,10 +1148,17 @@ describe("invokeSql — rows leave the provider JSON-safe (#146)", () => {
         bytes: null,
         span: null,
         doc: { when: "2026-01-01T00:00:00.000Z", list: [1, null], ok: true },
+        proto: JSON.parse('{"__proto__": {"polluted": true}, "a": 1}') as Record<string, unknown>,
         nothing: null,
       },
     ]);
     expect(JSON.stringify(result.data)).not.toContain("secret");
+    // A jsonb `__proto__` key stays an own data property; it never becomes the row's prototype.
+    const proto = (result.data as Array<Record<string, Record<string, unknown>>>)[0].proto;
+    expect(Object.getPrototypeOf(proto)).toBe(Object.prototype);
+    expect(Object.prototype.hasOwnProperty.call(proto, "__proto__")).toBe(true);
+    expect((proto as { polluted?: unknown }).polluted).toBeUndefined();
+    expect(JSON.stringify(proto)).toBe('{"__proto__":{"polluted":true},"a":1}');
   });
 });
 
@@ -1166,9 +1175,26 @@ describe("jsonSafeTypeParser — the pool's type parsers (#146)", () => {
     }
   });
 
-  it("timestamp (no zone) is its wall-clock ISO text, never shifted", () => {
-    expect(jsonSafeTypeParser(1114)("2026-10-03 12:34:56.789")).toBe("2026-10-03T12:34:56.789");
-    expect(jsonSafeTypeParser(1115)('{"2026-10-03 12:34:56"}')).toEqual(["2026-10-03T12:34:56"]);
+  it("timestamp (no zone) is read as UTC and sent as an ISO instant with Z, whatever the process TZ", () => {
+    const previous = process.env.TZ;
+    process.env.TZ = "America/Los_Angeles";
+    try {
+      expect(jsonSafeTypeParser(1114)("2026-10-03 12:34:56.789")).toBe("2026-10-03T12:34:56.789Z");
+      expect(jsonSafeTypeParser(1114)("2026-10-03 12:34:56")).toBe("2026-10-03T12:34:56.000Z");
+      expect(jsonSafeTypeParser(1115)('{"2026-10-03 12:34:56",NULL}')).toEqual(["2026-10-03T12:34:56.000Z", null]);
+      expect(jsonSafeTypeParser(1114)("infinity")).toBe("infinity");
+      expect(jsonSafeTypeParser(1114)("0044-03-15 12:00:00 BC")).toBe("0044-03-15 12:00:00 BC");
+    } finally {
+      if (previous === undefined) delete process.env.TZ;
+      else process.env.TZ = previous;
+    }
+  });
+
+  it("is exported for a caller-supplied pool to install (pg accepts it as `types.getTypeParser`)", () => {
+    const pool = new Pool({ connectionString: "postgres://nobody@127.0.0.1:1/none", types: { getTypeParser: jsonSafeTypeParser } as PoolConfig["types"] });
+    const installed = (pool as unknown as { options: { types: { getTypeParser: typeof jsonSafeTypeParser } } }).options.types;
+    expect(installed.getTypeParser(1082)("2026-10-03")).toBe("2026-10-03");
+    void pool.end();
   });
 
   it("timestamptz is an ISO instant in UTC; infinity stays text", () => {
