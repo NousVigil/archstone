@@ -282,6 +282,15 @@ describe("composite semantic scalars keep only their declared keys", () => {
     expect(map("money", { amount: { secret: 1 }, currency: "EUR" })).toEqual({ status: "degraded", data: { stay: { name: "Casa" } }, degraded: ["v"] });
   });
 
+  it("a declared optional sub-key of the wrong shape is a mis-shape (degraded), not an undeclared key", () => {
+    const r = applyResponseMapping(tool, { name: "Casa", v: { adults: 2, children: { secret: "s3cret" }, pet: "dog" } }, composite("party"), { collectUndeclared: true });
+    expect(r.status).toBe("degraded");
+    expect(r.data).toEqual({ stay: { name: "Casa", v: { adults: 2 } } });
+    expect(r.degraded).toEqual(["v.children"]);
+    expect(r.undeclaredNested).toEqual(["v.pet"]);
+    expect(JSON.stringify(r)).not.toContain("s3cret");
+  });
+
   it("the projected keys are exactly the keys the closed lowering declares — the table cannot drift", () => {
     for (const semantic of ["money", "party", "date-range"] as SemanticType[]) {
       const props = (extractionJsonSchema([field("v", { kind: "scalar", semantic })]).properties as Record<string, { properties: Record<string, unknown> }>).v.properties;
@@ -289,6 +298,28 @@ describe("composite semantic scalars keep only their declared keys", () => {
       const out = (map(semantic, { ...every, extra: "x" }).data?.stay as { v: Record<string, unknown> }).v;
       expect(Object.keys(out).sort()).toEqual(Object.keys(props).sort());
     }
+  });
+});
+
+describe("non-JSON objects are absent — a provider must hand the mapper JSON (pg Dates are normalised in provider-sql)", () => {
+  const resources = (required: boolean): IRResourceRegistry => ({
+    Stay: [field("name", text), field("day", { kind: "scalar", semantic: "date" }, required), field("at", { kind: "scalar", semantic: "datetime" }, false)],
+  });
+  const tool = stayTool(["name", "day", "at"]);
+
+  it("a Date or a Buffer in a scalar slot is absent: optional → degraded, required → violation", () => {
+    for (const odd of [new Date("2026-10-03T00:00:00Z"), Buffer.from("s3cret")]) {
+      const optional = applyResponseMapping(tool, { name: "Casa", day: "2026-10-03", at: odd }, resources(true));
+      expect(optional).toEqual({ status: "degraded", data: { stay: { name: "Casa", day: "2026-10-03" } }, degraded: ["at"] });
+      expect(applyResponseMapping(tool, { name: "Casa", day: odd }, resources(true))).toEqual({ status: "violation", missing: ["day"] });
+    }
+  });
+
+  it("the JSON strings provider-sql now returns pass", () => {
+    expect(applyResponseMapping(tool, { name: "Casa", day: "2026-10-03", at: "2026-10-03T12:34:56.789Z" }, resources(true))).toEqual({
+      status: "ok",
+      data: { stay: { name: "Casa", day: "2026-10-03", at: "2026-10-03T12:34:56.789Z" } },
+    });
   });
 });
 

@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { describe, it, expect, vi } from "vitest";
 import type { IRTool } from "@archstone/compiler";
-import { invokeSql, ensureConnection, checkConnectionPrivileges, type PgPool, type PgPoolClient, type ConnectionEntry } from "../src/index";
+import { invokeSql, ensureConnection, checkConnectionPrivileges, jsonSafeTypeParser, type PgPool, type PgPoolClient, type ConnectionEntry } from "../src/index";
 
 const tool: IRTool = {
   id: "reporting.portfolio-summary",
@@ -722,7 +722,7 @@ describe("D-9 caches only a verdict: a transient failure is retried (#122)", () 
 });
 
 describe("invokeSql — response mapping surface (D-7)", () => {
-  it("returns the driver's row array verbatim as data — undeclared columns are dropped later, by applyResponseMapping, not here", async () => {
+  it("returns the driver's rows (made JSON-safe, #146) as data — undeclared columns are dropped later, by applyResponseMapping, not here", async () => {
     const { pool } = fakePool([{ id: "1", headline: "Q1", internal_notes: "secret" }]);
     const result = await invokeSql(tool, { id: "1" }, baseOpts(pool));
     expect(result.data).toEqual([{ id: "1", headline: "Q1", internal_notes: "secret" }]);
@@ -1112,5 +1112,74 @@ describe("a literal (non-${VAR}) dsn is never echoed (#121)", () => {
     const result = await invokeSql(tool, { id: "1" }, baseOpts(pool));
     expect(result.ok).toBe(false);
     expect(result.error).toMatch(/^connection for 'DATABASE_URL' uses a role with /);
+  });
+});
+
+describe("invokeSql — rows leave the provider JSON-safe (#146)", () => {
+  class Interval {
+    hours = 1;
+  }
+  it("Date → ISO string; bigint → string; non-finite → null; Buffer and class instances → null; jsonb walked", async () => {
+    const { pool } = fakePool([
+      {
+        id: "1",
+        at: new Date("2026-10-03T12:34:56.789Z"),
+        bad: new Date("nope"),
+        big: 9007199254740993n,
+        nan: Number.NaN,
+        blob: Buffer.from("secret"),
+        bytes: new Uint8Array([1, 2]),
+        span: new Interval(),
+        doc: { when: new Date("2026-01-01T00:00:00.000Z"), list: [1, Buffer.from("x")], ok: true },
+        nothing: null,
+      },
+    ]);
+    const result = await invokeSql(tool, { id: "1" }, baseOpts(pool));
+    expect(result.data).toEqual([
+      {
+        id: "1",
+        at: "2026-10-03T12:34:56.789Z",
+        bad: null,
+        big: "9007199254740993",
+        nan: null,
+        blob: null,
+        bytes: null,
+        span: null,
+        doc: { when: "2026-01-01T00:00:00.000Z", list: [1, null], ok: true },
+        nothing: null,
+      },
+    ]);
+    expect(JSON.stringify(result.data)).not.toContain("secret");
+  });
+});
+
+describe("jsonSafeTypeParser — the pool's type parsers (#146)", () => {
+  it("DATE stays Postgres's 'YYYY-MM-DD' text, whatever the process TZ", () => {
+    const previous = process.env.TZ;
+    process.env.TZ = "Pacific/Kiritimati";
+    try {
+      expect(jsonSafeTypeParser(1082)("2026-10-03")).toBe("2026-10-03");
+      expect(jsonSafeTypeParser(1182)("{2026-10-03,NULL,2026-10-04}")).toEqual(["2026-10-03", null, "2026-10-04"]);
+    } finally {
+      if (previous === undefined) delete process.env.TZ;
+      else process.env.TZ = previous;
+    }
+  });
+
+  it("timestamp (no zone) is its wall-clock ISO text, never shifted", () => {
+    expect(jsonSafeTypeParser(1114)("2026-10-03 12:34:56.789")).toBe("2026-10-03T12:34:56.789");
+    expect(jsonSafeTypeParser(1115)('{"2026-10-03 12:34:56"}')).toEqual(["2026-10-03T12:34:56"]);
+  });
+
+  it("timestamptz is an ISO instant in UTC; infinity stays text", () => {
+    expect(jsonSafeTypeParser(1184)("2026-10-03 14:34:56.789+02")).toBe("2026-10-03T12:34:56.789Z");
+    expect(jsonSafeTypeParser(1185)('{"2026-10-03 14:34:56+02"}')).toEqual(["2026-10-03T12:34:56.000Z"]);
+    expect(jsonSafeTypeParser(1184)("infinity")).toBe("infinity");
+  });
+
+  it("every other type keeps pg's own parser (int4 → number, int8 → string, bool → boolean)", () => {
+    expect(jsonSafeTypeParser(23)("21")).toBe(21);
+    expect(jsonSafeTypeParser(20)("9007199254740993")).toBe("9007199254740993");
+    expect(jsonSafeTypeParser(16)("t")).toBe(true);
   });
 });

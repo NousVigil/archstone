@@ -7,7 +7,7 @@
 // both incompatible with an edge isolate's per-request model (D-5). Never imported from
 // `@archstone/runtime`'s `http` subpath or from the compiler/IR/emitter-support layers.
 
-import { Pool, type PoolConfig } from "pg";
+import { Pool, types, type PoolConfig } from "pg";
 import type { IRTool } from "@archstone/compiler";
 import { hasIdentityClaims, type InvokeOptions as BaseInvokeOptions } from "@archstone/emitter-support";
 
@@ -89,7 +89,77 @@ export interface SqlInvokeOptions extends BaseInvokeOptions {
 const ENV_RE = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/;
 
 function defaultPoolFactory(dsn: string, poolConfig?: SqlInvokeOptions["poolConfig"]): PgPool {
-  return new Pool({ connectionString: dsn, ...poolConfig }) as unknown as PgPool;
+  return new Pool({ connectionString: dsn, ...poolConfig, types: { getTypeParser: jsonSafeTypeParser } as PoolConfig["types"] }) as unknown as PgPool;
+}
+
+const PG_DATE = 1082;
+const PG_TIMESTAMP = 1114;
+const PG_TIMESTAMPTZ = 1184;
+const PG_TEXT_ARRAY = 1009;
+const PG_DATE_ARRAY = 1182;
+const PG_TIMESTAMP_ARRAY = 1115;
+const PG_TIMESTAMPTZ_ARRAY = 1185;
+
+/** `pg`'s own parser for an OID. Its typings admit only the built-in scalar ids; array ids are real. */
+const pgParser = (oid: number, format?: string): ((value: string) => unknown) =>
+  format === "binary"
+    ? types.getTypeParser(oid as Parameters<typeof types.getTypeParser>[0], "binary")
+    : types.getTypeParser(oid as Parameters<typeof types.getTypeParser>[0]);
+
+const parseDate = (v: string): string => v; // 'YYYY-MM-DD' as Postgres prints it — never a local-midnight Date
+const parseTimestamp = (v: string): string => v.replace(" ", "T"); // wall-clock, no zone: never shifted into one
+function parseTimestamptz(v: string): string {
+  const d: unknown = pgParser(PG_TIMESTAMPTZ)(v);
+  return d instanceof Date && !Number.isNaN(d.getTime()) ? d.toISOString() : v; // `infinity` stays text
+}
+
+/**
+ * The pool's type parsers (#146): `pg`'s defaults turn date and timestamp columns into JS `Date`
+ * objects, which are not JSON, so the response mapper treats them as absent. A DATE comes back as
+ * Postgres's own `YYYY-MM-DD` text (pg's default would build a Date at LOCAL midnight and shift the
+ * day in any zone west of UTC); a `timestamp` (no zone) as its wall-clock ISO text; a
+ * `timestamptz` as an ISO instant in UTC. Their array types get the same treatment per element.
+ * Every other type keeps `pg`'s parser; `jsonSafeRows` then covers what remains non-JSON.
+ */
+export function jsonSafeTypeParser(oid: number, format?: string): (value: string) => unknown {
+  if (format === "binary") return pgParser(oid, "binary");
+  const scalar = { [PG_DATE]: parseDate, [PG_TIMESTAMP]: parseTimestamp, [PG_TIMESTAMPTZ]: parseTimestamptz }[oid];
+  if (scalar) return scalar;
+  const element = { [PG_DATE_ARRAY]: parseDate, [PG_TIMESTAMP_ARRAY]: parseTimestamp, [PG_TIMESTAMPTZ_ARRAY]: parseTimestamptz }[oid];
+  if (element) {
+    const textArray = pgParser(PG_TEXT_ARRAY);
+    const mapDeep = (x: unknown): unknown => (Array.isArray(x) ? x.map(mapDeep) : typeof x === "string" ? element(x) : x);
+    return (v: string) => mapDeep(textArray(v));
+  }
+  return pgParser(oid);
+}
+
+/**
+ * Make query rows JSON-safe before they leave the provider (#146): a provider returns JSON, and the
+ * response mapper treats any non-JSON object as absent. A `Date` (from a custom parser or a fake
+ * pool) becomes its ISO string; a `bigint` its decimal string; a non-finite number `null`. A value
+ * with no JSON form — `bytea` (`Buffer`), an `interval` object, any other class instance — is
+ * explicitly `null`, i.e. absent, never forwarded as an object. `json`/`jsonb` values (plain objects
+ * and arrays) are walked the same way. `bigint`/`numeric` columns already arrive as strings.
+ */
+export function jsonSafeRows(rows: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+  return rows.map((row) => jsonSafe(row) as Record<string, unknown>);
+}
+
+function jsonSafe(v: unknown): unknown {
+  if (v === null || v === undefined || typeof v === "string" || typeof v === "boolean") return v;
+  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  if (typeof v === "bigint") return v.toString();
+  if (v instanceof Date) return Number.isNaN(v.getTime()) ? null : v.toISOString();
+  if (Array.isArray(v)) return v.map(jsonSafe);
+  if (typeof v === "object") {
+    const proto: unknown = Object.getPrototypeOf(v);
+    if (proto !== Object.prototype && proto !== null) return null; // Buffer, interval, any class instance
+    const out: Record<string, unknown> = {};
+    for (const [k, x] of Object.entries(v)) out[k] = jsonSafe(x);
+    return out;
+  }
+  return null; // function, symbol
 }
 
 /** The DSN's env var name, or `(unnamed dsn)`. `invokeSql` refuses a dsn that is not
@@ -466,7 +536,7 @@ export async function invokeSql(tool: IRTool, input: Record<string, unknown>, op
     const values = sql.params.map((name) => input[name]);
     const result = await client.query(sql.query, values);
     await client.query("COMMIT");
-    return { ok: true, status: 200, data: result.rows };
+    return { ok: true, status: 200, data: jsonSafeRows(result.rows) };
   } catch (err) {
     // D-9 ruling 4: a failed D-9 read or layer-4 query lands here too — a failed call, never a
     // verdict, and nothing is cached.

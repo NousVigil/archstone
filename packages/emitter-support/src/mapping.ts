@@ -274,8 +274,15 @@ function projectSemantic(w: Walk, semantic: SemanticType, value: unknown, path: 
       if (!hasOwn(value, k) || !isPrimitive(value[k])) return misfit(w, type, path, acc);
       out[k] = value[k];
     }
-    for (const k of shape.optional) if (hasOwn(value, k) && isPrimitive(value[k])) out[k] = value[k];
-    for (const k of Object.keys(value)) if (!hasOwn(out, k)) noteUndeclared(w, `${path}.${k}`);
+    for (const k of shape.optional) {
+      if (!hasOwn(value, k) || value[k] === undefined || value[k] === null) continue;
+      // A declared key of the wrong shape is dropped and named as what it is — a mis-shaped
+      // optional sub-value (`degraded`), never as an undeclared key.
+      if (isPrimitive(value[k])) out[k] = value[k];
+      else acc.degraded.push(`${path}.${k}`);
+    }
+    const declared = new Set([...shape.required, ...shape.optional]);
+    for (const k of Object.keys(value)) if (!declared.has(k)) noteUndeclared(w, `${path}.${k}`);
     return ok(out);
   }
   if (semantic === "preference-set") {

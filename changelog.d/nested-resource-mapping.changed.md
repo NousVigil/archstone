@@ -24,3 +24,14 @@
   `applyResponseMapping` takes an optional fourth argument, `{ collectUndeclared: true }`, which
   adds `undeclaredNested` to its result. Fingerprints are unaffected, so no fixture needs
   re-recording.
+- **`@archstone/provider-sql` returns JSON-safe rows.** `pg` returned `date` and `timestamp`
+  columns as JS `Date` objects. The stricter mapper treats a non-JSON object as absent, so a
+  required date field would fail the response. The pool now parses `date` as Postgres's own
+  `YYYY-MM-DD` text, which also removes the one-day shift pg's local-midnight `Date` caused east
+  or west of UTC. A `timestamp` is now its wall-clock ISO text (`2026-10-03T12:34:56`) and a
+  `timestamptz` is an ISO instant in UTC; their array types are parsed the same way. Any value
+  left with no JSON form is `null`, which the mapper treats as absent: `bytea`, `interval`, and
+  other class instances. A `bigint` becomes its decimal string and a non-finite number becomes
+  `null`. `numeric` and `int8` already arrived as strings and are unchanged. Contract fingerprints
+  of SQL bindings with date or timestamp columns change from `object` to `string` for those
+  columns, so re-record them.

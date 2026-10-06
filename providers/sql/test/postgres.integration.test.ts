@@ -5,7 +5,7 @@
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import pg from "pg";
 import type { IRResourceRegistry, IRTool } from "@archstone/compiler";
-import { fingerprintShape, describeShape } from "@archstone/compiler";
+import { describeShape } from "@archstone/compiler";
 import { applyResponseMapping, objectJsonSchema } from "@archstone/emitter-support";
 import { invokeSql, checkConnectionPrivileges, type ConnectionEntry, type PgPool, type SqlInvokeOptions } from "../src/index";
 import { ADMIN_URL, createPgFixture, describePostgres, endPools, DSN_VARS, SEED, type PgFixture, type RoleKey } from "./support/postgres";
@@ -447,7 +447,7 @@ describePostgres("invokeSql against a real Postgres", () => {
   const itemSchema = (objectJsonSchema(typedTool.output, resources).properties as Record<string, { items: { properties: Record<string, { type: string; format?: string }> } }>)
     .holdings.items.properties;
 
-  /** What the MCP client sees: mapped data after a JSON round trip (Date → ISO string). */
+  /** What the MCP client sees: mapped data after a JSON round trip. */
   async function mappedRow(id: number, principal: string) {
     const result = await invokeSql(typedTool, { id }, opts(principal));
     expect(result.ok).toBe(true);
@@ -481,23 +481,23 @@ describePostgres("invokeSql against a real Postgres", () => {
     expect(typeof wire.big).toBe("string");
   });
 
-  it("R-3 finding: timestamptz arrives as a JS Date — fine on the wire (ISO date-time), but the contract fingerprint records it as an empty `object`", async () => {
-    const { raw, wire, shape } = await mappedRow(3, "tenant-b");
-    expect(raw.as_of).toBeInstanceOf(Date);
+  it("R-3 fix (#146): timestamptz arrives as an ISO date-time string, and is fingerprinted as the string it is on the wire", async () => {
+    const { raw, wire, shape, mapped } = await mappedRow(3, "tenant-b");
+    expect(raw.as_of).toBe("2026-10-03T12:34:56.789Z");
     expect(wire.as_of).toBe("2026-10-03T12:34:56.789Z");
+    expect(mapped.status).toBe("ok"); // a required datetime is present, not absent
     expect(itemSchema.as_of).toMatchObject({ type: "string", format: "date-time" });
-    expect(shape["$[].as_of"]).toBe("object"); // what describeShape/fingerprintShape see — not "string"
-    expect(fingerprintShape([{ as_of: new Date() }])).toBe(fingerprintShape([{ as_of: {} }]));
+    expect(shape["$[].as_of"]).toBe("string");
   });
 
-  it("R-3 finding: date arrives as a JS Date at LOCAL midnight — the wire value is a date-time, not a `date`, and shifts a day east of UTC", async () => {
+  it("R-3 fix (#146): date arrives as 'YYYY-MM-DD', independent of the process's TZ", async () => {
     const previous = process.env.TZ;
-    process.env.TZ = "Pacific/Kiritimati"; // UTC+14: pg's date parser builds new Date(y, m, d) in this zone
+    process.env.TZ = "Pacific/Kiritimati"; // UTC+14: pg's default date parser would build new Date(y, m, d) here
     try {
       const { raw, wire } = await mappedRow(3, "tenant-b");
-      expect(raw.trade_date).toBeInstanceOf(Date);
+      expect(raw.trade_date).toBe("2026-10-03");
       expect(itemSchema.trade_date).toMatchObject({ type: "string", format: "date" });
-      expect(wire.trade_date).toBe("2026-10-02T10:00:00.000Z"); // stored: 2026-10-03
+      expect(wire.trade_date).toBe("2026-10-03");
     } finally {
       if (previous === undefined) delete process.env.TZ;
       else process.env.TZ = previous;
@@ -526,7 +526,5 @@ describePostgres("invokeSql against a real Postgres", () => {
   });
 
   it.todo("R-3 fix: numeric/bigint reach a `quantity` field as a JSON number (or the lowering admits the string form) — needs a decision: pg type parsers vs. mapping-time coercion");
-  it.todo("R-3 fix: a `date` column reaches a `date` field as 'YYYY-MM-DD', independent of the server process's TZ");
-  it.todo("R-3 fix: timestamptz is fingerprinted as a string, the type it has on the wire");
   it.todo("R-3 fix: CDL can declare a boolean column (no boolean semantic type exists)");
 });
