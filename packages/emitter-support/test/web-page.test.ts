@@ -207,8 +207,17 @@ describe("S-B.13 – S-B.16: every place a web-page value can be", () => {
     expect(on.status).toBe("ok");
     expect(on.data).toEqual({ stay: { name: "A", host: { displayName: "Ana", profileUrl: "https://www.example.com/u/1" } } });
 
-    // A required web-page inside a nested value is a violation, as a required one at the top is.
+    // A required web-page withheld inside a nested value makes that value absent (#146): the
+    // nearest optional slot — `host` here — absorbs it and is dropped; the response degrades.
     resources.Host[1] = { ...resources.Host[1], required: true };
+    const absorbed = applyResponseMapping(tool, { name: "A", host: { displayName: "Ana", profileUrl: EVIL } }, resources);
+    expect(absorbed.status).toBe("degraded");
+    expect(absorbed.withheld).toEqual(["host.profileUrl"]);
+    expect(absorbed.degraded).toEqual(["host"]);
+    expect(absorbed.data).toEqual({ stay: { name: "A" } });
+
+    // With no optional slot on the way up, it is a violation, as a required one at the top is.
+    resources.Stay[1] = { ...resources.Stay[1], required: true };
     const required = applyResponseMapping(tool, { name: "A", host: { displayName: "Ana", profileUrl: EVIL } }, resources);
     expect(required.status).toBe("violation");
     expect(required.withheld).toEqual(["host.profileUrl"]);
@@ -351,15 +360,15 @@ describe("S-B.19: results without a withheld value gain no member", () => {
     expect("withheld" in applyResponseMapping(singleTool(), { url: "https://www.example.com/a" }, stayResources(false))).toBe(false); // violation: name missing
   });
 
-  it("a tool with no origin-bound field maps to the identical result object it always did", () => {
+  it("a tool with no origin-bound field gains no withheld member — and its nested value is projected (#146)", () => {
     const resources: IRResourceRegistry = { Stay: [{ name: "name", required: true, type: { kind: "scalar", semantic: "text" } }, { name: "nested", required: false, type: { kind: "resource", name: "Inner" } }], Inner: [{ name: "x", required: false, type: { kind: "scalar", semantic: "text" } }] };
     const tool = singleTool();
     delete tool.origins;
     tool.response!.fields = [{ name: "name", path: "$.name" }, { name: "nested", path: "$.nested" }];
     const nested = { x: "y", undeclared: 1 };
     const r = applyResponseMapping(tool, { name: "A", nested }, resources);
-    expect(r).toEqual({ status: "ok", data: { stay: { name: "A", nested } } });
-    expect((r.data?.stay as Record<string, unknown>).nested).toBe(nested); // copied by reference, as before
+    expect(r).toEqual({ status: "ok", data: { stay: { name: "A", nested: { x: "y" } } } });
+    expect((r.data?.stay as Record<string, unknown>).nested).not.toBe(nested); // a new object, never the provider's
   });
 });
 
@@ -470,7 +479,7 @@ describe("fail closed on a value whose shape does not match its declared type (S
     expect(JSON.stringify(r)).not.toContain("evil.example.net");
   });
 
-  it("a type that reaches no origin-bound field keeps today's behaviour for a mismatched shape", () => {
+  it("a type that reaches no origin-bound field: a mismatched shape is absent, named degraded, not withheld (#146)", () => {
     const plain: IRResourceRegistry = {
       Stay: [
         { name: "name", required: true, type: { kind: "scalar", semantic: "text" } },
@@ -481,7 +490,7 @@ describe("fail closed on a value whose shape does not match its declared type (S
     const t = singleTool();
     t.response!.fields = [{ name: "name", path: "$.name" }, { name: "host", path: "$.host" }];
     const r = applyResponseMapping(t, { name: "A", host: ["anything"] }, plain);
-    expect(r).toEqual({ status: "ok", data: { stay: { name: "A", host: ["anything"] } } });
+    expect(r).toEqual({ status: "degraded", data: { stay: { name: "A" } }, degraded: ["host"] });
   });
 });
 
@@ -534,9 +543,9 @@ describe("identity (ref:) slots whose resource reaches web-page", () => {
     }
   });
 
-  it("an identity slot whose resource reaches no web-page keeps today's pass-through", () => {
+  it("an identity slot whose resource reaches no web-page: an object is absent, named degraded (#146)", () => {
     const plain: IRResourceRegistry = { ...resources, Host: [{ name: "x", required: false, type: { kind: "scalar", semantic: "text" } }] };
-    expect(applyResponseMapping(t(), { name: "A", host: { x: 1 } }, plain)).toEqual({ status: "ok", data: { stay: { name: "A", host: { x: 1 } } } });
+    expect(applyResponseMapping(t(), { name: "A", host: { x: 1 } }, plain)).toEqual({ status: "degraded", data: { stay: { name: "A" } }, degraded: ["host"] });
   });
 
   it("passThroughRefusal does not follow ref:, matching the compiler's web-page-needs-mapping", () => {

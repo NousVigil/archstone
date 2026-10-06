@@ -39,6 +39,7 @@ import { Registry, buildRegistry, serveStdio } from "@archstone/runtime";
 import { createHttpHandler } from "@archstone/runtime/http";
 // ADR-0012 D-5: `runVerify`/`HealthStatus` now come from the dedicated `/verify` subpath, not
 // the package root — see `packages/runtime/src/index.ts`'s header comment.
+import { terminalSafe } from "./terminal-safe";
 import { runVerify, type HealthStatus } from "@archstone/runtime/verify";
 // ADR-0012 D-5: the CLI is a Node-only binary — it is the one place in this codebase allowed
 // to import the FULL (`pg`-bearing) dispatcher as a VALUE, and it injects it ONLY into the
@@ -742,6 +743,9 @@ async function runVerifyCmd(dir: string, json: boolean, sandbox: boolean, connec
   }
   for (const r of results) {
     console.log(`  ${HEALTH_ICON[r.status]} ${r.capabilityId} — ${r.detail}`);
+    // #146: informational, never part of the verdict — names only, never values.
+    // The names are provider-controlled: escapes and control characters stripped, each truncated.
+    if (r.undeclaredNested) console.log(`      nested keys not declared (dropped): ${r.undeclaredNested.map((n) => terminalSafe(n)).join(", ")}`);
   }
   for (const s of skipped) {
     console.log(`  ${SKIP_ICON} ${s.capabilityId} — ${s.detail}`);

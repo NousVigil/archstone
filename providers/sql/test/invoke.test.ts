@@ -1,7 +1,8 @@
 import { EventEmitter } from "node:events";
+import { Pool, type PoolConfig } from "pg";
 import { describe, it, expect, vi } from "vitest";
 import type { IRTool } from "@archstone/compiler";
-import { invokeSql, ensureConnection, checkConnectionPrivileges, type PgPool, type PgPoolClient, type ConnectionEntry } from "../src/index";
+import { invokeSql, ensureConnection, checkConnectionPrivileges, jsonSafeTypeParser, type PgPool, type PgPoolClient, type ConnectionEntry } from "../src/index";
 
 const tool: IRTool = {
   id: "reporting.portfolio-summary",
@@ -722,7 +723,7 @@ describe("D-9 caches only a verdict: a transient failure is retried (#122)", () 
 });
 
 describe("invokeSql — response mapping surface (D-7)", () => {
-  it("returns the driver's row array verbatim as data — undeclared columns are dropped later, by applyResponseMapping, not here", async () => {
+  it("returns the driver's rows (made JSON-safe, #146) as data — undeclared columns are dropped later, by applyResponseMapping, not here", async () => {
     const { pool } = fakePool([{ id: "1", headline: "Q1", internal_notes: "secret" }]);
     const result = await invokeSql(tool, { id: "1" }, baseOpts(pool));
     expect(result.data).toEqual([{ id: "1", headline: "Q1", internal_notes: "secret" }]);
@@ -1112,5 +1113,99 @@ describe("a literal (non-${VAR}) dsn is never echoed (#121)", () => {
     const result = await invokeSql(tool, { id: "1" }, baseOpts(pool));
     expect(result.ok).toBe(false);
     expect(result.error).toMatch(/^connection for 'DATABASE_URL' uses a role with /);
+  });
+});
+
+describe("invokeSql — rows leave the provider JSON-safe (#146)", () => {
+  class Interval {
+    hours = 1;
+  }
+  it("Date → ISO string; bigint → string; non-finite → null; Buffer and class instances → null; jsonb walked", async () => {
+    const { pool } = fakePool([
+      {
+        id: "1",
+        at: new Date("2026-10-03T12:34:56.789Z"),
+        bad: new Date("nope"),
+        big: 9007199254740993n,
+        nan: Number.NaN,
+        blob: Buffer.from("secret"),
+        bytes: new Uint8Array([1, 2]),
+        span: new Interval(),
+        doc: { when: new Date("2026-01-01T00:00:00.000Z"), list: [1, Buffer.from("x")], ok: true },
+        proto: JSON.parse('{"__proto__": {"polluted": true}, "a": 1}') as Record<string, unknown>,
+        nothing: null,
+      },
+    ]);
+    const result = await invokeSql(tool, { id: "1" }, baseOpts(pool));
+    expect(result.data).toEqual([
+      {
+        id: "1",
+        at: "2026-10-03T12:34:56.789Z",
+        bad: null,
+        big: "9007199254740993",
+        nan: null,
+        blob: null,
+        bytes: null,
+        span: null,
+        doc: { when: "2026-01-01T00:00:00.000Z", list: [1, null], ok: true },
+        proto: JSON.parse('{"__proto__": {"polluted": true}, "a": 1}') as Record<string, unknown>,
+        nothing: null,
+      },
+    ]);
+    expect(JSON.stringify(result.data)).not.toContain("secret");
+    // A jsonb `__proto__` key stays an own data property; it never becomes the row's prototype.
+    const proto = (result.data as Array<Record<string, Record<string, unknown>>>)[0].proto;
+    expect(Object.getPrototypeOf(proto)).toBe(Object.prototype);
+    expect(Object.prototype.hasOwnProperty.call(proto, "__proto__")).toBe(true);
+    expect((proto as { polluted?: unknown }).polluted).toBeUndefined();
+    expect(JSON.stringify(proto)).toBe('{"__proto__":{"polluted":true},"a":1}');
+  });
+});
+
+describe("jsonSafeTypeParser — the pool's type parsers (#146)", () => {
+  it("DATE stays Postgres's 'YYYY-MM-DD' text, whatever the process TZ", () => {
+    const previous = process.env.TZ;
+    process.env.TZ = "Pacific/Kiritimati";
+    try {
+      expect(jsonSafeTypeParser(1082)("2026-10-03")).toBe("2026-10-03");
+      expect(jsonSafeTypeParser(1182)("{2026-10-03,NULL,2026-10-04}")).toEqual(["2026-10-03", null, "2026-10-04"]);
+    } finally {
+      if (previous === undefined) delete process.env.TZ;
+      else process.env.TZ = previous;
+    }
+  });
+
+  it("timestamp (no zone) is read as UTC and sent as an ISO instant with Z, whatever the process TZ", () => {
+    const previous = process.env.TZ;
+    process.env.TZ = "America/Los_Angeles";
+    try {
+      expect(jsonSafeTypeParser(1114)("2026-10-03 12:34:56.789")).toBe("2026-10-03T12:34:56.789Z");
+      expect(jsonSafeTypeParser(1114)("2026-10-03 12:34:56")).toBe("2026-10-03T12:34:56.000Z");
+      expect(jsonSafeTypeParser(1115)('{"2026-10-03 12:34:56",NULL}')).toEqual(["2026-10-03T12:34:56.000Z", null]);
+      expect(jsonSafeTypeParser(1114)("infinity")).toBe("infinity");
+      expect(jsonSafeTypeParser(1114)("0044-03-15 12:00:00 BC")).toBe("0044-03-15 12:00:00 BC");
+    } finally {
+      if (previous === undefined) delete process.env.TZ;
+      else process.env.TZ = previous;
+    }
+  });
+
+  it("is exported for a caller-supplied pool to install (pg accepts it as `types.getTypeParser`)", () => {
+    const pool = new Pool({ connectionString: "postgres://nobody@127.0.0.1:1/none", types: { getTypeParser: jsonSafeTypeParser } as PoolConfig["types"] });
+    const installed = (pool as unknown as { options: { types: { getTypeParser: typeof jsonSafeTypeParser } } }).options.types;
+    expect(installed.getTypeParser(1082)("2026-10-03")).toBe("2026-10-03");
+    void pool.end();
+  });
+
+  it("timestamptz is an ISO instant in UTC; infinity stays text", () => {
+    expect(jsonSafeTypeParser(1184)("2026-10-03 14:34:56.789+02")).toBe("2026-10-03T12:34:56.789Z");
+    expect(jsonSafeTypeParser(1185)('{"2026-10-03 14:34:56+02"}')).toEqual(["2026-10-03T12:34:56.000Z"]);
+    expect(jsonSafeTypeParser(1184)("infinity")).toBe("infinity");
+  });
+
+  it("every other type keeps pg's own parser (int4 → number, int8 → string, bool → boolean)", () => {
+    expect(jsonSafeTypeParser(23)("21")).toBe(21);
+    expect(jsonSafeTypeParser(20)("9007199254740993")).toBe("9007199254740993");
+    expect(jsonSafeTypeParser(16)("t")).toBe(true);
   });
 });
