@@ -485,6 +485,80 @@ matches nothing, so every value checked against it is withheld.
 `archstone init` never infers `web-page` (an OpenAPI `format: uri` stays `string`) — the
 document cannot tell it which origins are yours.
 
+#### Pictures and visual assets: `image` (Experimental)
+
+A field typed `string` can carry any URL. When a field is *a picture or visual asset meant to be
+displayed by the client*, type it `image` instead (output only, CDL spec §4.7), and declare in
+the binding which origins those images live on. Unlike `web-page`, `image` **can be a list**.
+
+```yaml
+# tourism.Accommodation.resource.yaml
+    photos:
+      list: image
+      required: true         # the list itself is required; items may be withheld
+    
+    # Or as a scalar:
+    mainPhoto:
+      type: image
+      required: false
+
+# bindings/tourism.search.binding.yaml — a sibling of response: and extract:
+  origins:
+    images:
+      - https://cdn.example-img.net
+      - https://cdn.example.com
+```
+
+Each entry is a bare `https` origin: `https://`, a host, an optional `:port`, nothing else.
+`https://cdn.example-img.net` and `https://www.example.com:8443` are valid;
+`https://cdn.example-img.net/photos`, `https://cdn.example-img.net/`, `http://cdn.example.com`,
+`https://*.example.com` and `${IMG_ORIGIN}` are refused (`origins-malformed`), as is the same
+origin listed twice. The list belongs to the binding, so a provider with several capabilities
+repeats it in each binding — there is no provider-level origins file. The `origins.images` list
+is separate from `origins.pages` and must be declared if an output reaches an `image` field.
+
+At run time every `image` value must be an absolute `https` URL with no userinfo whose origin is
+one you declared. A value that passes is emitted in normalised form. A value that does not is
+**withheld**:
+
+- In a **scalar** field: treated like `web-page` — an optional field is omitted and the result
+  is **DEGRADED**; a required field is a **VIOLATION**; the result names it in a `withheld`
+  list and the MCP response carries a `note: field(s) withheld — value outside the declared
+  origins: <fields>` line.
+- In a **list**: items are checked individually and off-origin ones are **dropped**. An item
+  named `photos[2]` (original 0-based position) fails the check and is removed from the list;
+  other items keep their order and the result is **DEGRADED** if any were withheld. An empty
+  list (all items withheld) is still present, not omitted, and the result is DEGRADED whether
+  the list is optional or required. Item names appear only in `withheld`, not in `degraded`.
+
+No message, result, audit record or `verify` line ever contains the withheld value — it is
+provider-controlled text. `archstone verify` reports any withheld value **red**
+(`value outside declared origins in: <fields>`), same as `web-page`. Recording a contract
+(`archstone init`'s probe, `archstone adopt`) keeps nothing when a value is withheld.
+
+`apply` enforces the rest: `image` is refused in `input:` (`image-in-input`); an output that
+reaches one needs `origins.images` (`image-no-origins`) and a `response:` or `extract:` mapping
+(`image-needs-mapping`). It warns on origins nothing uses (`origins-unused`) and on a
+**required scalar** `image` inside a collection with no `onError` (`image-required-in-collection`)
+— scalar only, not lists, because lists drop individual items rather than failing the whole
+response. A required `list: image` does not promise a picture; a result with zero images is
+still DEGRADED, not a violation.
+
+What it does not do: a URL inside a `text` or `string` field is not checked; relative links are
+withheld rather than resolved; nothing fetches the image or checks if it is safe to display
+inline (an SVG from a declared origin may carry embedded script). An origin entry the runtime
+cannot normalise matches nothing, so every value checked against it is withheld. A deployer's own
+`onResponse` hook runs before the origin check and sees the raw provider body. Signed URLs with
+validity periods are not special-cased; if one expires between emission and display, it is
+withheld. `archstone init` never infers `image` (an OpenAPI `format: uri` stays `string`).
+
+**Note on parallel lists:** if you model alt text as a parallel list (array of captions indexed
+by photo), withheld images shift the indices and misalign them — `photos[3]` with `captions[3]`
+no longer correspond if one image is withheld. Use a `collection:` of a Resource with both
+`image` and `text` fields instead. That form has its own constraint (a required `image` field
+in a collection fails the entire response on one withheld item), but it keeps them bound: see
+`web-page`'s own note above for the warning about `required: web-page` in collections.
+
 #### `rest.query` — renaming, list serialization, and query-alongside-body
 
 A REST connector's `rest.query` maps a CDL input field to its wire query-parameter name. The
