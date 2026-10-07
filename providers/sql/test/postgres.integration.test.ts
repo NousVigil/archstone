@@ -209,6 +209,16 @@ describePostgres("invokeSql against a real Postgres", () => {
     expect(rows[0].implicit).toBe(true);
   });
 
+  it("D-9: a role that owns a relation, revoked its own privileges, but is reached by a PUBLIC grant IS refused — PUBLIC counts, as the ADR's query says", async () => {
+    const tool = sqlTool("SELECT id FROM app.owned_public", [], DSN_VARS.ownerPublic);
+    const result = await invokeSql(tool, {}, opts("tenant-a"));
+    expect(result).toEqual({
+      ok: false,
+      status: 0,
+      error: `connection for '${DSN_VARS.ownerPublic}' owns app.owned_public, which it also holds a grant on — the runtime role must not own any relation it can query — see the topology guide`,
+    });
+  });
+
   it("D-9: the least-privilege runtime role passes every check and reads", async () => {
     const result = await invokeSql(ALL_ROWS, {}, opts("tenant-a"));
     expect(result.ok).toBe(true);

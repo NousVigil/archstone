@@ -18,6 +18,111 @@ All notable changes to Archstone are documented here. Format loosely follows
 
 ## [Unreleased]
 
+## [0.29.0]
+
+### Added
+
+- **`web-page`, an Experimental output-only semantic type, checked against origins the binding
+  declares.** A link field typed `string` can carry any URL, so a provider's data — or text a
+  listing's owner typed in — could have an assistant show a person a link to anywhere. A field
+  typed `web-page` means "the page where a person sees this resource on the provider's own
+  site", and a binding declares where such pages live with a new `origins: { pages: [...] }`
+  key (a sibling of `response:`/`extract:`; each entry a bare `https` origin). The shared
+  response mapper in `@archstone/emitter-support` (`applyResponseMapping`) now checks every
+  `web-page` value — top-level, inside nested resources, in every collection row, in `onError`
+  rows and in `extract:` fields — and fails closed: a value must be an absolute `https` URL with
+  no userinfo whose normalised origin equals a declared one. A passing value is emitted as its
+  normalised href; a failing one is withheld (an optional field is omitted and the result is
+  degraded; a required field is a contract violation carried in `_meta`, never in
+  `structuredContent`). `MappingResult` and `@archstone/agent`'s `ExecuteResult` gain an
+  optional `withheld: string[]` of field names — never values, and never added to `degraded`.
+  `archstone verify` reports any withheld value red (`value outside declared origins in:
+  <fields>`), and recording a contract keeps nothing when one is withheld. MCP lowers the type
+  to `{ "type": "string", "format": "uri" }`; the `tools()` envelopes carry input schemas only
+  and are unchanged; extraction refuses it; `archstone init` never infers it. `apply` adds six
+  named rules: `web-page-in-input`, `web-page-no-origins`, `web-page-needs-mapping` and
+  `origins-malformed` (errors), `origins-unused` and `web-page-required-in-collection`
+  (warnings). Additive: an IR without `origins` is byte-identical and `IR.version` stays `"0"`.
+  Only typed fields are checked (a URL inside a `text` field is untouched), relative links are
+  withheld rather than resolved, and nothing fetches the page. See the CDL specification §4.7.
+
+### Changed
+
+- **Breaking: what a manifest that under-declares a nested resource now returns.** A mapped
+  value contains only what its declared type names:
+  - a nested resource value holds only the resource's declared fields, read by name, at every
+    level and in every `collection:` row; other keys are dropped;
+  - `money`, `party` and `date-range` objects keep only their declared keys. A primitive in their
+    place (`price: 120`) passes as before;
+  - a `ref:` slot takes a primitive id only. An object or array there is treated as absent,
+    never reduced to an id;
+  - an object or array where a scalar is declared is treated as absent, top level included;
+  - nested values are capped at 32 resource levels; anything deeper is absent.
+
+  Absent values follow the required/optional rules at each level. When a nested value is missing
+  a required field, the nearest **optional** field above it is dropped and named in `degraded`
+  (`host`, or `host.agency` deeper down). With no optional field on the way up, the response is
+  a contract violation naming the deepest field (`host.name`; collection rows share a path, with
+  no index). A `collection:` inside a resource is dropped as a whole when any row fails, never
+  shortened. This also applies to a required `web-page` withheld inside a nested value. Until
+  this release that failed the whole response even under an optional parent.
+
+  `archstone verify` prints, under each capability,
+  `nested keys not declared (dropped): host.phone, …`, with names only and never values. The
+  line is informational and does not change the result. `--json` carries the same list as
+  `undeclaredNested`. `applyResponseMapping` takes an optional fourth argument,
+  `{ collectUndeclared: true }`, which adds `undeclaredNested` to its result.
+
+  **Upgrading:**
+  1. Run `archstone verify`, declare on the nested resource each key it lists that you need, and
+     re-run.
+  2. If a binding uses `@archstone/provider-sql` and reads a `date` or `timestamp` column,
+     re-record its fixture: those columns' contract fingerprints change from `object` to
+     `string` (see below). Fingerprints of every other binding are unaffected.
+  3. If you pass your own `pgPoolFactory` to `@archstone/provider-sql`, install its exported
+     `jsonSafeTypeParser` on that pool (`types: { getTypeParser: jsonSafeTypeParser }`).
+     Without it, `date` columns arrive as local-midnight `Date`s and shift by the host's
+     time zone.
+- **`@archstone/provider-sql` returns JSON-safe rows.** `pg` returned `date` and `timestamp`
+  columns as JS `Date` objects. The stricter mapper treats a non-JSON object as absent, so a
+  required date field would fail the response. The default pool now parses a `date` as
+  Postgres's own `YYYY-MM-DD` text, which also removes the one-day shift pg's local-midnight
+  `Date` caused east or west of UTC. A `timestamp` (no time zone) is read as UTC and sent as an
+  ISO instant (`2026-10-03T12:34:56.789Z`); a `timestamptz` is an ISO instant in UTC. Their array
+  types are parsed the same way, and `infinity` or a BC value stays as Postgres prints it. Any
+  value left with no JSON form is `null`, which the mapper treats as absent: `bytea`,
+  `interval`, and other class instances. A required field read from such a column therefore
+  reports missing. A `bigint` becomes its decimal string and a non-finite number becomes `null`.
+  `numeric` and `int8` already arrived as strings and are unchanged. A `jsonb` key named
+  `__proto__` is kept as ordinary data. The parser is exported as `jsonSafeTypeParser`.
+
+- **`archstone adopt` records the replayed response against the manifest's own resources.** It
+  used to map that response with an empty resource registry, so every mapped field counted as
+  required and no field type was known. It now uses the manifest's resource definitions: an
+  absent optional field degrades (yellow) instead of failing the adoption, and a `web-page`
+  value outside the declared origins stops it (red, field names only).
+- **A shape error on an enumerated value now names the value it refused.** `@archstone/schema`'s
+  loader appends `(got "<value>")` (JSON-quoted, truncated to 80 characters) to an `enum`
+  failure in an authored manifest — e.g.
+  `/capability/output/links/list must be equal to one of the allowed values (got "web-page")`.
+  Machine-emitted execution records are reported as before.
+- **`contractViolationMessage` (`@archstone/emitter-support`) takes an optional third argument,
+  the withheld field names.** Without it, or with an empty list, the text is unchanged.
+
+### Security
+
+- **`@archstone/emitter-support`: undeclared keys inside a nested value no longer reach the model
+  (#146).** The response mapper projected only the top level of each row. A field whose type is a
+  resource (`host: Host`) was copied as the provider sent it, so every key inside it reached
+  `structuredContent`, the model-facing text, the embedded `execute()` result and `verify`'s
+  replay, whether `Host` declared it or not. The same was true of a `collection:` inside a
+  resource, of an object sent in a `ref:` slot, of extra keys inside a `money`, `party` or
+  `date-range` object, and of an object or array sent where a plain scalar (`text`, `quantity`, …)
+  is declared. Every value is now projected against its declared type at every level, so
+  ADR-0008's guarantee, that an undeclared provider field never reaches a model, holds at any
+  depth. Every earlier release is affected for an output resource that nests a `type:` resource,
+  a `collection:` field or a composite semantic type.
+
 ## [0.28.0]
 
 ### Changed
