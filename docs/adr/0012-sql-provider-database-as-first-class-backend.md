@@ -49,6 +49,36 @@ topology guide are not yet. Decision text is edited in place; this list is what 
    dependency on `pg_postmaster_start_time()` and the database oid being readable by the runtime
    role, memory-snapshot clones, and a same-microsecond start.
 
+**Amended (2026-10-07),** from running D-3, D-4 and D-9 against a real Postgres for the first time
+(16 and 18, #153); every claim below is pinned by a test in `providers/sql/test/` and was
+identical on both majors. Decision text is edited in place; this list is what moved:
+
+1. **D-4, what "reset" means.** At the end of the transaction Postgres restores a transaction-local
+   setting to its prior value. A name that was never set in the session leaves its placeholder
+   behind, so it reads back as `''`, not `NULL`. "No residual GUC state" is true of every value,
+   not of the name. A policy, view or function guarding "no identity" must therefore treat `''`
+   exactly like `NULL`.
+2. **D-4 / D-9 layer 2, which refusal the caller sees.** Postgres refuses a write in a read-only
+   transaction (SQLSTATE `25006`) and a write the role may not make (`42501`), but not always in
+   that order, so neither code names the layer that stopped it. Against a base table the read-only
+   check comes first, with or without the privilege. Against a *view* the privilege check comes
+   first, so a role without write grants gets `42501` even inside the read-only transaction. A
+   `UPDATE`/`DELETE` of a table whose policy calls a function that raises surfaces that function's
+   own error first, because the planner evaluates the function while costing the statement. The
+   write is refused in every case; only the code differs.
+3. **D-9 layer 4, what role membership does to the check.** The query joins `relowner =
+   current_user` to grants whose grantee is `current_user` or `PUBLIC`. A role that reaches a
+   relation through *any* membership — a group that owns it, or a grant to a group — satisfies
+   neither half, whether or not the membership is active. With `INHERIT FALSE` the privileges are
+   not active and the table cannot be read; `information_schema.role_table_grants` does not show
+   the group's rows to that session at all. With `INHERIT TRUE` the privileges are active, the
+   group's rows are visible under the group's name, the role reads the group's table, and the check
+   still passes. The text said the view reports "grants reachable through role membership the
+   connecting role has at query time" and implied only the inactive case escapes; both escape.
+4. **Risks.** R-7 is widened to match: an *inherited* membership is as invisible to layer 4 as an
+   unactivated one. The mitigation is unchanged and is operational: no role-membership indirection
+   on the runtime role.
+
 **Note:** two independent architect drafts of this decision existed. This one — with connector
 dispatch centralized once in a new subpath (D-6) — was chosen by Adrian on 2026-09-24 over the
 alternative, which kept dispatch per-consumer. The superseded draft is kept for reference at
@@ -289,8 +319,10 @@ COMMIT;                                              -- or ROLLBACK on any error
   leak a previous caller's session state" true by construction rather than by careful cleanup
   code: there is no cleanup code to get wrong, because there is nothing left to clean up once the
   transaction boundary closes. A connection is returned to the pool only after `COMMIT`/`ROLLBACK`
-  has already run, so the next caller to check it out starts with no residual GUC state from any
-  previous tenant — enforced by the database, not by `archstone`.
+  has already run, so the next caller to check it out starts with no residual *value* from any
+  previous tenant — enforced by the database, not by `archstone`. (Amended 2026-10-07: what is
+  restored is the prior value, and a name never set in the session keeps its placeholder, which
+  reads back as `''` rather than `NULL`. Anything that guards "no identity" must treat both alike.)
 - **GUC naming is deployer configuration, never CDL/binding content.** `identityAdapter` returns
   claim keys the deployer chooses to match their own RLS policies (e.g. `{ tenant_id: "acme" }`);
   a small `sqlSessionGucPrefix` option on `InvokeOptions` (default `"app."`) determines the
@@ -301,8 +333,10 @@ COMMIT;                                              -- or ROLLBACK on any error
 - **`SET TRANSACTION READ ONLY`** (or `BEGIN READ ONLY`, the same enforcement in one statement;
   either form satisfies D-9 layer 2) is a second, independent read-only enforcement (D-9): even a
   query that somehow slipped past the compile-time `statementKind`/leading-keyword check (a
-  comment-obfuscated statement, say) fails at the database with a read-only-transaction error,
-  because Postgres enforces this per-transaction unconditionally, not by trusting the query text.
+  comment-obfuscated statement, say) fails at the database — with a read-only-transaction error
+  (`25006`) or, where Postgres checks something else first (a view the role may not write, a
+  raising policy function; amended 2026-10-07), with that error — because Postgres enforces this
+  per-transaction unconditionally, not by trusting the query text.
 - **The role and the server are read inside the transaction (D-9, amended 2026-10-05).** One
   statement of its own, before any claim is set, reads the connecting role's
   `rolsuper`/`rolbypassrls`, the server's `pg_postmaster_start_time()` and the current
@@ -552,14 +586,16 @@ Four independent enforcements, layered rather than relying on any single one:
    the reachable-and-owned set, with no dependency on reading, parsing, or trusting any specific
    binding's `query` text. It requires no new binding field and no author input.
 
-   **What this does not catch, stated plainly:** `information_schema.role_table_grants` reports
-   grants visible to the connecting role's own session — direct grants, `PUBLIC` grants, and
-   grants reachable through role membership the connecting role has at query time — the same
-   visibility Postgres itself uses to decide what the role can do. It does not, and cannot,
-   catch a grant that exists but is not yet visible in this session (e.g. `NOINHERIT` role
-   membership the connection has not `SET ROLE`'d into) or ownership of a relation the role could
-   reach only through a mechanism outside ordinary `SELECT` grants (e.g. a `SECURITY DEFINER`
-   function chain). Those are named residual gaps, not silently assumed away — see R-7.
+   **What this does not catch, stated plainly (amended 2026-10-07 against a real catalog):** the
+   query sees a relation only when the connecting role *itself* owns it and a grant to the role
+   itself or to `PUBLIC` reaches it. `information_schema.role_table_grants` shows a session the
+   grants of the roles it has enabled, but the query keeps only the two grantees above, so
+   anything held through a role membership is invisible to it — an unactivated one (`INHERIT
+   FALSE`/`NOINHERIT`, where the session cannot use the privilege and the catalog does not show it),
+   *and* an inherited one (where the session uses the privilege freely and the catalog shows it
+   under the group's name). Ownership of a relation the role could reach only through a mechanism
+   outside ordinary `SELECT` grants (e.g. a `SECURITY DEFINER` function chain) is not seen
+   either. Those are named residual gaps, not silently assumed away — see R-7.
 
 There is no flag to bypass any of the four. All four are named explicitly so a future
 contributor does not "simplify" the design down to whichever ones they find first — in
@@ -863,7 +899,7 @@ change above is binding/provider/IR-side.
 | R-4 | Postgres native-type → JSON coercion (bigint, numeric, timestamp, uuid) disagrees between what `init` observes at probe time and what a later driver version produces, causing a false drift signal | M | M | Pin the driver's type-parser configuration explicitly (no reliance on ambient defaults) as part of `providers/sql`'s own test suite, not left to each deployer's `pg` version |
 | R-5 | `init`'s Postgres adapter ships before `providers/sql` (`ensureConnection`, `introspectCatalog`) (D-1–D-6, D-10), forcing it to open its own ad-hoc connection and duplicating the exact mechanism this ADR centralizes | L (sequencing is stated) | H | D-10 states the dependency order explicitly; implementation guidance below sequences accordingly |
 | R-6 | Premature Phase-2 (edge/Hyperdrive) complexity creeps into v1 because "it would be nice to also run this on Workers" | L | M | D-5 draws the exclusion boundary now and builds no accommodation for it; a data-proxy decision is explicitly deferred to a real customer demand, per the product brief |
-| R-7 | The ownership check (D-9, layer 4) misses a grant the connecting role holds but that is not visible in the checking session — most plausibly a `NOINHERIT` role membership the connection has not `SET ROLE`'d into, or a path to data reached through a `SECURITY DEFINER` function rather than a direct table/view grant | L | H | Named explicitly in D-9 rather than folded into a general "best effort" disclaimer, so the topology guide can say precisely what is and is not covered. The mitigation is operational, not code: the documented default topology (a runtime role granted directly on a curated view schema, no role-membership indirection, no `SECURITY DEFINER` in the exposed surface) is exactly the shape under which this check is complete, and `archstone init`'s own output never produces the shape that would evade it |
+| R-7 | The ownership check (D-9, layer 4) misses ownership or a grant the connecting role holds through anything but itself or `PUBLIC` — a role membership, active (`INHERIT TRUE`; amended 2026-10-07: the role then reads the group's table and the check passes) or not (`NOINHERIT`, where the connection would have to `SET ROLE` into it) — or a path to data reached through a `SECURITY DEFINER` function rather than a direct table/view grant | L | H | Named explicitly in D-9 rather than folded into a general "best effort" disclaimer, so the topology guide can say precisely what is and is not covered. The mitigation is operational, not code: the documented default topology (a runtime role granted directly on a curated view schema, no role-membership indirection, no `SECURITY DEFINER` in the exposed surface) is exactly the shape under which this check is complete, and `archstone init`'s own output never produces the shape that would evade it |
 | R-8 | Ownership or grants change in the *same* database on the *same* running server — `ALTER TABLE … OWNER TO` the runtime role, or a new `GRANT` to it on a relation it already owns — after a long-lived process (`serve --http`, embedded `execute()`) has judged that (server, database); layer 4 is not re-run, so the process keeps serving a role that now owns a relation it can read. Layer 3's attributes are not affected: they are read in every transaction | L | H | Named in D-9 rather than implied away. Operational: the topology guide states that layer 4 is judged once per server and database per process, that ownership of exposed relations belongs to a separate owner role, and that an ownership or grant change touching the runtime role is followed by a restart of long-lived processes. `archstone verify` re-runs layer 4, which helps only where it reaches the production server and database, which CI usually does not. A per-transaction layer 4 would close it and was rejected as a judgment on cost, not a measurement (D-9) |
 | R-9 | A managed Postgres service revokes `EXECUTE` on `pg_postmaster_start_time()` from ordinary roles, or returns something other than the server process's start time; or a server is a memory-snapshot clone (CRIU, a VM instant clone) of a running one, which keeps the same start time (and `system_identifier`) while it diverges; or two servers start in the same microsecond (theoretical). Verified only on stock Postgres 16 and 17, where it is `PUBLIC` | L | M if revoked (every call fails closed — an outage, never a bypass); H if the key does not change across a server change (layer 4 would not re-run on a re-point) | Revoked: fails closed by D-9 ruling 4, loudly (the startup error reports it as a check that could not complete, not as "over-privileged", #133) — at `serve`/`serve --http`/`verify` startup before any call is served; under embedded `execute()`, which has no startup check, on every call from the first. The Postgres integration suite pins the stock behaviour; the topology guide lists the function among what the runtime role needs. A service whose value does not track the server is not detectable from inside the session; if one is found, the fix is a different server identity in the same place, not a fallback to per-DSN caching |
 
