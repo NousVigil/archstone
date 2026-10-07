@@ -422,13 +422,13 @@ describePostgres("invokeSql against a real Postgres", () => {
     ]);
   });
 
-  // --------------------------------------------------------------- scenario 5: types (R-3, D-7)
+  // --------------------------------------------------------------- scenario 5: types (D-7)
   //
   // D-7 says rows reach `applyResponseMapping` as the driver returns them, "numeric/bigint/
   // timestamp as strings unless a deployer overrides type parsers". What `pg` 8 actually returns
   // is pinned below, then run through the unmodified mapping and compared against the
   // outputSchema the same semantic types lower to. Findings are pinned as they ARE today, named
-  // "R-3 finding:"; the fixes are `it.todo`s — out of scope for a test-only change.
+  // "D-7 finding:"; the fixes are `it.todo`s — out of scope for a test-only change.
 
   const TYPED_QUERY = "SELECT id, label, amount, big, qty, as_of, trade_date, active, note FROM app.holdings WHERE id = $1";
   const typedTool = sqlTool(TYPED_QUERY, ["id"], DSN_VARS.runtime, {
@@ -467,7 +467,7 @@ describePostgres("invokeSql against a real Postgres", () => {
     return { raw, mapped, wire: wire.holdings[0], shape: describeShape(result.data) };
   }
 
-  it("R-3: text and int4 arrive as string and number, and satisfy their lowered schema", async () => {
+  it("D-7: text and int4 arrive as string and number, and satisfy their lowered schema", async () => {
     const { raw, wire } = await mappedRow(3, "tenant-b");
     expect(raw.label).toBe("beta-alpha");
     expect(raw.qty).toBe(21);
@@ -477,21 +477,21 @@ describePostgres("invokeSql against a real Postgres", () => {
     expect(typeof wire.qty).toBe("number");
   });
 
-  it("R-3 finding: numeric arrives as a STRING ('3234.50'), but a `quantity` outputSchema says number", async () => {
+  it("D-7 finding: numeric arrives as a STRING ('3234.50'), but a `quantity` outputSchema says number", async () => {
     const { raw, wire } = await mappedRow(3, "tenant-b");
     expect(raw.amount).toBe("3234.50");
     expect(itemSchema.amount.type).toBe("number");
     expect(typeof wire.amount).toBe("string"); // structuredContent fails its own outputSchema
   });
 
-  it("R-3 finding: bigint arrives as a STRING (exact, beyond 2^53), but a `quantity` outputSchema says number", async () => {
+  it("D-7 finding: bigint arrives as a STRING (exact, beyond 2^53), but a `quantity` outputSchema says number", async () => {
     const { raw, wire } = await mappedRow(3, "tenant-b");
     expect(raw.big).toBe("9007199254740993"); // > Number.MAX_SAFE_INTEGER: a number would lose it
     expect(Number(raw.big)).toBe(9007199254740992); // what a naive number coercion would report
     expect(typeof wire.big).toBe("string");
   });
 
-  it("R-3 fix (#146): timestamptz arrives as an ISO date-time string, and is fingerprinted as the string it is on the wire", async () => {
+  it("D-7 fix (#146): timestamptz arrives as an ISO date-time string, and is fingerprinted as the string it is on the wire", async () => {
     const { raw, wire, shape, mapped } = await mappedRow(3, "tenant-b");
     expect(raw.as_of).toBe("2026-10-03T12:34:56.789Z");
     expect(wire.as_of).toBe("2026-10-03T12:34:56.789Z");
@@ -500,7 +500,7 @@ describePostgres("invokeSql against a real Postgres", () => {
     expect(shape["$[].as_of"]).toBe("string");
   });
 
-  it("R-3 fix (#146): date arrives as 'YYYY-MM-DD', independent of the process's TZ", async () => {
+  it("D-7 fix (#146): date arrives as 'YYYY-MM-DD', independent of the process's TZ", async () => {
     const previous = process.env.TZ;
     process.env.TZ = "Pacific/Kiritimati"; // UTC+14: pg's default date parser would build new Date(y, m, d) here
     try {
@@ -514,7 +514,7 @@ describePostgres("invokeSql against a real Postgres", () => {
     }
   });
 
-  it("R-3 fix (#146): a timestamp (no zone) is read as UTC and arrives as an ISO instant with Z, independent of the process's TZ", async () => {
+  it("D-7 fix (#146): a timestamp (no zone) is read as UTC and arrives as an ISO instant with Z, independent of the process's TZ", async () => {
     // `as_of AT TIME ZONE 'UTC'` is a `timestamp without time zone` holding as_of's UTC wall clock,
     // whatever the session TimeZone is — so read back as UTC it is as_of's own instant.
     const wallTool = sqlTool("SELECT id, as_of AT TIME ZONE 'UTC' AS wall FROM app.holdings WHERE id = $1", ["id"]);
@@ -530,14 +530,14 @@ describePostgres("invokeSql against a real Postgres", () => {
     }
   });
 
-  it("R-3 finding: boolean arrives as a boolean, and CDL has no boolean semantic type to declare it truthfully", async () => {
+  it("D-7 finding: boolean arrives as a boolean, and CDL has no boolean semantic type to declare it truthfully", async () => {
     const { raw, wire } = await mappedRow(3, "tenant-b");
     expect(raw.active).toBe(true);
     expect(itemSchema.active.type).toBe("string");
     expect(typeof wire.active).toBe("boolean");
   });
 
-  it("R-3: a NULL in an optional column degrades (field omitted) — mapping treats null as absent", async () => {
+  it("D-7: a NULL in an optional column degrades (field omitted) — mapping treats null as absent", async () => {
     const { raw, mapped } = await mappedRow(1, "tenant-a");
     expect(raw.note).toBeNull();
     expect(mapped.status).toBe("degraded");
@@ -545,12 +545,12 @@ describePostgres("invokeSql against a real Postgres", () => {
     expect(mapped.data!.holdings).toEqual([expect.not.objectContaining({ note: expect.anything() })]);
   });
 
-  it("R-3: a NULL in a column the resource declares required is a whole-response violation", async () => {
+  it("D-7: a NULL in a column the resource declares required is a whole-response violation", async () => {
     const strict: IRResourceRegistry = { Holding: resources.Holding.map((f) => (f.name === "note" ? { ...f, required: true } : f)) };
     const result = await invokeSql(typedTool, { id: 1 }, opts("tenant-a"));
     expect(applyResponseMapping(typedTool, result.data, strict)).toMatchObject({ status: "violation", missing: ["note"] });
   });
 
-  it.todo("R-3 fix: numeric/bigint reach a `quantity` field as a JSON number (or the lowering admits the string form) — needs a decision: pg type parsers vs. mapping-time coercion");
-  it.todo("R-3 fix: CDL can declare a boolean column (no boolean semantic type exists)");
+  it.todo("D-7 fix (#157): numeric/bigint reach a `quantity` field as a JSON number (or the lowering admits the string form) — needs a decision: pg type parsers vs. mapping-time coercion");
+  it.todo("D-7 fix (#157): CDL can declare a boolean column (no boolean semantic type exists)");
 });
