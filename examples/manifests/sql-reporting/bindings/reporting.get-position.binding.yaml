@@ -1,0 +1,51 @@
+# NOT CDL — implementation (how), separate from the capability (what).
+#
+# Read this next to examples/manifests/booking/bindings/: same file, same place, a different
+# `connector.type`. The connection string is an env placeholder, never a literal.
+#
+# What is NOT here: any tenant. The query does not filter by whose positions these are, and the
+# grammar offers no way to — identity reaches the database as a transaction-scoped session
+# setting (app.tenant_id) that a row-level-security policy reads. Delete the policy and
+# `archstone verify` goes red (see README.md).
+
+binding:
+  capabilityId: reporting.get-position
+  connector:
+    type: sql
+    sql:
+      engine: postgres
+      dsn: "${REPORTING_DSN}"
+      statementKind: select
+      query: |
+        SELECT id, label, qty
+        FROM app.positions_v
+        WHERE id = $1
+      params:
+        - id
+
+  # Row → Position (the same mapping a REST body goes through). Anything the view returns and
+  # this does not name is dropped here and never reaches a model.
+  response:
+    collection: "$[*]"
+    resource: Position
+    map:
+      id: "$.id"
+      label: "$.label"
+      quantity: "$.qty"
+
+  # What `archstone verify` last saw the database return for fixtures/…golden.json's request,
+  # replayed as `identity` (acme-analyst). It then replays the SAME request as `negativeIdentity`
+  # (globex-analyst) and requires zero rows: that is the isolation test, run against the real
+  # database on every verify.
+  contract:
+    source: recorded
+    fingerprint: "sha256:dd003cbce8591a29c0dafe2b01361e0a9666f23afcff5a01c2c5563e8b1769d8"
+    shape:
+      "$": array
+      "$[]": object
+      "$[].id": number
+      "$[].label": string
+      "$[].qty": number
+    verifiedAt: "2026-10-07T00:00:00Z"
+    probe:
+      fixture: fixtures/reporting.get-position.golden.json

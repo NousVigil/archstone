@@ -15,7 +15,8 @@
     "build": "pnpm -r run build",
     "typecheck": "tsc -p tsconfig.json",
     "lint": "eslint .",
-    "test": "pnpm run build && pnpm --filter archstone-demo-remote-mcp-worker run build:ir && vitest run"
+    "test": "pnpm run build && pnpm --filter archstone-demo-remote-mcp-worker run build:ir && vitest run",
+    "test:postgres": "pnpm run build && vitest run providers/sql/test/postgres packages/runtime/test/verify-sql-isolation.integration packages/cli/test/sql-postgres-e2e"
   },
   "devDependencies": {
     "@eslint/js": "^9.18.0",

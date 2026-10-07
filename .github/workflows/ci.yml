@@ -10,12 +10,15 @@ jobs:
   build:
     runs-on: ubuntu-latest
     # A throwaway Postgres for the `*.integration.test.ts` suites that need a real database
-    # (providers/sql, and runtime's verify isolation test). They skip themselves when
-    # ARCHSTONE_TEST_PG_URL is unset, so this service is what makes them run here. The
-    # credentials are container-local and exist only for this job — not a secret.
+    # (providers/sql, runtime's verify isolation test, and the CLI's `verify` end to end). This is
+    # the CURRENT major (18); `postgres-compat` below runs the same suites against an older
+    # supported one. Locally those suites skip themselves when ARCHSTONE_TEST_PG_URL is unset, but
+    # under CI (GitHub sets CI=true) an unset URL or an unreachable server FAILS them — they are
+    # never silently skipped here. The credentials are container-local and exist only for this
+    # job — not a secret.
     services:
       postgres:
-        image: postgres:16
+        image: postgres:18
         env:
           POSTGRES_PASSWORD: archstone-ci
         ports:
@@ -53,6 +56,45 @@ jobs:
       # misnamed changelog.d fragment was first caught by release.yml, after the tag existed.
       - name: Release script tests
         run: node --test scripts/*.test.mjs
+
+  # The same real-Postgres suites against the oldest major we support (16), so a behaviour that
+  # differs between majors — catalog visibility, error precedence, role-membership semantics —
+  # fails here rather than at a user's database. Only the integration files run: everything else
+  # is already covered by `build` above. Same mandatory-in-CI rule: no URL, or no server, fails.
+  postgres-compat:
+    name: postgres-compat (16)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: archstone-ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Test against Postgres 16
+        run: pnpm test:postgres
+        env:
+          ARCHSTONE_TEST_PG_URL: postgres://postgres:archstone-ci@localhost:5432/postgres
 
   # The two jobs below judge the release notes: release-prepare.mjs folds the changelog.d/
   # fragments into CHANGELOG.md's "## [Unreleased]", renames that heading to "## [X.Y.Z]", and
