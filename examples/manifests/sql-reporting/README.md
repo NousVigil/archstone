@@ -93,7 +93,7 @@ Clean up with `docker stop archstone-sql-demo`.
 ## What the database side looks like
 
 [`fixture.sql`](fixture.sql) is the topology the [ADR](../../../docs/adr/0012-sql-provider-database-as-first-class-backend.md)
-asks for, in about fifty lines:
+asks for, in about sixty lines:
 
 | | |
 |---|---|
