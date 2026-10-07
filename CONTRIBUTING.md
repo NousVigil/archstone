@@ -35,15 +35,28 @@ Node 22+ · pnpm 11+. When running a single test file directly with `pnpm exec v
 
 ### Tests against a real Postgres
 
-The `sql` provider's `*.integration.test.ts` suites (`providers/sql/test/`, and
-`packages/runtime/test/verify-sql-isolation.integration.test.ts`) run against a real database
-and skip themselves unless `ARCHSTONE_TEST_PG_URL` is set. CI sets it; to run them locally:
+The `sql` provider's isolation guarantee is only as good as the database that enforces it, so the
+`*.integration.test.ts` suites that cover it (`providers/sql/test/`,
+`packages/runtime/test/verify-sql-isolation.integration.test.ts` and
+`packages/cli/test/sql-postgres-e2e.integration.test.ts`) run against a real Postgres.
+
+**In CI they are mandatory and are never skipped.** The `build` job runs the whole test suite against
+the current Postgres major (18) and the `postgres-compat` job runs just these suites against an older
+supported major (16). If `CI` is set and `ARCHSTONE_TEST_PG_URL` is not, or the server cannot be
+reached, the suites fail with a message saying so — a skipped suite reports green, and a guarantee
+nobody ran is not one.
+
+**Locally they are opt-in**: with `ARCHSTONE_TEST_PG_URL` unset they skip, with the reason in the
+suite's name, and `pnpm test` stays offline. To run them:
 
 ```bash
-docker run -d --rm --name archstone-pg-it -e POSTGRES_PASSWORD=archstone -p 55432:5432 postgres:16
+docker run -d --rm --name archstone-pg-it -e POSTGRES_PASSWORD=archstone -p 127.0.0.1:55432:5432 postgres:18
 ARCHSTONE_TEST_PG_URL=postgres://postgres:archstone@127.0.0.1:55432/postgres pnpm test
 docker stop archstone-pg-it
 ```
+
+`pnpm test:postgres` builds and runs only the Postgres suites, which is what `postgres-compat` runs;
+to try the older major, start `postgres:16` instead.
 
 The URL must be an admin (superuser) role: it is used only to create, and drop afterwards, a
 per-run database and the roles the tests connect as — never to run a provider call.
