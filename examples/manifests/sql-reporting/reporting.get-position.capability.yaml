@@ -1,0 +1,18 @@
+# Business only: what an analyst can ask, and what comes back. No table, no query, no tenant.
+# Whose positions these are is not a field here — it is the caller's identity, enforced by the
+# database (see fixture.sql), so there is nothing a binding author could forget to filter by.
+capability:
+  id: reporting.get-position
+  description: Look up one of the caller's own positions by its id.
+  effect: read
+
+  input:
+    id:
+      type: identifier
+      description: The position's id.
+
+  output:
+    positions:
+      collection: Position
+
+  provider: warehouse

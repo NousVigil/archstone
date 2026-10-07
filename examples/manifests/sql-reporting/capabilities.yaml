@@ -1,0 +1,14 @@
+# capabilities.yaml — Harborline Capital's contract with the AI world, backed by a Postgres
+# database instead of a REST API. Nothing in this file says so: that is the point.
+# Try it: see README.md (a Postgres container, the SQL in fixture.sql, then apply / verify).
+
+company:
+  id: harborline
+  name: Harborline Capital
+  description: An asset manager letting each client's analyst ask about their own positions.
+
+capabilities:
+  - reporting.get-position
+
+providers:
+  - warehouse

@@ -1,0 +1,15 @@
+# Resource Definition — the unit reporting.get-position returns: a holding in a client's book.
+
+resource:
+  name: reporting.Position
+  description: A holding in one client's book.
+  fields:
+    id:
+      type: identifier
+      description: The position's id.
+    label:
+      type: text
+      description: What the position is, for display.
+    quantity:
+      type: quantity
+      description: Units held.

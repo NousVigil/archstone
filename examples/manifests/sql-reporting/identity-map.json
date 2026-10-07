@@ -1,0 +1,4 @@
+{
+  "acme-analyst": { "tenant_id": "acme" },
+  "globex-analyst": { "tenant_id": "globex" }
+}
