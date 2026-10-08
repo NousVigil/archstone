@@ -705,11 +705,12 @@ export function validateSemantics(model: LoadResult): Diagnostic[] {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Origin-bound output types (`web-page`)
+// Origin-bound output types (`web-page`, `image`)
 //
-// A `web-page` value is a link a person will be shown. A `string` field can carry any URL, so this
-// type promises more: the value points at an origin the binding declares (`origins.pages`), and the
-// shared response mapper withholds anything else. Each rule below closes one way that promise
+// A `web-page` or `image` value is a link a person will be shown. A `string` field can carry any
+// URL, so these types promise more: the value points at an origin the binding declares
+// (`origins.pages`, `origins.images` — two lists, never shared), and the shared response mapper
+// withholds anything else (a `list:` of one withholds per item). Each rule below closes one way that promise
 // could be made without being kept:
 //
 //   web-page-in-input               error    the model would be the one supplying the link
@@ -734,6 +735,8 @@ interface OriginBoundHit {
   via?: string;
   /** Required at its own level. */
   required: boolean;
+  /** The field is a `list:` of the type (per-item withholding), not a scalar. */
+  isList: boolean;
   /** Reached through a `collection:` somewhere on the way. */
   inCollection: boolean;
   /** Directly a field of the resource a `response:` maps (one level below the output field). */
@@ -761,15 +764,18 @@ function originBoundFields(
   for (const [name, value] of Object.entries(fields ?? {})) {
     const raw = (value ?? {}) as Record<string, unknown>;
     const path = prefix ? `${prefix}.${name}` : name;
-    if (typeof raw.type === "string") {
-      const list = originListOf(raw.type as SemanticType);
+    // A `list:` field has no `type:`; its item type is what is origin-bound.
+    const boundType = typeof raw.type === "string" ? raw.type : typeof raw.list === "string" ? raw.list : undefined;
+    if (boundType !== undefined) {
+      const list = originListOf(boundType as SemanticType);
       if (list) {
         hits.push({
-          semantic: raw.type as SemanticType,
+          semantic: boundType as SemanticType,
           list,
           path,
           ...(via ? { via } : {}),
           required: typeof raw.required === "boolean" ? raw.required : true,
+          isList: typeof raw.list === "string",
           inCollection,
           ...(depth === 1 ? { topField: name } : {}),
         });
@@ -796,6 +802,15 @@ function originBoundFields(
     );
   }
   return hits;
+}
+
+/** Per-type nouns for the message wording (the codes are derived from the type name itself). */
+const ORIGIN_NOUNS: Readonly<Record<string, { link: string; things: string }>> = {
+  "web-page": { link: "link", things: "pages" },
+  "image": { link: "image URL", things: "images" },
+};
+function originNoun(semantic: SemanticType): { link: string; things: string } {
+  return ORIGIN_NOUNS[semantic] ?? { link: "link", things: "values" };
 }
 
 /** `https://` + host + optional port, nothing else. Host labels are letters (any script, so an
@@ -837,7 +852,7 @@ function checkOriginBound(
       diags.push({
         severity: "error",
         code: `${hit.semantic}-in-input`,
-        message: `capability '${cid}' (${d.file}) input field '${hit.path}'${through} is of type ${hit.semantic}, which is output-only — a link the model supplies is exactly what the type exists to prevent`,
+        message: `capability '${cid}' (${d.file}) input field '${hit.path}'${through} is of type ${hit.isList ? `list: ${hit.semantic}` : hit.semantic}, which is output-only — a ${originNoun(hit.semantic).link} the model supplies is exactly what the type exists to prevent`,
       });
     }
   }
@@ -912,7 +927,7 @@ function checkOriginBound(
         diags.push({
           severity: "error",
           code: `${semantic}-no-origins`,
-          message: `${at}: output reaches ${semantic} field(s) ${named}, but the binding declares no origins.${list} — there is nothing to check a value against. Declare the origin(s) these pages live on`,
+          message: `${at}: output reaches ${semantic} field(s) ${named}, but the binding declares no origins.${list} — there is nothing to check a value against. Declare the origin(s) these ${originNoun(semantic).things} live on`,
         });
       }
     }
@@ -937,13 +952,14 @@ function checkOriginBound(
       const reported = new Set<string>();
       for (const hit of hits) {
         if (!hit.inCollection || !hit.required) continue;
+        if (hit.isList) continue; // a list withholds per item: an off-origin item never fails a row
         if (hit.topField !== undefined && loosened.has(hit.topField)) continue;
         if (reported.has(hit.path)) continue;
         reported.add(hit.path);
         diags.push({
           severity: "warning",
           code: `${hit.semantic}-required-in-collection`,
-          message: `${at}: ${hit.semantic} field '${hit.path}' is required inside a collection and the response mapping has no onError — one row whose value is outside the declared origins fails the whole response. Consider making the field optional (required: false), so that row only loses the link`,
+          message: `${at}: ${hit.semantic} field '${hit.path}' is required inside a collection and the response mapping has no onError — one row whose value is outside the declared origins fails the whole response. Consider making the field optional (required: false), so that row only loses the ${originNoun(hit.semantic).link}`,
         });
       }
     }

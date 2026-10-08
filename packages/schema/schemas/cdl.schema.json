@@ -103,9 +103,10 @@
             "enum",
             "date",
             "datetime",
-            "web-page"
+            "web-page",
+            "image"
           ],
-          "description": "A semantic type. `web-page` is Experimental and output-only: the page where a person sees this resource on the provider's own site, checked against the binding's `origins.pages`."
+          "description": "A semantic type. `web-page` and `image` are Experimental and output-only: `web-page` is the page where a person sees this resource on the provider's own site, checked against the binding's `origins.pages`; `image` is an absolute https URL of a picture of the resource, to be shown and never fetched, checked against the binding's `origins.images`."
         },
         "required": { "type": "boolean", "default": true },
         "description": { "type": "string" },
@@ -171,7 +172,8 @@
             "quantity",
             "enum",
             "date",
-            "datetime"
+            "datetime",
+            "image"
           ]
         },
         "required": { "type": "boolean", "default": true },

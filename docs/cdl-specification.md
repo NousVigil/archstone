@@ -175,8 +175,8 @@ which versions independently of this grammar. A processor **MUST** reject a `typ
 whose name is neither a registered semantic type nor a defined Resource.
 
 The registered set is `location`, `date-range`, `party`, `preference-set`, `money`,
-`identifier`, `string`, `text`, `time-slot`, `quantity`, `enum`, `date`, `datetime` and
-`web-page`.
+`identifier`, `string`, `text`, `time-slot`, `quantity`, `enum`, `date`, `datetime`,
+`web-page` and `image`.
 
 #### `web-page` — *Experimental*, output-only
 
@@ -228,6 +228,81 @@ Limits — what the type does *not* guarantee:
 `web-page` is Experimental: its meaning may still change before it is frozen with the rest of
 the semantic type system.
 
+#### `image` — *Experimental*, output-only
+
+**Definition.** The content for a person to view: a picture, photo, or visual asset meant to be
+displayed by the client, never fetched by the assistant. Examples: a hotel's photo
+(`https://cdn.example.com/hotels/1234/photo-01.jpg`), a product image in a catalogue
+(`https://cdn.example-img.net/products/sku-0042/main.jpg`). Not an `image`: an API endpoint (a
+binding concern), a link a person opens (`web-page`), or an embedded asset that requires
+Javascript (`data:` URI with content security implications).
+
+It is a meaning, not a format. A `string` field can carry any URL at all — including one a
+provider's data, or text typed into a listing by its owner, points anywhere it likes. An
+`image` field carries one more fact: the link points at an origin the provider declared, and
+when used in a `list:`, items are checked individually.
+
+Normative:
+
+- `image` is **output-only**. A processor **MUST** reject it in a capability's `input`,
+  directly or inside a Resource carried there by representation (`type:` / `collection:`).
+  It **MUST NOT** be used as an extraction target.
+- `image` **MAY** be a **List** item type (`list: image`), unlike `web-page`. In a list,
+  items that fail the origin check are **withheld per item** rather than all-or-nothing: a
+  list containing mix of off-origin and valid URLs emits only the valid ones, items are
+  reordered to remove the withheld ones, and item names in the `withheld` list use 0-based
+  positions from the provider's original array (e.g. `photos[2]`). An empty list means all
+  items were withheld. A list where every item is withheld is present and empty (not
+  omitted), whether optional or required, and the result is **DEGRADED**.
+- A binding whose capability output reaches an `image` field — directly, or through a
+  Resource or Collection at any depth — **MUST** declare `origins.images` (§5.4) and **MUST**
+  declare `response:` or `extract:`. A pass-through binding is never checked, so it cannot
+  carry the guarantee.
+- A conforming runtime **MUST** check every `image` value it emits against the binding's
+  `origins.images` and **MUST** fail closed. A value passes only if it parses as an
+  **absolute** URL, its scheme is `https`, it carries no userinfo, and its origin (scheme,
+  host, port — after normalisation: lower-cased host, punycode, default port elided) equals a
+  declared origin exactly. No suffix match, no wildcard.
+- A passing value **MUST** be emitted as its normalised form, not the provider's raw string.
+- A failing scalar value **MUST** be treated as absent: an optional field is omitted (the
+  result is degraded), a required field is a contract violation. A failing list item **MUST**
+  be dropped (per item 0-based position kept in `withheld`). A processor **MUST** report which
+  fields were withheld, and **MUST NOT** echo a withheld value into any message, result or
+  record — the value is provider-controlled text.
+
+Limits — what the type does *not* guarantee:
+
+- **Only typed fields are checked.** A URL inside a `text` or `string` field is passed
+  through untouched.
+- **Relative references are withheld**, not resolved: `/hotels/1234/photo.jpg` and
+  `//cdn.example.com/photo.jpg` have no declared base to resolve against.
+- **Nothing is fetched.** Neither the runtime nor `archstone verify` checks that the image
+  exists, what it contains, or whether it is safe to display inline; the origin is the
+  guarantee, not the content. An SVG served from the declared origin, for example, may carry
+  embedded script and run it when the client renders it.
+- Signed or time-limited URLs are not special-cased; if one expires, it is still withheld. A
+  provider must issue URLs with validity periods that outlast the response lifetime.
+- A trailing-dot host (`cdn.example.com.`) is a different origin and is withheld.
+- A declared origin the runtime cannot normalise (e.g. a host label that is not valid IDNA)
+  matches nothing.
+- The check applies to what the model is shown. A deployer's own response hook (`onResponse`
+  in the reference runtime) runs before it and sees the raw provider body.
+- **Withheld item names are capped.** A hostile response can carry thousands of off-origin
+  items. The `withheld` list names at most 25 items per list by position (e.g. `photos[0]`,
+  `photos[1]`, …, `photos[24]`); beyond 25, one overflow entry `photos[…]` closes the list.
+  Item values are never named, only field names and integer positions, so existing input
+  sanitisation applies.
+- **Parallel lists misalign when items are withheld.** A `list: image` named `photos` and a
+  `list: string` named `captions` with matching indices — e.g. `photos[3]` describes
+  `captions[3]` — do not track together if one image is withheld; `captions[3]` no longer
+  describes `photos[3]` if it has been dropped. Do not model alt text as a parallel list; use
+  a `collection:` of a Resource with an `image` field and a `text` field instead (though note
+  that a required `image` in a collection fails the entire response on one withheld item, per
+  ADR-0009 and S-A8).
+
+`image` is Experimental: its meaning may still change before it is frozen with the rest of
+the semantic type system.
+
 ---
 
 ## 5. Manifests
@@ -265,8 +340,9 @@ Carries connector/implementation detail for one capability. Bindings are **outsi
 CDL**; a CDL processor **MUST** validate a capability without reference to any
 binding.
 
-A binding **MAY** declare `origins`, a sibling of `response:` and `extract:`: the origins the
-provider's pages live on, against which every `web-page` output value (§4.7) is checked.
+A binding **MAY** declare `origins`, a sibling of `response:` and `extract:`: the origins where
+the provider's pages and images live, against which every `web-page` and `image` output value
+(§4.7) is checked.
 
 ```yaml
 binding:
@@ -276,16 +352,24 @@ binding:
   origins:
     pages:
       - https://www.example.com
+    images:
+      - https://cdn.example-img.net
+      - https://www.example.com
 ```
 
-- `origins.pages`, if present, **MUST** be a non-empty list. Each entry **MUST** be a bare
-  `https` origin: `https://`, a host, an optional `:port`, and nothing else — no path (not even
-  a trailing `/`), query, fragment, userinfo, wildcard or `${VAR}` placeholder.
-  `https://www.example.com` is valid; `https://www.example.com/stays` is not.
+- `origins.pages` and `origins.images`, if present, **MUST** each be a non-empty list. Each
+  entry **MUST** be a bare `https` origin: `https://`, a host, an optional `:port`, and
+  nothing else — no path (not even a trailing `/`), query, fragment, userinfo, wildcard or
+  `${VAR}` placeholder. `https://www.example.com` and `https://cdn.example-img.net:8443` are
+  valid; `https://www.example.com/stays`, `https://www.example.com/`, `http://www.example.com`,
+  `https://*.example.com` and `${IMAGES_ORIGIN}` are refused.
 - Entries are compared after normalisation (lower-cased host, default port elided); two
-  entries naming the same origin are an error.
-- The list is per binding, and is repeated in each binding of a provider by design: there is
-  no provider-level document for it.
+  entries naming the same origin within the same key are an error. `pages` and `images` are
+  separate: a URL valid for `pages` is checked only against `pages`, and a URL in an `image`
+  field is checked only against `images`. They do not share or fall back to one another.
+- The lists are per binding, and are repeated in each binding of a provider by design: there is
+  no provider-level document for it. A `web-page` field with no `origins.pages` or an `image`
+  field with no `origins.images` is a compile error (`web-page-no-origins` / `image-no-origins`).
 
 ---
 

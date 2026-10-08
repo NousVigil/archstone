@@ -5,7 +5,7 @@
 // pass (validateSemantics); it builds what it can regardless.
 
 import type { LoadResult, CapabilityDoc, PolicyDoc } from "@archstone/schema";
-import { SEMANTIC_TYPES, LIFECYCLE_STATES, type IR, type IRTool, type IRField, type IRType, type IRConnector, type IRRestConnector, type IRResourceRegistry, type IRResponseMapping, type IRResponseOnError, type IRDiscriminator, type IRFieldMapping, type IRContract, type IRPolicyRule, type IROrigins, type Lifecycle, type SemanticType } from "./ir";
+import { SEMANTIC_TYPES, ORIGIN_LIST_KEYS, LIFECYCLE_STATES, type IR, type IRTool, type IRField, type IRType, type IRConnector, type IRRestConnector, type IRResourceRegistry, type IRResponseMapping, type IRResponseOnError, type IRDiscriminator, type IRFieldMapping, type IRContract, type IRPolicyRule, type IROrigins, type Lifecycle, type SemanticType } from "./ir";
 import { JSON_TYPES, type JsonType, type ShapeMap } from "./fingerprint";
 import { domainOf, resolveResourceName, resourceIndex } from "./resolve";
 
@@ -266,10 +266,15 @@ function lowerPolicyRules(docs: PolicyDoc[], capabilityId: string, provider: str
  *  undefined, so the tool carries no `origins` member at all. */
 function lowerOrigins(raw: unknown): IROrigins | undefined {
   if (!raw || typeof raw !== "object") return undefined;
-  const pages = (raw as Record<string, unknown>).pages;
-  if (!Array.isArray(pages)) return undefined;
-  const list = pages.filter((p): p is string => typeof p === "string");
-  return list.length > 0 ? { pages: list } : undefined;
+  const out: IROrigins = {};
+  // Fixed key order (ORIGIN_LIST_KEYS), so the order the author wrote the lists in never changes IR bytes.
+  for (const key of ORIGIN_LIST_KEYS) {
+    const entries = (raw as Record<string, unknown>)[key];
+    if (!Array.isArray(entries)) continue;
+    const list = entries.filter((p): p is string => typeof p === "string");
+    if (list.length > 0) out[key] = list;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 /** Read a capability's authored `lifecycle`, defaulting to "stable" when absent or not a

@@ -329,14 +329,14 @@ describe("S-B.13 – S-B.16: every place a web-page value can be", () => {
     expect(required.withheld).toEqual(["pageUrl"]);
   });
 
-  it("a hand-written `list` of web-page items is all or nothing", () => {
+  it("a hand-written `list` of web-page items withholds per item, like any origin-bound list (#152)", () => {
     const tool: IRTool = {
       ...singleTool(),
       output: [{ name: "pages", required: false, type: { kind: "list", items: "web-page" } }],
       response: undefined,
       extract: [{ name: "pages", path: "$.pages[*]" }],
     };
-    expect(applyResponseMapping(tool, { pages: ["https://www.example.com/a", EVIL] }, {}).withheld).toEqual(["pages"]);
+    expect(applyResponseMapping(tool, { pages: ["https://www.example.com/a", EVIL] }, {}).withheld).toEqual(["pages[1]"]);
     expect(applyResponseMapping(tool, { pages: ["https://WWW.example.com/a"] }, {}).data).toEqual({ pages: ["https://www.example.com/a"] });
   });
 

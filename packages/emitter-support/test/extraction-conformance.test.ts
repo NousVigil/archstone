@@ -118,7 +118,7 @@ describe("#10: every semantic type and field form is covered", () => {
     for (const semantic of Object.keys(ORIGIN_BOUND_TYPES) as SemanticType[]) {
       const field: IRField = { name: "listingUrl", required: false, type: { kind: "scalar", semantic } };
       expect(() => extractionJsonSchema([field])).toThrow(ExtractionSchemaError);
-      expect(() => extractionJsonSchema([field])).toThrow(/field 'listingUrl' is of type web-page/);
+      expect(() => extractionJsonSchema([field])).toThrow(new RegExp(`field 'listingUrl' is of type ${semantic}`));
       expect(() => validateExtraction([field], { listingUrl: "https://www.example.com/x" })).toThrow(ExtractionSchemaError);
       // …and inside a resource, where the walk reaches it the same way.
       const nested: IRResourceRegistry = { Stay: [{ name: "listingUrl", required: true, type: { kind: "scalar", semantic } }] };
