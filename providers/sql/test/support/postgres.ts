@@ -220,7 +220,7 @@ export async function createPgFixture(): Promise<PgFixture> {
       CREATE SCHEMA app;
       GRANT USAGE ON SCHEMA app TO ${r.runtime}, ${r.ownerWithGrant}, ${r.ownerNoGrant}, ${r.ownerPublic}, ${r.writer}, ${r.memberNoInherit}, ${r.memberInherit}, ${o.owner};
 
-      -- The RLS-protected table. Typed columns exist for R-3 (what the pg driver returns per type).
+      -- The RLS-protected table. Typed columns exist for D-7 (what the pg driver returns per type).
       CREATE TABLE app.holdings (
         id          int4 PRIMARY KEY,
         tenant_id   text NOT NULL,

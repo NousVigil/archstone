@@ -277,6 +277,7 @@ describePostgres("curated view + migrations-owner topology against a real Postgr
   // -------------------------------------------------------------------------- R-7, with real roles
   //
   // ADR-0012 R-7: D-9 layer 4 refuses a connecting role that OWNS a relation it can also reach.
+  // Whether to keep this boundary or follow membership is open: #156. Flipping it flips these tests.
   // The query joins `pg_class.relowner = current_user` to `role_table_grants` rows whose grantee
   // is `current_user` or PUBLIC. A role that merely belongs to the role that owns app.r7_owned
   // satisfies neither half, so the check cannot see it — whether or not the membership is active:

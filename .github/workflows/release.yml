@@ -43,6 +43,20 @@ concurrency:
 jobs:
   release:
     runs-on: ubuntu-latest
+    # The build gate runs `pnpm test`, and with CI set the real-Postgres suites fail rather than
+    # skip when no database is reachable (#153). Same container-local service as ci.yml's `build`.
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: archstone-ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
     steps:
       - name: Checkout the tagged commit (full history)
         # #93 / A-6 §6 M-2. This used to check out `ref: main` unconditionally, which made a
@@ -141,6 +155,8 @@ jobs:
           cache-dependency-path: pnpm-lock.yaml
 
       - name: Build gate (lint + typecheck + tests)
+        env:
+          ARCHSTONE_TEST_PG_URL: postgres://postgres:archstone-ci@localhost:5432/postgres
         run: |
           # Repo-root CI tooling first, BEFORE any mutation (ADD-37 Amendment 1 O-19). Its
           # package-list tripwire also runs inside `scripts/release-gate.mjs` later, but that
