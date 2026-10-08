@@ -1,6 +1,6 @@
 {
   "name": "@archstone/provider-sql",
-  "version": "0.30.0",
+  "version": "0.31.0",
   "private": false,
   "type": "module",
   "description": "SQL provider for Archstone (ADR-0012) — binds a capability directly to Postgres, isolation enforced by RLS + transaction-scoped session identity, never by binding-author discipline.",
