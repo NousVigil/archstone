@@ -78,6 +78,9 @@ importers:
 
   examples/showcase:
     devDependencies:
+      '@archstone/agent':
+        specifier: workspace:*
+        version: link:../../packages/agent
       '@archstone/compiler':
         specifier: workspace:*
         version: link:../../packages/compiler
