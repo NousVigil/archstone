@@ -16,6 +16,7 @@
 
 import type { IRField, IRResourceRegistry, SemanticType } from "@archstone/compiler";
 import { extractionJsonSchema } from "./lowering";
+import { isMoneyShape } from "./money";
 
 export type ExtractionStatus = "ok" | "degraded" | "violation";
 
@@ -200,6 +201,16 @@ function checkField(f: IRField, value: unknown, path: string, resources: IRResou
 /** A single scalar value against its declared semantic type — the leaf check shared by a
  *  bare `scalar` field and by each item of a `list` field (#63), so the two can never drift. */
 function checkScalar(semantic: SemanticType, values: string[] | undefined, value: unknown, path: string, acc: Acc): unknown {
+  if (semantic === "money") {
+    // #182: the same rule `mapping.ts` applies on the way out — one function, `isMoneyShape`. A
+    // present value that fails it is invalid (no repair, ADR-0011), whether the field is required or not.
+    if (!isMoneyShape(value)) {
+      acc.invalid.push(isPlainObject(value) ? `${path}: expected money {amount: number, currency: three uppercase letters}` : `${path}: expected object`);
+      return undefined;
+    }
+    for (const key of Object.keys(value)) if (key !== "amount" && key !== "currency") acc.undeclared.push(join(path, key));
+    return { amount: value.amount, currency: value.currency };
+  }
   const composite = COMPOSITE[semantic];
   if (composite) return checkComposite(composite, value, path, acc);
 

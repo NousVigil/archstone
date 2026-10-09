@@ -8,6 +8,7 @@
 export * from "./registry";
 export * from "./lowering";
 export * from "./mapping";
+export * from "./money";
 export * from "./origins";
 export * from "./exposure";
 export * from "./policy";
