@@ -2,14 +2,14 @@
 //
 // `init` proposes one candidate per operation in the document (16 here) and emits only the ones a
 // person confirms, each with an effect the person chose; it never defaults one. The decisions are the
-// person's answers in a file (s20-decisions.json): four operations kept, the DELETE declined.
+// person's answers in a file (s20-decisions.json): three operations kept, the DELETE declined.
 //
 // Expected: the draft holds exactly the confirmed capabilities. Negative: it has no delete action;
 // it carries no passport, phone, email or margin (the document describes no response shapes, so
 // there is nothing to copy them from); it wrote only inside --out; it made no connection and ran no
 // probe; and nothing was published (init has no publishing step: it writes files for a person to
 // review).
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { REPO_ROOT, emptyNetLog, readNetLog } from "./lib.mjs";
 
@@ -38,6 +38,13 @@ export async function run(ctx) {
   ctx.check("`init` exits 0", init.exit === 0);
   ctx.check("it proposed 16 candidates, one per operation in the document", /Candidates: 16 proposed/.test(init.stdout));
   ctx.check(`it emitted exactly the ${kept.length} confirmed capabilities`, new RegExp(`${kept.length} emitted`).test(init.stdout));
+
+  // Without a decisions file there is no person to confirm an effect, and `init` never defaults one.
+  const refusedDir = join(work, "refused");
+  ctx.norm.path(refusedDir, "<refused>", "a directory init was told to write to and did not");
+  const refused = await ctx.cli(["init", SPEC, "--out", refusedDir, "--non-interactive"], { offline: true, netLog });
+  ctx.check("`init --non-interactive` without --decisions refuses (non-zero): it never defaults an effect", refused.exit !== 0 && /never defaults an `effect`/.test(refused.stderr + refused.stdout));
+  ctx.check("and it wrote nothing: the output directory does not exist", !existsSync(refusedDir), { negative: true });
 
   const files = filesUnder(draft);
   // The manifest the draft IS: everything but INIT-REPORT.md, which by design lists what was declined.

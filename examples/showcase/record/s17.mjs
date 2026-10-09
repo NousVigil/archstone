@@ -9,6 +9,10 @@
 // list it -> `adopt` with nobody at the keyboard writes nothing and fails -> `adopt` with a person's
 // answers declares it -> the exposure lists it -> verify is green again.
 //
+// The capability is wanderlust.stay-details, not wanderlust.search, because `adopt` resolves a
+// resource by bare name and the manifest has two resources called Stay (tourism.Stay and
+// wanderlust.Stay): adopting into search would edit the wrong file. That is a known bug, #177.
+//
 // The "person" is scripted: their answers are in the transcript under `typed`, and each is sent
 // only after the question it answers has been printed. Archstone does not judge whether that email
 // field SHOULD reach a model; declaring it is the person's decision, and it is made here only to
@@ -73,7 +77,10 @@ export async function run(ctx) {
   const drifted = await ctx.cli(["verify", manifest], { env });
   // In this version a GAINED field is a yellow reading (ADR-0008: the contract still holds, there is
   // simply more than was recorded), so `verify` names it and exits 0. Only a lost field, a changed
-  // type or a missing required value turn it red and exit 1.
+  // type or a missing required value turn it red and exit 1. A strict `verify` that exits non-zero on
+  // a gained field is not available in this version; it is tracked in #178, and the claim below puts
+  // that pointer in the rendered transcript.
+  ctx.check("strict verify (exit non-zero on a gained field): not available in this version - #178", drifted.exit === 0);
   ctx.check(`after the change, \`verify\` names the new field: a yellow reading on wanderlust.stay-details, "gained 1 field(s): $.${FIELD}"`, /🟡 wanderlust\.stay-details — .*gained 1 field\(s\): \$\.guestEmail \(string\)/.test(drifted.stdout));
   ctx.check("and the other capabilities' readings did not change (no other line is yellow or red)", (drifted.stdout.match(/🟡|🔴/g) ?? []).length === 1);
   ctx.check("`verify` is a read-only check: the manifest is byte-identical after it", snapshot(manifest) === untouched, { negative: true });

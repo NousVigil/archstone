@@ -4,7 +4,8 @@
 // In this version a gained field is a YELLOW reading and `verify` exits 0 (only a lost field, a changed
 // type or a missing required value turn it red and exit 1), so the AC's "exits non-zero" is recorded as
 // what actually happens: named, yellow, exit 0. The test pins that so a change in either direction is
-// noticed.
+// noticed. A strict `verify` that exits non-zero on a gained field is not in this version (#178); the
+// transcript carries that as a claim. `adopt` runs on stay-details because of #177.
 
 import { describe, it, expect } from "vitest";
 import { commands, expectWellFormed } from "./recorded";

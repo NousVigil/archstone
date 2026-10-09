@@ -169,8 +169,8 @@ with their output written to [`transcripts/`](transcripts/) and checked in.
 | S-16 | `apply --exposure` | the exposed list names no margin, passport, phone, `description_html` or delete tool, while the backend is observed returning them |
 | S-17 | `verify`, `adopt` against a wrapped backend | `verify` names the new `guestEmail` field; it is absent from the exposure until a person declares it |
 | S-18 | `diff` on two declarations | one added field and one added action, with the backend stopped |
-| S-19 | `audit` and `doctor` | irreversible actions and exposed fields listed; zero outbound requests |
-| S-20 | `init` from the OpenAPI document | no delete action, no passport or phone, nothing published |
+| S-19 | `audit`, `doctor` and `apply --exposure` | irreversible actions listed (by `audit` over a trail, and by `doctor`); exposed fields listed by `apply --exposure`, not by `audit`; zero outbound requests |
+| S-20 | `init` from the OpenAPI document | no delete action (the delete is declined in the person's decisions file, `record/s20-decisions.json`), no passport or phone, nothing published; without a decisions file `init --non-interactive` refuses and writes nothing |
 | S-21 | [`sdk/embedded.mjs`](sdk/embedded.mjs) | the same tools in three vendor shapes; S-02 and S-14 still hold |
 
 ```bash
@@ -255,8 +255,15 @@ twice and requires identical bytes that equal the committed files. CI also runs
 `node examples/showcase/record/record.mjs --check` in the job that has the Postgres service.
 
 One reading note on S-17: in this version a gained field is a yellow reading in `verify`, which names it
-and exits 0; only a lost field, a changed type or a missing required value are red and exit 1. The
-transcript records exactly that.
+and exits 0; only a lost field, a changed type or a missing required value are red and exit 1. A strict
+`verify` that exits non-zero on a gained field is not available in this version and is tracked in
+[#178](https://github.com/NousVigil/archstone/issues/178); the transcript says so in a claim. S-17 runs
+`adopt` on `wanderlust.stay-details` because `adopt` resolves a resource by bare name and this manifest
+has two resources called `Stay`, a known bug tracked in
+[#177](https://github.com/NousVigil/archstone/issues/177).
+
+A note on S-19: `audit` reads Execution-record trails, so it lists what ran (including the irreversible
+`cancel` and `pay`). The exposed fields in that transcript come from `apply --exposure`, not from `audit`.
 
 ## Test
 
