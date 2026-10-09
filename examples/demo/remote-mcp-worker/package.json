@@ -3,16 +3,19 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Growth/demo-only infra for the archstone-website 'try it live' section. NOT a Phase-2 product decision — see README.md.",
+  "description": "Demo-only infra for the website's live sections: the Showcase over remote MCP, a browser 'run it live' path, and the synthetic agency API. NOT a Phase-2 product decision — see README.md.",
   "scripts": {
     "build:ir": "tsx scripts/build-ir.ts",
     "dev": "pnpm build:ir && wrangler dev",
     "deploy": "pnpm build:ir && wrangler deploy",
     "typecheck": "pnpm build:ir && tsc -p tsconfig.json",
-    "test": "pnpm build:ir && vitest run"
+    "test": "pnpm build:ir && vitest run",
+    "test:workerd": "pnpm build:ir && tsx scripts/workerd-parity.ts",
+    "live-battery": "tsx scripts/live-battery.ts"
   },
   "dependencies": {
     "@archstone/compiler": "workspace:*",
+    "@archstone/emitter-support": "workspace:*",
     "@archstone/provider-rest": "workspace:*",
     "@archstone/runtime": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.32.1"
@@ -22,6 +25,7 @@
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^4.1.11",
-    "wrangler": "^4.131.0"
+    "wrangler": "^4.131.0",
+    "yaml": "^2.6.1"
   }
 }

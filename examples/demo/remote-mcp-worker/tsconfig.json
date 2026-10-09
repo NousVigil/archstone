@@ -6,6 +6,7 @@
     "paths": {
       "@archstone/schema": ["../../../packages/schema/src/index.ts"],
       "@archstone/compiler": ["../../../packages/compiler/src/index.ts"],
+      "@archstone/emitter-support": ["../../../packages/emitter-support/src/index.ts"],
       "@archstone/runtime": ["../../../packages/runtime/src/index.ts"],
       "@archstone/provider-rest": ["../../../providers/rest/src/index.ts"]
     }

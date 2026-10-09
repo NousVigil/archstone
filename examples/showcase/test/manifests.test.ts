@@ -181,7 +181,7 @@ describe("AC-1.6: response variants", () => {
     // image + web-page
     expect(res["wanderlust.Gallery"].find((f) => f.name === "photos")!.type).toEqual({ kind: "list", items: "image" });
     expect(res["wanderlust.HotelPage"].find((f) => f.name === "url")!.type).toEqual({ kind: "scalar", semantic: "web-page" });
-    expect(tool("wanderlust.stay-photos").origins).toEqual({ images: ["https://images.wanderlust-agency.example"] });
+    expect(tool("wanderlust.stay-photos").origins).toEqual({ images: ["https://demo.archstone.dev"] });
     expect(tool("wanderlust.stay-page").origins).toEqual({ pages: ["https://www.wanderlust-agency.example"] });
     expect(model.ok).toBe(true);
   });

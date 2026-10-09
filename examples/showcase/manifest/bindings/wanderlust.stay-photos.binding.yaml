@@ -15,4 +15,4 @@ binding:
 
   origins:
     images:
-      - "https://images.wanderlust-agency.example"
+      - "https://demo.archstone.dev"

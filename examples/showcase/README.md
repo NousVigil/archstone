@@ -137,7 +137,8 @@ Tool names are the capability ids with dots replaced by underscores (`wanderlust
 Nothing is stored. Quote ids, booking ids and payment quotes are hashes of their inputs plus the
 current 15-minute window; cancel and pay validate the *shape* of an id, not a record. "Time" is
 injected (`now`), so a fixed clock gives byte-identical output, and image URLs are built from a
-constant origin (`https://images.wanderlust-agency.example`) rather than the request's address. The
+constant origin (`https://demo.archstone.dev`, the public demo Worker, which serves `/img/...`)
+rather than the request's address. The
 binding for `wanderlust.stay-photos` declares that origin; a host that serves the pictures elsewhere
 changes the constant and the declaration together.
 

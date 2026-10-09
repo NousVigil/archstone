@@ -1,8 +1,12 @@
 name: Deploy demo remote-MCP Worker
 
-# Growth/demo-only infra (examples/demo/remote-mcp-worker) — see that folder's
-# README. NOT part of the product release flow in release.yml; this tracks private main
-# directly, same as archstone-website tracks its own main for Cloudflare Pages.
+# Demo-only infra (examples/demo/remote-mcp-worker) — see that folder's README. NOT part of the
+# product release flow in release.yml; this tracks main directly, same as archstone-website tracks
+# its own main for Cloudflare Pages.
+#
+# Two jobs. `deploy-gate` runs the Showcase suite (the negative scenarios included), the Worker's
+# own tests and the workerd parity check. `deploy` needs it, so a failing suite means no deploy.
+# On a pull request only the gate runs: it is the check that shows on the PR.
 #
 # One-time setup: a repo secret CLOUDFLARE_API_TOKEN, scoped to Workers Scripts:Edit on the
 # account that owns archstone-demo-tourism-mcp (and, if the account has more than one,
@@ -16,18 +20,34 @@ on:
       # This is the demo worker's actual dependency closure, traced by hand from
       # examples/demo/remote-mcp-worker/package.json through each workspace package's own
       # "dependencies" (not devDependencies), and cross-checked against pnpm-lock.yaml:
-      #   worker -> @archstone/runtime, @archstone/compiler, @archstone/provider-rest
-      #   runtime -> + @archstone/emitter-support, @archstone/schema
-      #   provider-rest -> + @archstone/emitter-support (compiler already covered)
-      #   compiler -> + @archstone/schema (already covered)
-      #   emitter-support -> (only compiler, already covered)
+      #   worker -> @archstone/runtime, @archstone/compiler, @archstone/emitter-support,
+      #             @archstone/provider-rest
+      #   runtime -> + @archstone/schema (emitter-support, provider-rest already covered)
+      #   runtime also lists @archstone/provider-sql, but the worker's import graph never reaches it
+      #   (it would pull in pg); a `wrangler deploy --dry-run` bundle has no trace of it, so it is out.
+      #   provider-rest -> emitter-support (already covered)
+      #   compiler -> schema (already covered)
+      #   emitter-support -> compiler (already covered)
       #   schema -> no workspace deps
+      # The worker also imports, as source, the Showcase manifest (built into the IR), the
+      # synthetic API, the two demo keys and the scenario table: all under examples/showcase.
       # packages/agent, packages/cli and packages/init are deliberately excluded: they
       # consume the packages above, nothing in the closure depends on them.
       # Re-derive this list if the worker or any package in the closure gains a new
       # workspace dependency — do not widen it back to "packages/**" or "providers/**".
       - "examples/demo/remote-mcp-worker/**"
-      - "examples/manifests/tourism/**"
+      - "examples/showcase/**"
+      - "packages/compiler/**"
+      - "packages/emitter-support/**"
+      - "packages/runtime/**"
+      - "packages/schema/**"
+      - "providers/rest/**"
+  # The same filters as the push above (a test keeps the two lists equal).
+  pull_request:
+    branches: [main]
+    paths:
+      - "examples/demo/remote-mcp-worker/**"
+      - "examples/showcase/**"
       - "packages/compiler/**"
       - "packages/emitter-support/**"
       - "packages/runtime/**"
@@ -39,12 +59,50 @@ permissions:
   contents: read
 
 concurrency:
-  group: deploy-demo-worker
+  # A pull request's gate must never cancel a deploy that is running on main.
+  group: ${{ github.event_name == 'pull_request' && format('deploy-demo-worker-pr-{0}', github.ref) || 'deploy-demo-worker' }}
   cancel-in-progress: true
 
 jobs:
-  deploy:
+  deploy-gate:
+    name: deploy-gate
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v5
+        with:
+          version: 11.13.1
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install
+        # --no-frozen-lockfile: see the note on the deploy job's install below.
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Build workspace packages
+        run: pnpm -r run build
+
+      - name: Showcase suite (the negative scenarios, the manifests, the synthetic API)
+        run: pnpm exec vitest run examples/showcase
+
+      - name: Worker typecheck and tests
+        run: |
+          pnpm --filter archstone-demo-remote-mcp-worker run typecheck
+          pnpm --filter archstone-demo-remote-mcp-worker run test
+
+      - name: Worker under workerd (live battery, and parity with Node)
+        run: pnpm --filter archstone-demo-remote-mcp-worker run test:workerd
+
+  deploy:
+    needs: deploy-gate
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    env:
+      DEMO_WORKER_URL: https://demo.archstone.dev
     steps:
       - uses: actions/checkout@v5
 
@@ -73,18 +131,16 @@ jobs:
         # this monorepo may commit package.json changes on its own schedule without this
         # workflow's commit also re-syncing pnpm-lock.yaml; letting pnpm patch the lockfile for
         # this run avoids a hard failure on that drift.
-        run: |
-                    pnpm install --no-frozen-lockfile
+        run: pnpm install --no-frozen-lockfile
 
       - name: Build workspace packages
         # Since #13, @archstone/{schema,compiler,runtime,provider-rest} resolve strictly via
         # package.json "exports" -> ./dist/index.js (no dev-mode src fallback). tsx-based steps
         # like build:ir below resolve fine via tsconfig paths straight to source, but wrangler's
         # esbuild bundler follows Node exports resolution and needs dist/ to actually exist.
-        run: |
-                    pnpm -r run build
+        run: pnpm -r run build
 
-      - name: Build IR (real pipeline, from the tourism example)
+      - name: Build IR (real pipeline, from the Showcase manifest)
         run: |
           cd examples/demo/remote-mcp-worker
           pnpm build:ir
@@ -96,3 +152,17 @@ jobs:
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: examples/demo/remote-mcp-worker
           command: deploy
+
+      - name: Wait for the new version to answer
+        run: |
+          for i in $(seq 1 30); do
+            # GET on a /run path is 405 on this version of the Worker and 404 on the earlier one.
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$DEMO_WORKER_URL/run/S-01" || true)
+            [ "$code" = "405" ] && exit 0
+            sleep 2
+          done
+          echo "::error::$DEMO_WORKER_URL did not answer the new routes within 60s"
+          exit 1
+
+      - name: Live battery against the deployed Worker (red on failure, no automatic rollback)
+        run: pnpm --filter archstone-demo-remote-mcp-worker run live-battery "$DEMO_WORKER_URL"

@@ -88,6 +88,16 @@ jobs:
           for i in $(seq 1 30); do curl -sf http://localhost:18788/health >/dev/null && break; sleep 1; done
           SHOWCASE_API_URL=http://localhost:18788 node packages/cli/dist/index.js verify examples/showcase/manifest
 
+      # The demo Worker serves the Showcase. `pnpm typecheck` above does not reach it (its own
+      # tsconfig), and `pnpm test` runs it only in Node. This typechecks it, bundles it exactly as
+      # a deploy would (a dry run: no credentials, nothing is uploaded), and runs it under workerd,
+      # where the live battery runs over real HTTP and every live scenario is compared with Node.
+      - name: Demo Worker (typecheck, bundle dry run, workerd)
+        run: |
+          pnpm --filter archstone-demo-remote-mcp-worker run typecheck
+          (cd examples/demo/remote-mcp-worker && pnpm exec wrangler deploy --dry-run)
+          pnpm --filter archstone-demo-remote-mcp-worker run test:workerd
+
   # The same real-Postgres suites against the oldest major we support (16), so a behaviour that
   # differs between majors — catalog visibility, error precedence, role-membership semantics —
   # fails here rather than at a user's database. Only the integration files run: everything else

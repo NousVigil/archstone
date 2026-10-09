@@ -471,6 +471,9 @@ describe("every documented route is served", () => {
   });
 });
 
+// Reserved example domains, plus the demo Worker's own host: the agency's images are served from it.
+const FAKE_HOST = /\.example$|^demo\.archstone\.dev$/;
+
 describe("AC-1.11: every person, hotel and contact detail is visibly invented", () => {
   it("passports, phones, e-mails and URL hosts in every response are fakes", async () => {
     const responses: unknown[] = [];
@@ -507,12 +510,12 @@ describe("AC-1.11: every person, hotel and contact detail is visibly invented", 
           seen += 1;
         }
         if (/^https?:\/\//.test(value)) {
-          expect(new URL(value).hostname, value).toMatch(/\.example$/);
+          expect(new URL(value).hostname, value).toMatch(FAKE_HOST);
           seen += 1;
         }
       }
       for (const m of JSON.stringify(response).matchAll(/https?:\/\/[^"\\<>\s]+/g)) {
-        expect(new URL(m[0]).hostname, m[0]).toMatch(/\.example$/);
+        expect(new URL(m[0]).hostname, m[0]).toMatch(FAKE_HOST);
       }
     }
     expect(seen).toBeGreaterThan(40);
