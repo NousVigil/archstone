@@ -154,15 +154,27 @@ jobs:
           command: deploy
 
       - name: Wait for the new version to answer
+        # One 405 proves nothing: right after `wrangler deploy` some isolates and edges still serve
+        # the previous version. Require 10 consecutive new-version answers, so a stale edge
+        # answering in between resets the count; give up after about 3 minutes.
         run: |
-          for i in $(seq 1 30); do
+          ok=0
+          for _ in $(seq 1 90); do
             # GET on a /run path is 405 on this version of the Worker and 404 on the earlier one.
             code=$(curl -s -o /dev/null -w '%{http_code}' "$DEMO_WORKER_URL/run/S-01" || true)
-            [ "$code" = "405" ] && exit 0
+            if [ "$code" = "405" ]; then ok=$((ok + 1)); else ok=0; fi
+            [ "$ok" -ge 10 ] && exit 0
             sleep 2
           done
-          echo "::error::$DEMO_WORKER_URL did not answer the new routes within 60s"
+          echo "::error::$DEMO_WORKER_URL did not answer 10 times in a row with the new routes within 3 minutes"
           exit 1
 
       - name: Live battery against the deployed Worker (red on failure, no automatic rollback)
-        run: pnpm --filter archstone-demo-remote-mcp-worker run live-battery "$DEMO_WORKER_URL"
+        # A single retry after a pause absorbs a rollout still settling across edges; a second
+        # failure stays red.
+        run: |
+          if ! pnpm --filter archstone-demo-remote-mcp-worker run live-battery "$DEMO_WORKER_URL"; then
+            echo "::warning::Live battery failed once; retrying after 45s in case the rollout was still settling"
+            sleep 45
+            pnpm --filter archstone-demo-remote-mcp-worker run live-battery "$DEMO_WORKER_URL"
+          fi
