@@ -183,6 +183,10 @@ three uppercase letters (the ISO 4217 form; the code list is not checked). Any o
 including a bare number or string, does not have the declared shape: it is withheld when the
 field is optional and is a contract violation when it is required.
 
+The same rule applies to a `money` value in an extraction (ADR-0011): a present value that is
+not of this shape is reported as invalid and the document is a violation, since extraction does
+not repair.
+
 #### `web-page` — *Experimental*, output-only
 
 **Definition.** The page where a person can see this resource on the provider's own site:
