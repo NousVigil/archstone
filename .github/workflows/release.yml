@@ -224,6 +224,11 @@ jobs:
         # Also runs a live MCP `serve`/lifecycle-listing smoke probe (#24 follow-up) against
         # the same packed/installed CLI — the only check in this pipeline that actually
         # starts the MCP server and speaks the protocol with a real client.
+        # #162: an example with a `sql` binding is verified against its own fixture.sql, loaded
+        # into this job's Postgres service through the admin url below (the CLI itself only ever
+        # sees the fixture's runtime-role DSN). Without the url that leg FAILS, never skips.
+        env:
+          ARCHSTONE_TEST_PG_URL: postgres://postgres:archstone-ci@localhost:5432/postgres
         run: node scripts/release-gate.mjs
 
       - name: Publish packages to npm

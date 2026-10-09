@@ -35,6 +35,20 @@
 // because "the real compiler compiled this" is the claim `init` makes and the gate must not
 // take init's own exit code for it.
 //
+// Gate inputs (#162). `verify` for some examples needs more than a URL in the environment: an
+// example that ships an `identity-map.json` gets `--identity-map <it>`, and an example with a
+// `sql` binding gets a real database — its own `fixture.sql`, loaded into the Postgres the job
+// provides (ARCHSTONE_TEST_PG_URL, an admin url), connected to as the fixture's runtime role
+// through the env var its binding names (`dsn: "${VAR}"`). No database configured for an example
+// that needs one is a FAILURE of that example's verify leg, never a skip.
+//
+//   node scripts/release-gate.mjs --workspace
+//
+// runs only the per-manifest build + verify legs, with the same gate inputs, against the
+// workspace build (packages/cli/dist) instead of packed artifacts. That is the PR-time guard
+// (ci.yml): release.yml runs on dispatch/tag only, so before #162 an example whose verify needed
+// inputs the gate did not supply was first discovered by a failed release.
+//
 // Exit 0 = every in-scope manifest's build/verify passed, and the init and lifecycle-serve probes passed.
 // Exit 1 = at least one manifest or probe failed, OR the gate's own infrastructure failed
 //          (packaging, registry, install) before any manifest could be evaluated.
@@ -50,9 +64,11 @@ import {
 } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { tmpdir } from "node:os";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { createRequire } from "node:module";
 import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:net";
+import { createScriptDatabase } from "./lib/script-database.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // Public-repo edition: the workspace IS the repo root — there is no archstone/ subdirectory.
@@ -516,10 +532,19 @@ function discoverManifests() {
     .sort();
 }
 
-function runBuildProbe({ name, binPath, outDir }) {
+/** How the gate runs the CLI: `[command, ...leadingArgs]`. The packed install's bin is a
+ *  command of its own; the workspace build is `node packages/cli/dist/index.js`. */
+function spawnCli(cli, args, opts) {
+  const [cmd, ...lead] = cli;
+  return spawnSync(cmd, [...lead, ...args], opts);
+}
+
+export const WORKSPACE_CLI = [process.execPath, join(ARCHSTONE_DIR, "packages", "cli", "dist", "index.js")];
+
+function runBuildProbe({ name, cli, outDir }) {
   const manifestDir = join(MANIFESTS_DIR, name);
   const outFile = join(outDir, `${name}.ir.json`);
-  const res = spawnSync(binPath, ["build", manifestDir, "--out", outFile], {
+  const res = spawnCli(cli, ["build", manifestDir, "--out", outFile], {
     cwd: ARCHSTONE_DIR,
     encoding: "utf8",
   });
@@ -808,7 +833,94 @@ function runInitProbe({ binPath, outDir }) {
   };
 }
 
-async function runVerifyProbe({ name, binPath, mockUrl }) {
+// ---------------------------------------------------------------------------------------
+// Gate inputs (#162): what an example's `verify` needs beyond STAYS_API_URL, read from the
+// example itself so a new example is covered without editing this file.
+// ---------------------------------------------------------------------------------------
+
+/** The admin-url variable the job's Postgres arrives under — the same one the real-Postgres
+ *  test suites read (providers/sql/test/support/postgres.ts). */
+export const PG_URL_VAR = "ARCHSTONE_TEST_PG_URL";
+
+/**
+ * What `archstone verify <manifestDir>` needs from the gate, read from the example's files:
+ *
+ *   - `identityMap`: `<dir>/identity-map.json` if it exists, passed as `--identity-map`;
+ *   - `sql`: null, or — when any binding declares `connector.type: sql` — the env var names its
+ *     bindings' `dsn: "${VAR}"` placeholders use, the `fixture.sql` that builds its database
+ *     (null if the example ships none), and any sql binding whose DSN is not a `${VAR}`.
+ *
+ * A line-level read, not a YAML parse: this file has no dependencies by design, and a binding's
+ * `type: sql` / `dsn:` lines are flat scalars the schema fixes the spelling of.
+ */
+export function exampleGateInputs(manifestDir) {
+  const identityPath = join(manifestDir, "identity-map.json");
+  const bindingsDir = join(manifestDir, "bindings");
+  const dsnVars = new Set();
+  const unparsedDsn = [];
+  let hasSql = false;
+  if (existsSync(bindingsDir)) {
+    for (const rel of readdirSync(bindingsDir, { recursive: true })) {
+      if (!String(rel).endsWith(".binding.yaml")) continue;
+      const text = readFileSync(join(bindingsDir, String(rel)), "utf8");
+      if (!/^\s*type:\s*["']?sql["']?\s*(#.*)?$/m.test(text)) continue;
+      hasSql = true;
+      const dsn = text.match(/^\s*dsn:\s*["']?\$\{([A-Za-z_][A-Za-z0-9_]*)\}["']?\s*(#.*)?$/m);
+      if (dsn) dsnVars.add(dsn[1]);
+      else unparsedDsn.push(String(rel));
+    }
+  }
+  const fixturePath = join(manifestDir, "fixture.sql");
+  return {
+    identityMap: existsSync(identityPath) ? identityPath : null,
+    sql: hasSql
+      ? { dsnVars: [...dsnVars].sort(), fixture: existsSync(fixturePath) ? fixturePath : null, unparsedDsn }
+      : null,
+  };
+}
+
+/** Pure — why the gate cannot supply what an example's verify needs, or [] when it can. Every
+ *  entry fails that example's verify leg: a database the gate cannot provide is a failure, not
+ *  a skip, because a skipped isolation check reads exactly like a passing one in a summary. */
+export function gateInputProblems(inputs, env) {
+  const problems = [];
+  if (!inputs.sql) return problems;
+  if (inputs.sql.unparsedDsn.length > 0) {
+    problems.push(
+      `sql binding(s) whose dsn is not a single "\${VAR}" placeholder, so the gate cannot tell which variable to set: ${inputs.sql.unparsedDsn.join(", ")}`,
+    );
+  }
+  if (inputs.sql.dsnVars.length === 0 && inputs.sql.unparsedDsn.length === 0) {
+    problems.push("a sql binding declares no dsn the gate can read");
+  }
+  if (!inputs.sql.fixture) {
+    problems.push("declares a sql binding but ships no fixture.sql — the gate has no database to verify it against");
+  }
+  if (!env[PG_URL_VAR]) {
+    problems.push(
+      `declares a sql binding, so verify needs a real Postgres, and ${PG_URL_VAR} is not set. ` +
+        `Point it at the job's Postgres service (an admin url); this leg is never skipped.`,
+    );
+  }
+  return problems;
+}
+
+/** The `pg` module the gate builds a database with, resolved from `fromPackageJson`'s location —
+ *  the INSTALLED `@archstone/provider-sql` in the packed consumer (its own real dependency, not
+ *  the workspace's), or providers/sql in workspace mode. */
+async function loadPg(fromPackageJson) {
+  const resolved = createRequire(fromPackageJson).resolve("pg");
+  const mod = await import(pathToFileURL(resolved).href);
+  return mod.default ?? mod;
+}
+
+export const WORKSPACE_PG_FROM = join(ARCHSTONE_DIR, "providers", "sql", "package.json");
+
+/**
+ * One example's verify leg. `manifestDir` defaults to the example's own directory; a test may
+ * point it at a modified copy. `pgFrom` is the package.json `pg` is resolved relative to.
+ */
+export async function runVerifyProbe({ name, cli, mockUrl, manifestDir = join(MANIFESTS_DIR, name), pgFrom, env = process.env }) {
   if (VERIFY_PENDING_NO_CI_BACKEND.has(name)) {
     return {
       manifest: name,
@@ -821,22 +933,47 @@ async function runVerifyProbe({ name, binPath, mockUrl }) {
         "gated, and never silently skipped — per ADD-33 §6 step 5 (internal design record; cited by name, not linked).",
     };
   }
-  const manifestDir = join(MANIFESTS_DIR, name);
+  const inputs = exampleGateInputs(manifestDir);
+  const problems = gateInputProblems(inputs, env);
+  if (problems.length > 0) {
+    return { manifest: name, command: "verify", status: "fail", exitCode: null, detail: `gate inputs missing:\n${problems.map((p) => `  - ${p}`).join("\n")}` };
+  }
+
+  const args = ["verify", manifestDir];
+  if (inputs.identityMap) args.push("--identity-map", inputs.identityMap);
   // STAYS_API_URL is harmless for manifests whose bindings don't use it (booking/bank point
   // at BOOKING_API_URL/CORE_BANKING_URL and declare no contract: block — `verify` no-ops
-  // cleanly for them regardless, per ADD-18's own semantics, BR-3).
-  const res = spawnSync(binPath, ["verify", manifestDir], {
-    cwd: ARCHSTONE_DIR,
-    encoding: "utf8",
-    env: { ...process.env, STAYS_API_URL: mockUrl },
-  });
-  return {
-    manifest: name,
-    command: "verify",
-    status: res.status === 0 ? "pass" : "fail",
-    exitCode: res.status,
-    detail: (res.stdout || res.stderr || "").trim(),
-  };
+  // cleanly for them regardless, per ADD-18's own semantics, BR-3). The admin url is removed:
+  // the CLI only ever sees the runtime role's DSN, as a deployment would.
+  const childEnv = { ...env, STAYS_API_URL: mockUrl };
+  delete childEnv[PG_URL_VAR];
+
+  let db;
+  try {
+    if (inputs.sql) {
+      const pg = await loadPg(pgFrom);
+      db = await createScriptDatabase({ pg, adminUrl: env[PG_URL_VAR], sql: readFileSync(inputs.sql.fixture, "utf8") });
+      for (const v of inputs.sql.dsnVars) childEnv[v] = db.dsn;
+    }
+    const res = spawnCli(cli, args, { cwd: ARCHSTONE_DIR, encoding: "utf8", env: childEnv });
+    const via = [
+      inputs.identityMap ? "identity map" : null,
+      db ? `fixture.sql as ${db.runtimeRole} via ${inputs.sql.dsnVars.join(", ")}` : null,
+    ].filter(Boolean);
+    return {
+      manifest: name,
+      command: "verify",
+      status: res.status === 0 ? "pass" : "fail",
+      exitCode: res.status,
+      detail: (res.stdout || res.stderr || "").trim(),
+      // Printed for a pass too, so the report shows what a green leg was actually run with.
+      inputs: via.length > 0 ? via.join("; ") : undefined,
+    };
+  } catch (err) {
+    return { manifest: name, command: "verify", status: "fail", exitCode: null, detail: `could not set up the example's database: ${err?.message ?? err}` };
+  } finally {
+    await db?.teardown().catch(() => undefined);
+  }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -844,20 +981,23 @@ async function runVerifyProbe({ name, binPath, mockUrl }) {
 // failure (EC-6/S-US4.4).
 // ---------------------------------------------------------------------------------------
 
-function printReport(results, packages) {
+function printReport(results, packages, against = "packed artifacts") {
   const bar = "=".repeat(72);
   console.log(`\n${bar}`);
-  console.log("Release gate report — examples/manifests/* against packed artifacts");
+  console.log(`Release gate report — examples/manifests/* against ${against}`);
   console.log(bar);
-  console.log(`\nPackages under test:`);
-  for (const p of packages) console.log(`  ${p.name}@${p.version}`);
+  if (packages.length > 0) {
+    console.log(`\nPackages under test:`);
+    for (const p of packages) console.log(`  ${p.name}@${p.version}`);
+  }
   console.log("");
 
   let failed = false;
   for (const r of results) {
     const icon = r.status === "pass" ? "✓" : r.status === "pending" ? "⧗" : "✗";
     const exitTxt = r.exitCode != null ? ` (exit ${r.exitCode})` : "";
-    console.log(`${icon} ${r.manifest.padEnd(12)} ${r.command.padEnd(7)} ${r.status}${exitTxt}`);
+    console.log(`${icon} ${r.manifest.padEnd(16)} ${r.command.padEnd(7)} ${r.status}${exitTxt}`);
+    if (r.inputs) console.log(`    with ${r.inputs}`);
     if (r.status !== "pass" && r.detail) {
       for (const line of r.detail.split("\n")) console.log(`    ${line}`);
     }
@@ -867,7 +1007,7 @@ function printReport(results, packages) {
   console.log(`\n${bar}`);
   console.log(
     failed
-      ? "✗ release gate FAILED — one or more manifests failed build or verify against the packed artifacts."
+      ? `✗ release gate FAILED — one or more manifests failed build or verify against the ${against}.`
       : "✓ release gate passed for all in-scope manifests.",
   );
   console.log(`${bar}\n`);
@@ -877,6 +1017,55 @@ function printReport(results, packages) {
 // ---------------------------------------------------------------------------------------
 // Orchestration
 // ---------------------------------------------------------------------------------------
+
+/** Build every example, then verify every example with the gate inputs it needs (#162). Shared
+ *  by the packed release run and the `--workspace` PR-time run so the two cannot diverge. */
+async function runManifestLegs({ cli, outDir, pgFrom, onMock }) {
+  const manifests = discoverManifests();
+  log(`discovered manifests: ${manifests.join(", ")}`);
+
+  const results = [];
+  for (const name of manifests) {
+    results.push(runBuildProbe({ name, cli, outDir }));
+  }
+
+  const mock = await startMockBackend();
+  onMock(mock);
+  for (const name of manifests) {
+    results.push(await runVerifyProbe({ name, cli, mockUrl: mock.url, pgFrom }));
+  }
+  return results;
+}
+
+/**
+ * `--workspace` (#162): the per-manifest build + verify legs, with the same gate inputs, against
+ * the workspace build rather than packed artifacts. It proves nothing about packaging — the
+ * release run does that — but it runs on every PR, so an example whose verify needs something
+ * the gate does not supply fails there instead of on a release dispatch.
+ */
+async function mainWorkspace() {
+  const scratch = mkdtempSync(join(tmpdir(), "archstone-release-gate-ws-"));
+  let mock;
+  try {
+    if (!existsSync(WORKSPACE_CLI[1])) {
+      throw new GateInfraError(`workspace CLI not built at ${WORKSPACE_CLI[1]} — run \`pnpm run build\` first`);
+    }
+    const results = await runManifestLegs({ cli: WORKSPACE_CLI, outDir: scratch, pgFrom: WORKSPACE_PG_FROM, onMock: (m) => (mock = m) });
+    const failed = printReport(results, [], "workspace build (packages/cli/dist)");
+    process.exitCode = failed ? 1 : 0;
+  } catch (err) {
+    console.error(`\n[release-gate] ✗ ${err instanceof GateInfraError ? "gate infrastructure failure" : "unexpected error"}:\n  ${err.stack ?? err}\n`);
+    process.exitCode = 1;
+  } finally {
+    try {
+      mock?.close();
+    } catch {
+      // best effort
+    }
+    rmSync(scratch, { recursive: true, force: true });
+    process.exit(process.exitCode ?? 0);
+  }
+}
 
 async function main() {
   const scratch = mkdtempSync(join(tmpdir(), "archstone-release-gate-"));
@@ -907,18 +1096,10 @@ async function main() {
     const binPath = join(consumerDir, "node_modules", ".bin", "archstone");
     smokeTestBin(binPath);
 
-    const manifests = discoverManifests();
-    log(`discovered manifests: ${manifests.join(", ")}`);
-
-    const results = [];
-    for (const name of manifests) {
-      results.push(runBuildProbe({ name, binPath, outDir }));
-    }
-
-    mock = await startMockBackend();
-    for (const name of manifests) {
-      results.push(await runVerifyProbe({ name, binPath, mockUrl: mock.url }));
-    }
+    // `pg` for the sql examples' databases comes from the INSTALLED provider-sql — its own real
+    // dependency in the consumer — never from the workspace (BR-1).
+    const pgFrom = join(consumerDir, "node_modules", "@archstone", "provider-sql", "package.json");
+    const results = await runManifestLegs({ cli: [binPath], outDir, pgFrom, onMock: (m) => (mock = m) });
 
     results.push(runInitProbe({ binPath, outDir }));
     results.push(await runLifecycleServeProbe({ binPath, consumerDir }));
@@ -966,5 +1147,6 @@ async function main() {
 // Only run when invoked directly (`node scripts/release-gate.mjs`) — importable for the
 // pure helpers above (parseStampList/diffStampList/findRegistryLeaks) without side effects.
 if (import.meta.url === `file://${process.argv[1]}`) {
-  main();
+  if (process.argv.includes("--workspace")) mainWorkspace();
+  else main();
 }

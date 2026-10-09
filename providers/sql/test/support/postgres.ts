@@ -21,6 +21,7 @@ import { randomBytes } from "node:crypto";
 import { beforeAll, describe, it } from "vitest";
 import pg from "pg";
 import type { ConnectionEntry } from "../../src/index";
+import { createScriptDatabase as createSharedScriptDatabase, type ScriptDatabase } from "../../../../scripts/lib/script-database.mjs";
 
 export const ADMIN_URL = process.env.ARCHSTONE_TEST_PG_URL;
 
@@ -342,66 +343,18 @@ export async function endPools(registry: Map<string, ConnectionEntry>): Promise<
   registry.clear();
 }
 
-export interface ScriptDatabase {
-  /** The runtime role's DSN, for the `${ENV_VAR}` a binding names. */
-  dsn: string;
-  /** Run SQL as the admin, inside the script's database. */
-  admin(sql: string): Promise<void>;
-  teardown(): Promise<void>;
-}
+export type { ScriptDatabase } from "../../../../scripts/lib/script-database.mjs";
 
 /**
  * A throwaway database built from a SQL script — `examples/manifests/sql-reporting/fixture.sql`
  * — rather than from this module's own fixture, so the example is proven against exactly the
- * text its README tells a reader to run. Roles are cluster-global, so the script's fixed role
- * names are mapped to run-unique ones by `rename`; `runtimeRole` is then given a password.
+ * text its README tells a reader to run. The work is done by `scripts/lib/script-database.mjs`,
+ * which the release gate (#162) uses for the same example against the packed CLI; this wrapper
+ * only supplies `pg` and the admin url, so the test and the gate cannot drift apart. Roles the
+ * script creates are renamed run-unique; the runtime role is derived from the catalog (logs in,
+ * NOSUPERUSER, NOBYPASSRLS, owns nothing) unless `runtimeRole` names it.
  */
-export async function createScriptDatabase(script: (rename: (role: string) => string) => string, runtimeRole: string): Promise<ScriptDatabase> {
+export function createScriptDatabase(sql: string, runtimeRole?: string): Promise<ScriptDatabase> {
   if (!ADMIN_URL) throw new Error("createScriptDatabase called without ARCHSTONE_TEST_PG_URL");
-  const suffix = randomBytes(4).toString("hex");
-  const database = `archstone_it_${suffix}_script`;
-  const rename = (role: string) => `archstone_it_${suffix}_${role}`;
-  const password = randomBytes(12).toString("hex");
-  const urlFor = (user?: string, pw?: string) => {
-    const u = new URL(ADMIN_URL);
-    if (user) u.username = encodeURIComponent(user);
-    if (pw) u.password = encodeURIComponent(pw);
-    u.pathname = `/${database}`;
-    return u.toString();
-  };
-  const inDatabase = async (sql: string) => {
-    const c = new pg.Client({ connectionString: urlFor() });
-    await c.connect();
-    try {
-      await c.query(sql);
-    } finally {
-      await c.end();
-    }
-  };
-  const server = new pg.Client({ connectionString: ADMIN_URL });
-  await server.connect();
-  const sql = script(rename);
-  const created = [...sql.matchAll(/\bCREATE ROLE\s+(\w+)/gi)].map((m) => m[1]);
-  const teardown = async () => {
-    for (let attempt = 0; ; attempt++) {
-      try {
-        await server.query(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
-        break;
-      } catch (err) {
-        if (attempt >= 50) throw err;
-        await new Promise((r) => setTimeout(r, 100));
-      }
-    }
-    for (const role of created) await server.query(`DROP ROLE IF EXISTS ${role}`);
-    await server.end();
-  };
-  try {
-    await server.query(`CREATE DATABASE ${database}`);
-    await inDatabase(sql);
-    await inDatabase(`ALTER ROLE ${rename(runtimeRole)} PASSWORD ${quoteLiteral(password)}`);
-  } catch (err) {
-    await teardown().catch(() => undefined);
-    throw err;
-  }
-  return { dsn: urlFor(rename(runtimeRole), password), admin: inDatabase, teardown };
+  return createSharedScriptDatabase({ pg, adminUrl: ADMIN_URL, sql, runtimeRole });
 }
