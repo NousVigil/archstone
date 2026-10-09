@@ -197,7 +197,10 @@ describe("determinism and statelessness (AC-1.9)", () => {
     const src = readFileSync(resolve(SHOWCASE_DIR, "api/wanderlust-api.mjs"), "utf8");
     expect(src).not.toMatch(/\b(KV|D1|R2|localStorage|indexedDB|caches|Durable)\b|new Map\(|new Set\(/);
     const connectors = walkFiles(SHOWCASE_DIR)
-      .filter((f) => f.endsWith(".binding.yaml"))
+      // `local/` holds the recorded-only scenarios (the sql reporting manifest of S-15): not part of the
+      // deployed manifest or the Worker, which is what this test is about. Its own scenario asserts
+      // that the live manifest has no sql capability.
+      .filter((f) => f.endsWith(".binding.yaml") && !f.includes("/local/"))
       .map((f) => (parseYaml(readFileSync(f, "utf8")) as { binding: { connector: { type: string } } }).binding.connector.type);
     expect(connectors.length).toBeGreaterThan(10);
     expect(new Set(connectors)).toEqual(new Set(["rest"]));

@@ -1,0 +1,127 @@
+{
+  "scenario": "S-15",
+  "title": "How many bookings per city this month? (sql, local only)",
+  "kind": "mcp",
+  "recorded": {
+    "date": "2027-05-01",
+    "cli": "0.31.0"
+  },
+  "steps": [
+    {
+      "command": "archstone apply examples/showcase/local/reporting",
+      "exit": 0,
+      "stdout": "\narchstone apply examples/showcase/local/reporting\n\n  company    Wanderlust Agency (synthetic) (wanderlust)\n  providers  agency-warehouse\n  declared   1 capabilities\n  loaded     1 capability docs, 1 bindings\n    ✓ wanderlust.bookings-by-city  [read] → agency-warehouse\n\n  ✓ shapes valid\n  semantic   0 error(s), 0 warning(s)\n  registry   IR v0 — 1 capabilities, 1 invocable (bound)\n\n  → run 'archstone serve examples/showcase/local/reporting' to expose 1 tool(s) to an AI agent over MCP\n\n"
+    },
+    {
+      "command": "archstone verify examples/showcase/local/reporting --identity-map examples/showcase/local/reporting/identity-map.json",
+      "exit": 0,
+      "stdout": "\narchstone verify examples/showcase/local/reporting\n\n  🟢 wanderlust.bookings-by-city — fingerprint unchanged, mapping OK\n\n"
+    },
+    {
+      "call": {
+        "tool": "wanderlust_bookings-by-city",
+        "arguments": {
+          "month": "2027-05"
+        }
+      },
+      "result": {
+        "as": "demo:analyst",
+        "isError": false,
+        "structuredContent": {
+          "cities": [
+            {
+              "bookings": 5,
+              "city": "Lisbon"
+            },
+            {
+              "bookings": 3,
+              "city": "Porto"
+            },
+            {
+              "bookings": 2,
+              "city": "Seville"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "call": {
+        "tool": "wanderlust_bookings-by-city",
+        "arguments": {
+          "month": "2027-05"
+        }
+      },
+      "result": {
+        "as": "demo:outsider",
+        "isError": false,
+        "structuredContent": {
+          "cities": []
+        }
+      }
+    },
+    {
+      "call": {
+        "tool": "wanderlust_bookings-by-city",
+        "arguments": {
+          "month": "2027-05"
+        }
+      },
+      "result": {
+        "as": "(no caller)",
+        "isError": true
+      }
+    }
+  ],
+  "asserts": [
+    {
+      "claim": "`apply` compiles the local reporting manifest offline (exit 0)",
+      "negative": false
+    },
+    {
+      "claim": "`verify` exits 0: the recorded contract holds",
+      "negative": false
+    },
+    {
+      "claim": "`verify` replays the request as another tenant (the fixture names one) and is green only because that replay returned zero rows",
+      "negative": true
+    },
+    {
+      "claim": "the local manifest builds a registry with one tool",
+      "negative": false
+    },
+    {
+      "claim": "the analyst gets a table of bookings per city for the month: Lisbon 5, Porto 3, Seville 2",
+      "negative": false
+    },
+    {
+      "claim": "the table has exactly the declared columns, city and bookings (the guest passport column is not in the view)",
+      "negative": true
+    },
+    {
+      "claim": "another agency's analyst asking the same question gets no rows: the database's row-level security answers, not the binding",
+      "negative": true
+    },
+    {
+      "claim": "a call with no caller identity is refused, not answered",
+      "negative": true
+    },
+    {
+      "claim": "the live manifest's tool list has no bookings-by-city tool",
+      "negative": true
+    },
+    {
+      "claim": "no capability in the live manifest is bound to sql",
+      "negative": true
+    },
+    {
+      "claim": "no file under the live manifest declares a sql connector",
+      "negative": true
+    },
+    {
+      "claim": "the reporting manifest lives outside the live one",
+      "negative": false
+    }
+  ],
+  "normalisation": []
+}

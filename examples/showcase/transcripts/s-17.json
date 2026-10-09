@@ -1,0 +1,98 @@
+{
+  "scenario": "S-17",
+  "title": "The agency added a guest email field (verify, adopt)",
+  "kind": "cli",
+  "recorded": {
+    "date": "2027-05-01",
+    "cli": "0.31.0"
+  },
+  "steps": [
+    {
+      "command": "archstone verify <manifest>",
+      "exit": 0,
+      "stdout": "\narchstone verify <manifest>\n\n  🟢 tourism.search — fingerprint unchanged, mapping OK\n  🟢 wanderlust.neighbourhood — fingerprint unchanged, mapping OK\n  🟢 wanderlust.room-status — fingerprint unchanged, mapping OK\n  🟢 wanderlust.search — fingerprint unchanged, mapping OK\n  🟢 wanderlust.stay-details — fingerprint unchanged, mapping OK\n      nested keys not declared (dropped): rooms.amenities.host, rooms.amenities.lastUsedBy, rooms.amenities.history, rooms.id, rooms.net, rooms.margin, rooms.commission, rooms.guests\n\n"
+    },
+    {
+      "command": "archstone verify <manifest>",
+      "exit": 0,
+      "stdout": "\narchstone verify <manifest>\n\n  🟢 tourism.search — fingerprint unchanged, mapping OK\n  🟢 wanderlust.neighbourhood — fingerprint unchanged, mapping OK\n  🟢 wanderlust.room-status — fingerprint unchanged, mapping OK\n  🟢 wanderlust.search — fingerprint unchanged, mapping OK\n  🟡 wanderlust.stay-details — mapping still resolves; response shape gained 1 field(s): $.guestEmail (string)\n      nested keys not declared (dropped): rooms.amenities.host, rooms.amenities.lastUsedBy, rooms.amenities.history, rooms.id, rooms.net, rooms.margin, rooms.commission, rooms.guests\n\n"
+    },
+    {
+      "command": "archstone adopt <manifest>",
+      "typed": [],
+      "exit": 1,
+      "stdout": "\narchstone adopt <manifest>\n\n  tourism.search — nothing to adopt.\n\n  wanderlust.neighbourhood — nothing to adopt.\n\n  wanderlust.room-status — nothing to adopt.\n\n  wanderlust.search — nothing to adopt.\n\n  wanderlust.stay-details — 1 field(s) the backend returns and the manifest does not declare:\n    · $.guestEmail (string) → guestEmail: text\n\n",
+      "stderr": "\narchstone adopt: no more input — nothing written. Adoption needs a person (PromptUnavailable).\n"
+    },
+    {
+      "command": "archstone adopt <manifest>",
+      "typed": [
+        "y",
+        "The lead guest's email address, as the agency holds it."
+      ],
+      "exit": 0,
+      "stdout": "\narchstone adopt <manifest>\n\n  tourism.search — nothing to adopt.\n\n  wanderlust.neighbourhood — nothing to adopt.\n\n  wanderlust.room-status — nothing to adopt.\n\n  wanderlust.search — nothing to adopt.\n\n  wanderlust.stay-details — 1 field(s) the backend returns and the manifest does not declare:\n    · $.guestEmail (string) → guestEmail: text\n\n  Declare guestEmail (text)? [y/N]   Describe guestEmail — an agent reads this to decide whether to use it:\n  > \n  wanderlust.stay-details — declared guestEmail; contract re-recorded.\n\n"
+    },
+    {
+      "command": "archstone verify <manifest>",
+      "exit": 0,
+      "stdout": "\narchstone verify <manifest>\n\n  🟢 tourism.search — fingerprint unchanged, mapping OK\n  🟢 wanderlust.neighbourhood — fingerprint unchanged, mapping OK\n  🟢 wanderlust.room-status — fingerprint unchanged, mapping OK\n  🟢 wanderlust.search — fingerprint unchanged, mapping OK\n  🟢 wanderlust.stay-details — fingerprint unchanged, mapping OK\n      nested keys not declared (dropped): rooms.amenities.host, rooms.amenities.lastUsedBy, rooms.amenities.history, rooms.id, rooms.net, rooms.margin, rooms.commission, rooms.guests\n\n"
+    }
+  ],
+  "asserts": [
+    {
+      "claim": "before the change, `verify` exits 0 (the contract holds)",
+      "negative": false
+    },
+    {
+      "claim": "after the change, `verify` names the new field: a yellow reading on wanderlust.stay-details, \"gained 1 field(s): $.guestEmail\"",
+      "negative": false
+    },
+    {
+      "claim": "and the other capabilities' readings did not change (no other line is yellow or red)",
+      "negative": false
+    },
+    {
+      "claim": "`verify` is a read-only check: the manifest is byte-identical after it",
+      "negative": true
+    },
+    {
+      "claim": "the field is absent from the exposure while undeclared",
+      "negative": true
+    },
+    {
+      "claim": "`adopt` with nobody at the keyboard exits non-zero",
+      "negative": false
+    },
+    {
+      "claim": "`adopt` with nobody at the keyboard writes nothing",
+      "negative": true
+    },
+    {
+      "claim": "the field is still absent from the exposure",
+      "negative": true
+    },
+    {
+      "claim": "`adopt` with a person's answers exits 0",
+      "negative": false
+    },
+    {
+      "claim": "it reports the field declared and the contract re-recorded",
+      "negative": false
+    },
+    {
+      "claim": "the field is in the exposure now that a person declared it",
+      "negative": false
+    },
+    {
+      "claim": "`verify` exits 0 again once the field is declared",
+      "negative": false
+    }
+  ],
+  "normalisation": [
+    {
+      "what": "temporary copy of the live manifest (adopt writes to it)",
+      "as": "<manifest>"
+    }
+  ]
+}

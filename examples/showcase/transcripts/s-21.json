@@ -1,0 +1,61 @@
+{
+  "scenario": "S-21",
+  "title": "Use it inside my own app (embedded SDK: tools() and execute())",
+  "kind": "sdk",
+  "recorded": {
+    "date": "2027-05-01",
+    "cli": "0.31.0"
+  },
+  "steps": [
+    {
+      "command": "archstone build examples/showcase/manifest --out <work>/ir.json",
+      "exit": 0,
+      "stdout": "archstone build examples/showcase/manifest → <work>/ir.json (13 tool(s))\n"
+    },
+    {
+      "command": "node examples/showcase/sdk/embedded.mjs --ir <work>/ir.json --api <api>",
+      "exit": 0,
+      "stdout": "{\n  \"vendorShapes\": {\n    \"anthropic\": {\n      \"tools\": 11,\n      \"envelopeKeys\": [\n        \"description\",\n        \"input_schema\",\n        \"name\"\n      ]\n    },\n    \"openai-chat\": {\n      \"tools\": 11,\n      \"envelopeKeys\": [\n        \"function\",\n        \"type\"\n      ]\n    },\n    \"gemini\": {\n      \"tools\": 11,\n      \"envelopeKeys\": [\n        \"description\",\n        \"name\",\n        \"parameters\"\n      ]\n    }\n  },\n  \"toolNames\": [\n    \"tourism_search\",\n    \"wanderlust_availability\",\n    \"wanderlust_book\",\n    \"wanderlust_cancel\",\n    \"wanderlust_pay\",\n    \"wanderlust_quote\",\n    \"wanderlust_room-status\",\n    \"wanderlust_search\",\n    \"wanderlust_stay-details\",\n    \"wanderlust_stay-page\",\n    \"wanderlust_stay-photos\"\n  ],\n  \"stayDetails\": {\n    \"status\": \"ok\",\n    \"topLevelKeys\": [\n      \"stay\"\n    ],\n    \"forbiddenKeysFound\": []\n  },\n  \"deleteRequest\": {\n    \"status\": \"error\",\n    \"error\": \"unknown capability: wanderlust.delete-guest-bookings\"\n  },\n  \"failures\": []\n}\n"
+    }
+  ],
+  "asserts": [
+    {
+      "claim": "`build` exits 0 and writes the IR the SDK loads",
+      "negative": false
+    },
+    {
+      "claim": "the embedded script exits 0 (it exits 1 when any of its own expectations fails)",
+      "negative": false
+    },
+    {
+      "claim": "the same tools are offered in three vendor shapes (anthropic, openai-chat, gemini)",
+      "negative": false
+    },
+    {
+      "claim": "the three envelopes differ from each other, the tool list does not",
+      "negative": false
+    },
+    {
+      "claim": "S-02 holds: stay-details ran (ok) and returned none of margin, passport, phone, description_html, net, commission or the guest list",
+      "negative": true
+    },
+    {
+      "claim": "S-14 holds: no tool deletes, and asking for one is refused as an unknown capability",
+      "negative": true
+    },
+    {
+      "claim": "the refused request never reached the backend: the only request it saw was the stay lookup",
+      "negative": true
+    }
+  ],
+  "normalisation": [
+    {
+      "what": "address of the synthetic API on an ephemeral port",
+      "as": "<api>"
+    },
+    {
+      "what": "temporary directory standing in for work",
+      "as": "<work>"
+    }
+  ]
+}

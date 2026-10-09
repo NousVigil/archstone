@@ -1,0 +1,52 @@
+{
+  "scenario": "S-18",
+  "title": "What changed between last week and today? (diff)",
+  "kind": "cli",
+  "recorded": {
+    "date": "2027-05-01",
+    "cli": "0.31.0"
+  },
+  "steps": [
+    {
+      "command": "archstone diff <before> examples/showcase/manifest --all",
+      "exit": 0,
+      "stdout": "archstone diff compares declarations, not backends — run 'archstone verify' for the backend.\n\n  before  <before> (wanderlust)\n  after   examples/showcase/manifest (wanderlust)\n\n  compatible wanderlust.Stay — field 'rating' added (optional, quantity) (reaches wanderlust.search)\n  compatible wanderlust.quote — capability added (write)\n  compatible wanderlust.search — binding response mapping changed\n\n  0 breaking, 0 notable, 3 compatible — exit 0\n\n"
+    }
+  ],
+  "asserts": [
+    {
+      "claim": "the earlier declaration is itself a valid manifest",
+      "negative": false
+    },
+    {
+      "claim": "`diff` exits 0: nothing in the change is breaking",
+      "negative": false
+    },
+    {
+      "claim": "it names exactly one added visible field: wanderlust.Stay.rating",
+      "negative": false
+    },
+    {
+      "claim": "it names exactly one added action: wanderlust.quote",
+      "negative": false
+    },
+    {
+      "claim": "it reports no breaking change",
+      "negative": true
+    },
+    {
+      "claim": "the backend is stopped: the address the commands were given refuses a connection",
+      "negative": true
+    },
+    {
+      "claim": "no outbound connection was attempted by `diff`",
+      "negative": true
+    }
+  ],
+  "normalisation": [
+    {
+      "what": "temporary directory standing in for the earlier declaration",
+      "as": "<before>"
+    }
+  ]
+}
