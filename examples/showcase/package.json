@@ -5,7 +5,9 @@
   "type": "module",
   "description": "The Archstone Showcase: a synthetic travel agency API that over-exposes on purpose, and the manifests that contain it. Examples and tests only; not published.",
   "scripts": {
-    "api": "node api/serve.mjs"
+    "api": "node api/serve.mjs",
+    "record": "node record/record.mjs",
+    "record:check": "node record/record.mjs --check"
   },
   "devDependencies": {
     "@archstone/agent": "workspace:*",

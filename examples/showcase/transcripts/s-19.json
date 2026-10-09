@@ -1,0 +1,190 @@
+{
+  "scenario": "S-19",
+  "title": "Check my setup (audit and doctor), sending nothing anywhere",
+  "kind": "cli",
+  "recorded": {
+    "date": "2027-05-01",
+    "cli": "0.31.0"
+  },
+  "steps": [
+    {
+      "call": {
+        "tool": "wanderlust.search",
+        "arguments": {
+          "dates": {
+            "from": "2027-05-12",
+            "to": "2027-05-15"
+          },
+          "destination": "Lisbon",
+          "travelers": {
+            "adults": 2
+          }
+        }
+      },
+      "result": {
+        "status": "ok"
+      }
+    },
+    {
+      "call": {
+        "tool": "wanderlust.quote",
+        "arguments": {
+          "dates": {
+            "from": "2027-05-12",
+            "to": "2027-05-15"
+          },
+          "stayId": "ws-1001",
+          "travelers": {
+            "adults": 2
+          }
+        }
+      },
+      "result": {
+        "status": "ok"
+      }
+    },
+    {
+      "call": {
+        "tool": "wanderlust.book",
+        "arguments": {
+          "dates": {
+            "from": "2027-05-12",
+            "to": "2027-05-15"
+          },
+          "guestName": "Ana Pop",
+          "quoteId": "Q-1732g-9d0ab03e",
+          "stayId": "ws-1001",
+          "travelers": {
+            "adults": 2
+          }
+        }
+      },
+      "result": {
+        "status": "ok"
+      }
+    },
+    {
+      "call": {
+        "tool": "wanderlust.cancel",
+        "arguments": {
+          "bookingId": "B-0000cafe"
+        }
+      },
+      "result": {
+        "status": "ok"
+      }
+    },
+    {
+      "call": {
+        "tool": "wanderlust.pay",
+        "arguments": {
+          "amount": {
+            "amount": 354,
+            "currency": "EUR"
+          },
+          "bookingId": "B-6450470c",
+          "paymentQuote": "PQ-1732g-406ec82a"
+        }
+      },
+      "result": {
+        "status": "ok"
+      }
+    },
+    {
+      "command": "archstone doctor examples/showcase/manifest",
+      "exit": 0,
+      "stdout": "\narchstone doctor examples/showcase/manifest\n\n🟡 tourism.search-classic — bound, but records no contract fixture\n   `archstone verify` replays a recorded fixture against the live backend. With no fixture there is nothing to replay, so backend drift is found by an agent, in front of a customer, instead of by CI.\n   (no-contract)\n\n🟡 wanderlust.availability — bound, but records no contract fixture\n   `archstone verify` replays a recorded fixture against the live backend. With no fixture there is nothing to replay, so backend drift is found by an agent, in front of a customer, instead of by CI.\n   (no-contract)\n\n🟡 wanderlust.cancel — is irreversible and declares policies:[human-approval], which this version does not enforce: no approval mechanism exists.\n   An agent can run it without anyone approving. Put the approval step in the provider, or do not serve this capability to an agent unattended.\n   (irreversible-unenforced-policy)\n\n🟡 wanderlust.pay — is irreversible and declares policies:[human-approval], which this version does not enforce: no approval mechanism exists.\n   An agent can run it without anyone approving. Put the approval step in the provider, or do not serve this capability to an agent unattended.\n   (irreversible-unenforced-policy)\n\n🟡 wanderlust.stay-page — bound, but records no contract fixture\n   `archstone verify` replays a recorded fixture against the live backend. With no fixture there is nothing to replay, so backend drift is found by an agent, in front of a customer, instead of by CI.\n   (no-contract)\n\n🟡 wanderlust.stay-photos — bound, but records no contract fixture\n   `archstone verify` replays a recorded fixture against the live backend. With no fixture there is nothing to replay, so backend drift is found by an agent, in front of a customer, instead of by CI.\n   (no-contract)\n\n🔵 tourism.search-classic — baseUrl comes from the environment (${SHOWCASE_API_URL})\n   Nothing wrong with it — but the deployment, not the manifest, decides where this capability points. Confirm the variable is set to the intended backend in every environment that runs it.\n   (env-baseurl)\n\n🔵 tourism.search — baseUrl comes from the environment (${SHOWCASE_API_URL})\n   Nothing wrong with it — but the deployment, not the manifest, decides where this capability points. Confirm the variable is set to the intended backend in every environment that runs it.\n   (env-baseurl)\n\n🔵 wanderlust.availability — baseUrl comes from the environment (${SHOWCASE_API_URL})\n   Nothing wrong with it — but the deployment, not the manifest, decides where this capability points. Confirm the variable is set to the intended backend in every environment that runs it.\n   (env-baseurl)\n\n🔵 wanderlust.availability — declares a rate limit, which needs a counter supplied at runtime\n   With no counter the call is denied, fail-closed, at the first invocation. On more than one instance the counter must be shared, or a declared 100/min becomes 100/min per instance.\n   (ratelimit-needs-counter)\n\n🔵 wanderlust.book — bound and `write`, so it records no contract fixture — and should not\n   `archstone verify` replays a recorded fixture as a real invocation, so a fixture here would repeat this capability's effect against the live backend on every CI run. `verify` skips it by default for that reason. Where this capability has a `read` counterpart, cover the drift with that instead — the quote half of a quote → commit pair hits the same host, auth and serialization at zero risk. Not every write has one, and Archstone cannot tell you which capability it is: nothing in CDL declares that relationship. Only if this binding's `${VAR}` genuinely resolves to a sandbox tenant is recording one worthwhile, replayed with `archstone verify --sandbox`: the flag re-includes the binding, it does not make the backend safe.\n   (no-contract-non-read)\n\n🔵 wanderlust.book — baseUrl comes from the environment (${SHOWCASE_API_URL})\n   Nothing wrong with it — but the deployment, not the manifest, decides where this capability points. Confirm the variable is set to the intended backend in every environment that runs it.\n   (env-baseurl)\n\n🔵 wanderlust.book — requires an authenticated caller\n   The surface serving it must carry a per-request principal — `resolveCaller` on HTTP or the embedded SDK. `archstone serve` (stdio) has one static caller for the whole process, so it cannot serve this capability to more than one identity.\n   (authenticated-needs-principal)\n\n🔵 wanderlust.cancel — bound and `irreversible`, so it records no contract fixture — and should not\n   `archstone verify` replays a recorded fixture as a real invocation, so a fixture here would repeat this capability's effect against the live backend on every CI run. `verify` skips it by default for that reason. Where this capability has a `read` counterpart, cover the drift with that instead — the quote half of a quote → commit pair hits the same host, auth and serialization at zero risk. Not every write has one, and Archstone cannot tell you which capability it is: nothing in CDL declares that relationship. Only if this binding's `${VAR}` genuinely resolves to a sandbox tenant is recording one worthwhile, replayed with `archstone verify --sandbox`: the flag re-includes the binding, it does not make the backend safe.\n   (no-contract-non-read)\n\n🔵 wanderlust.cancel — baseUrl comes from the environment (${SHOWCASE_API_URL})\n   Nothing wrong with it — but the deployment, not the manifest, decides where this capability points. Confirm the variable is set to the intended backend in every environment that runs it.\n   (env-baseurl)\n\n🔵 wanderlust.cancel — is declared `irreversible`\n   No API description states this, so it was a human judgement: an agent must confirm explicitly and must never auto-retry. Re-read it before go-live — `irreversible` is the difference between looking up a price and charging a card. `archstone verify` applies the same judgement: it will not replay this capability's fixture against the live backend unless you assert a sandbox with --sandbox.\n   (irreversible-effect)\n\n🔵 wanderlust.cancel — requires an authenticated caller\n   The surface serving it must carry a per-request principal — `resolveCaller` on HTTP or the embedded SDK. `archstone serve` (stdio) has one static caller for the whole process, so it cannot serve this capability to more than one identity.\n   (authenticated-needs-principal)\n\n🔵 wanderlust.neighbourhood — baseUrl comes from the environment (${SHOWCASE_API_URL})\n   Nothing wrong with it — but the deployment, not the manifest, decides where this capability points. Confirm the variable is set to the intended backend in every environment that runs it.\n   (env-baseurl)\n\n🔵 wanderlust.neighbourhood — is `experimental`: hidden from tool listings but still invocable by id\n   Deliberate behaviour, and easy to forget: an agent that knows the id can still call it. Confirm that is what you want in production.\n   (experimental-capability)\n\n🔵 wanderlust.pay — bound and `irreversible`, so it records no contract fixture — and should not\n   `archstone verify` replays a recorded fixture as a real invocation, so a fixture here would repeat this capability's effect against the live backend on every CI run. `verify` skips it by default for that reason. Where this capability has a `read` counterpart, cover the drift with that instead — the quote half of a quote → commit pair hits the same host, auth and serialization at zero risk. Not every write has one, and Archstone cannot tell you which capability it is: nothing in CDL declares that relationship. Only if this binding's `${VAR}` genuinely resolves to a sandbox tenant is recording one worthwhile, replayed with `archstone verify --sandbox`: the flag re-includes the binding, it does not make the backend safe.\n   (no-contract-non-read)\n\n🔵 wanderlust.pay — baseUrl comes from the environment (${SHOWCASE_API_URL})\n   Nothing wrong with it — but the deployment, not the manifest, decides where this capability points. Confirm the variable is set to the intended backend in every environment that runs it.\n   (env-baseurl)\n\n🔵 wanderlust.pay — is declared `irreversible`\n   No API description states this, so it was a human judgement: an agent must confirm explicitly and must never auto-retry. Re-read it before go-live — `irreversible` is the difference between looking up a price and charging a card. `archstone verify` applies the same judgement: it will not replay this capability's fixture against the live backend unless you assert a sandbox with --sandbox.\n   (irreversible-effect)\n\n🔵 wanderlust.pay — requires an authenticated caller\n   The surface serving it must carry a per-request principal — `resolveCaller` on HTTP or the embedded SDK. `archstone serve` (stdio) has one static caller for the whole process, so it cannot serve this capability to more than one identity.\n   (authenticated-needs-principal)\n\n🔵 wanderlust.quote — bound and `write`, so it records no contract fixture — and should not\n   `archstone verify` replays a recorded fixture as a real invocation, so a fixture here would repeat this capability's effect against the live backend on every CI run. `verify` skips it by default for that reason. Where this capability has a `read` counterpart, cover the drift with that instead — the quote half of a quote → commit pair hits the same host, auth and serialization at zero risk. Not every write has one, and Archstone cannot tell you which capability it is: nothing in CDL declares that relationship. Only if this binding's `${VAR}` genuinely resolves to a sandbox tenant is recording one worthwhile, replayed with `archstone verify --sandbox`: the flag re-includes the binding, it does not make the backend safe.\n   (no-contract-non-read)\n\n🔵 wanderlust.quote — baseUrl comes from the environment (${SHOWCASE_API_URL})\n   Nothing wrong with it — but the deployment, not the manifest, decides where this capability points. Confirm the variable is set to the intended backend in every environment that runs it.\n   (env-baseurl)\n\n🔵 wanderlust.room-status — baseUrl comes from the environment (${SHOWCASE_API_URL})\n   Nothing wrong with it — but the deployment, not the manifest, decides where this capability points. Confirm the variable is set to the intended backend in every environment that runs it.\n   (env-baseurl)\n\n🔵 wanderlust.search — baseUrl comes from the environment (${SHOWCASE_API_URL})\n   Nothing wrong with it — but the deployment, not the manifest, decides where this capability points. Confirm the variable is set to the intended backend in every environment that runs it.\n   (env-baseurl)\n\n🔵 wanderlust.stay-details — baseUrl comes from the environment (${SHOWCASE_API_URL})\n   Nothing wrong with it — but the deployment, not the manifest, decides where this capability points. Confirm the variable is set to the intended backend in every environment that runs it.\n   (env-baseurl)\n\n🔵 wanderlust.stay-page — baseUrl comes from the environment (${SHOWCASE_API_URL})\n   Nothing wrong with it — but the deployment, not the manifest, decides where this capability points. Confirm the variable is set to the intended backend in every environment that runs it.\n   (env-baseurl)\n\n🔵 wanderlust.stay-photos — baseUrl comes from the environment (${SHOWCASE_API_URL})\n   Nothing wrong with it — but the deployment, not the manifest, decides where this capability points. Confirm the variable is set to the intended backend in every environment that runs it.\n   (env-baseurl)\n\n13 capabilities checked — 0 error · 6 warning · 24 advisory.\n\n"
+    },
+    {
+      "command": "archstone audit <work>/trail.jsonl",
+      "exit": 0,
+      "stdout": "5 records\n  from  2027-05-01T10:07:00.000Z\n  to    2027-05-01T10:07:04.000Z\n\nBy outcome\n  succeeded       5\n\nBy capability\n  wanderlust.book         1\n  wanderlust.cancel       1\n  wanderlust.pay          1\n  wanderlust.quote        1\n  wanderlust.search       1\n\nBy principal\n  demo:visitor       5\n"
+    },
+    {
+      "command": "archstone audit <work>/trail.jsonl --format csv",
+      "exit": 0,
+      "stdout": "startedAt,completedAt,capabilityId,provider,phase,denialReason,principal,consumer,policyRuleIds,sessionId,id\n2027-05-01T10:07:00.000Z,2027-05-01T10:07:00.001Z,wanderlust.search,wanderlust-api,succeeded,,demo:visitor,function-calling,,,exec-001\n2027-05-01T10:07:01.000Z,2027-05-01T10:07:01.001Z,wanderlust.quote,wanderlust-api,succeeded,,demo:visitor,function-calling,,,exec-002\n2027-05-01T10:07:02.000Z,2027-05-01T10:07:02.001Z,wanderlust.book,wanderlust-api,succeeded,,demo:visitor,function-calling,wanderlust-book-principals,,exec-003\n2027-05-01T10:07:03.000Z,2027-05-01T10:07:03.001Z,wanderlust.cancel,wanderlust-api,succeeded,,demo:visitor,function-calling,,,exec-004\n2027-05-01T10:07:04.000Z,2027-05-01T10:07:04.001Z,wanderlust.pay,wanderlust-api,succeeded,,demo:visitor,function-calling,,,exec-005\n"
+    },
+    {
+      "command": "archstone apply examples/showcase/manifest --exposure",
+      "exit": 0,
+      "stdout": "\narchstone apply examples/showcase/manifest\n\n  company    Wanderlust Agency (synthetic) (wanderlust)\n  providers  wanderlust-api\n  declared   13 capabilities\n  loaded     13 capability docs, 13 bindings\n    ✓ tourism.search-classic  [read] → wanderlust-api\n    ✓ tourism.search  [read] → wanderlust-api\n    ✓ wanderlust.availability  [read] → wanderlust-api\n    ✓ wanderlust.book  [write] → wanderlust-api\n    ✓ wanderlust.cancel  [irreversible] → wanderlust-api\n    ✓ wanderlust.neighbourhood  [read] → wanderlust-api\n    ✓ wanderlust.pay  [irreversible] → wanderlust-api\n    ✓ wanderlust.quote  [write] → wanderlust-api\n    ✓ wanderlust.room-status  [read] → wanderlust-api\n    ✓ wanderlust.search  [read] → wanderlust-api\n    ✓ wanderlust.stay-details  [read] → wanderlust-api\n    ✓ wanderlust.stay-page  [read] → wanderlust-api\n    ✓ wanderlust.stay-photos  [read] → wanderlust-api\n  policies   2 policy document(s)\n    ✓ wanderlust-availability-rate  → capability wanderlust.availability\n    ✓ wanderlust-book-principals  → capability wanderlust.book\n\n  ✓ shapes valid\n  semantic   0 error(s), 2 warning(s)\n    ⚠ capability 'wanderlust.cancel' is irreversible and declares policies:[human-approval], which this version does not enforce: no approval mechanism exists. An agent can run it without anyone approving. Put the approval step in the provider, or do not serve this capability to an agent unattended.\n    ⚠ capability 'wanderlust.pay' is irreversible and declares policies:[human-approval], which this version does not enforce: no approval mechanism exists. An agent can run it without anyone approving. Put the approval step in the provider, or do not serve this capability to an agent unattended.\n  registry   IR v0 — 13 capabilities, 13 invocable (bound)\n\n  exposure   what a model sends, is shown, and never sees — names and types only\n  totals     13 declared — 11 exposed, 1 unlisted, 1 not exposed\n\n  tourism.search  [read]  exposed\n    receives   budget (money, optional), dates (date-range), destination (location), travelers (party)\n    exposes    stays[].location (location), stays[].name (text), stays[].pricePerNight (quantity), stays[].rating (quantity, optional), totalMatches (quantity, extract)\n    withholds  $.stays[].boardType (string), $.stays[].commission (number), $.stays[].freeCancellationUntil (string), $.stays[].id (string), $.stays[].net (number), $.stays[].roomDescription (string)\n               as observed in fixtures/tourism.search.golden.json (sha256:f5475f…)\n\n  tourism.search-classic  [read]  not exposed (retired)\n    receives   budget (money, optional), dates (date-range), destination (location), travelers (party)\n    exposes    stays[].location (location), stays[].name (text), stays[].pricePerNight (quantity), stays[].rating (quantity, optional)\n    withholds  unknown — no recorded contract\n\n  wanderlust.availability  [read]  exposed\n    receives   date (date), propertyId (identifier)\n    exposes    availability.date (date), availability.pricePerNight (quantity), availability.propertyId (identifier), availability.roomsFree (quantity)\n    withholds  unknown — no recorded contract\n\n  wanderlust.book  [write]  exposed\n    receives   dates (date-range), guestName (string), quoteId (identifier), stayId (identifier), travelers (party)\n    exposes    booking.bookingId (identifier), booking.dates (date-range), booking.payBy (datetime), booking.paymentQuote (identifier), booking.status (enum), booking.stayId (identifier), booking.total (money)\n    withholds  unknown — no recorded contract\n\n  wanderlust.cancel  [irreversible]  exposed\n    receives   bookingId (identifier)\n    exposes    cancellation.bookingId (identifier), cancellation.cancelledAt (datetime), cancellation.refund (money), cancellation.status (enum)\n    withholds  unknown — no recorded contract\n\n  wanderlust.neighbourhood  [read]  unlisted (experimental) — callable by id, not advertised\n    receives   area (text)\n    exposes    neighbourhood.area (text), neighbourhood.summary (text), neighbourhood.walkability (quantity, optional)\n    withholds  $.localTips (array), $.localTips[] (string)\n               as observed in fixtures/wanderlust.neighbourhood.golden.json (sha256:fa7430…)\n\n  wanderlust.pay  [irreversible]  exposed\n    receives   amount (money), bookingId (identifier), paymentQuote (identifier)\n    exposes    payment.amount (money), payment.bookingId (identifier), payment.paidAt (datetime), payment.paymentId (identifier), payment.status (enum)\n    withholds  unknown — no recorded contract\n\n  wanderlust.quote  [write]  exposed\n    receives   dates (date-range), stayId (identifier), travelers (party)\n    exposes    quote.dates (date-range), quote.expiresAt (datetime), quote.nights (quantity), quote.quoteId (identifier), quote.stayId (identifier), quote.total (money)\n    withholds  unknown — no recorded contract\n\n  wanderlust.room-status  [read]  exposed\n    receives   date (date), propertyId (identifier)\n    exposes    rooms[].code (text), rooms[].message (text, optional), rooms[].pricePerNight (quantity), rooms[].room (text), rooms[].status (enum)\n    withholds  $.date (string), $.propertyId (string)\n               as observed in fixtures/wanderlust.room-status.golden.json (sha256:d00727…)\n\n  wanderlust.search  [read]  exposed\n    receives   budget (money, optional), dates (date-range), destination (location), travelers (party)\n    exposes    stays[].id (identifier), stays[].location (location), stays[].name (text), stays[].pricePerNight (quantity), stays[].rating (quantity, optional), totalMatches (quantity, extract)\n    withholds  $.stays[].commission (number), $.stays[].currency (string), $.stays[].description_html (string), $.stays[].hostContact (object), $.stays[].hostContact.name (string), $.stays[].hostContact.phone (string), $.stays[].margin (number), $.stays[].net (number)\n               as observed in fixtures/wanderlust.search.golden.json (sha256:aa7724…)\n\n  wanderlust.stay-details  [read]  exposed\n    receives   stayId (identifier)\n    exposes    stay.location (location), stay.name (text), stay.pricePerNight (quantity), stay.rating (quantity, optional), stay.rooms (wanderlust.Room[])\n    withholds  $.commission (number), $.currency (string), $.description_html (string), $.guests (array), $.guests[] (object), $.guests[].email (string), $.guests[].name (string), $.guests[].passport (string), $.guests[].phone (string), $.id (string), $.margin (number), $.net (number)\n               as observed in fixtures/wanderlust.stay-details.golden.json (sha256:697659…)\n\n  wanderlust.stay-page  [read]  exposed\n    receives   stayId (identifier)\n    exposes    pages[].name (text), pages[].url (web-page, optional)\n    withholds  unknown — no recorded contract\n\n  wanderlust.stay-photos  [read]  exposed\n    receives   stayId (identifier)\n    exposes    gallery.photos (image[])\n    withholds  unknown — no recorded contract\n\n  → run 'archstone serve examples/showcase/manifest' to expose 13 tool(s) to an AI agent over MCP\n\n"
+    }
+  ],
+  "asserts": [
+    {
+      "claim": "`build` exits 0 (the IR the embedded run loads)",
+      "negative": false
+    },
+    {
+      "claim": "search ran (status ok)",
+      "negative": false
+    },
+    {
+      "claim": "quote ran (status ok)",
+      "negative": false
+    },
+    {
+      "claim": "book ran (status ok)",
+      "negative": false
+    },
+    {
+      "claim": "cancel (irreversible) ran (status ok)",
+      "negative": false
+    },
+    {
+      "claim": "pay (irreversible) ran (status ok)",
+      "negative": false
+    },
+    {
+      "claim": "the trail holds one record per execution",
+      "negative": false
+    },
+    {
+      "claim": "`doctor` exits 0: it reports health, it found no error",
+      "negative": false
+    },
+    {
+      "claim": "`doctor` reports a summary of what it checked (13 capabilities, 0 errors)",
+      "negative": false
+    },
+    {
+      "claim": "`doctor` names wanderlust.cancel as irreversible and its approval token as unenforced",
+      "negative": false
+    },
+    {
+      "claim": "`doctor` names wanderlust.pay as irreversible and its approval token as unenforced",
+      "negative": false
+    },
+    {
+      "claim": "`audit` exits 0",
+      "negative": false
+    },
+    {
+      "claim": "`audit` counts the five executions",
+      "negative": false
+    },
+    {
+      "claim": "`audit` lists the irreversible actions that ran: wanderlust.cancel and wanderlust.pay",
+      "negative": false
+    },
+    {
+      "claim": "`apply --exposure` lists the exposed fields (exit 0)",
+      "negative": false
+    },
+    {
+      "claim": "the backend received zero requests while these commands ran",
+      "negative": true
+    },
+    {
+      "claim": "no command attempted any outbound connection (socket, DNS or fetch)",
+      "negative": true
+    }
+  ],
+  "normalisation": [
+    {
+      "what": "temporary directory standing in for work",
+      "as": "<work>"
+    }
+  ]
+}

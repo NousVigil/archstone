@@ -1,0 +1,99 @@
+{
+  "scenario": "S-16",
+  "title": "What exactly can the AI see? (apply --exposure)",
+  "kind": "cli",
+  "recorded": {
+    "date": "2027-05-01",
+    "cli": "0.31.0"
+  },
+  "steps": [
+    {
+      "command": "archstone apply examples/showcase/manifest --exposure",
+      "exit": 0,
+      "stdout": "\narchstone apply examples/showcase/manifest\n\n  company    Wanderlust Agency (synthetic) (wanderlust)\n  providers  wanderlust-api\n  declared   13 capabilities\n  loaded     13 capability docs, 13 bindings\n    ✓ tourism.search-classic  [read] → wanderlust-api\n    ✓ tourism.search  [read] → wanderlust-api\n    ✓ wanderlust.availability  [read] → wanderlust-api\n    ✓ wanderlust.book  [write] → wanderlust-api\n    ✓ wanderlust.cancel  [irreversible] → wanderlust-api\n    ✓ wanderlust.neighbourhood  [read] → wanderlust-api\n    ✓ wanderlust.pay  [irreversible] → wanderlust-api\n    ✓ wanderlust.quote  [write] → wanderlust-api\n    ✓ wanderlust.room-status  [read] → wanderlust-api\n    ✓ wanderlust.search  [read] → wanderlust-api\n    ✓ wanderlust.stay-details  [read] → wanderlust-api\n    ✓ wanderlust.stay-page  [read] → wanderlust-api\n    ✓ wanderlust.stay-photos  [read] → wanderlust-api\n  policies   2 policy document(s)\n    ✓ wanderlust-availability-rate  → capability wanderlust.availability\n    ✓ wanderlust-book-principals  → capability wanderlust.book\n\n  ✓ shapes valid\n  semantic   0 error(s), 2 warning(s)\n    ⚠ capability 'wanderlust.cancel' is irreversible and declares policies:[human-approval], which this version does not enforce: no approval mechanism exists. An agent can run it without anyone approving. Put the approval step in the provider, or do not serve this capability to an agent unattended.\n    ⚠ capability 'wanderlust.pay' is irreversible and declares policies:[human-approval], which this version does not enforce: no approval mechanism exists. An agent can run it without anyone approving. Put the approval step in the provider, or do not serve this capability to an agent unattended.\n  registry   IR v0 — 13 capabilities, 13 invocable (bound)\n\n  exposure   what a model sends, is shown, and never sees — names and types only\n  totals     13 declared — 11 exposed, 1 unlisted, 1 not exposed\n\n  tourism.search  [read]  exposed\n    receives   budget (money, optional), dates (date-range), destination (location), travelers (party)\n    exposes    stays[].location (location), stays[].name (text), stays[].pricePerNight (quantity), stays[].rating (quantity, optional), totalMatches (quantity, extract)\n    withholds  $.stays[].boardType (string), $.stays[].commission (number), $.stays[].freeCancellationUntil (string), $.stays[].id (string), $.stays[].net (number), $.stays[].roomDescription (string)\n               as observed in fixtures/tourism.search.golden.json (sha256:f5475f…)\n\n  tourism.search-classic  [read]  not exposed (retired)\n    receives   budget (money, optional), dates (date-range), destination (location), travelers (party)\n    exposes    stays[].location (location), stays[].name (text), stays[].pricePerNight (quantity), stays[].rating (quantity, optional)\n    withholds  unknown — no recorded contract\n\n  wanderlust.availability  [read]  exposed\n    receives   date (date), propertyId (identifier)\n    exposes    availability.date (date), availability.pricePerNight (quantity), availability.propertyId (identifier), availability.roomsFree (quantity)\n    withholds  unknown — no recorded contract\n\n  wanderlust.book  [write]  exposed\n    receives   dates (date-range), guestName (string), quoteId (identifier), stayId (identifier), travelers (party)\n    exposes    booking.bookingId (identifier), booking.dates (date-range), booking.payBy (datetime), booking.paymentQuote (identifier), booking.status (enum), booking.stayId (identifier), booking.total (money)\n    withholds  unknown — no recorded contract\n\n  wanderlust.cancel  [irreversible]  exposed\n    receives   bookingId (identifier)\n    exposes    cancellation.bookingId (identifier), cancellation.cancelledAt (datetime), cancellation.refund (money), cancellation.status (enum)\n    withholds  unknown — no recorded contract\n\n  wanderlust.neighbourhood  [read]  unlisted (experimental) — callable by id, not advertised\n    receives   area (text)\n    exposes    neighbourhood.area (text), neighbourhood.summary (text), neighbourhood.walkability (quantity, optional)\n    withholds  $.localTips (array), $.localTips[] (string)\n               as observed in fixtures/wanderlust.neighbourhood.golden.json (sha256:fa7430…)\n\n  wanderlust.pay  [irreversible]  exposed\n    receives   amount (money), bookingId (identifier), paymentQuote (identifier)\n    exposes    payment.amount (money), payment.bookingId (identifier), payment.paidAt (datetime), payment.paymentId (identifier), payment.status (enum)\n    withholds  unknown — no recorded contract\n\n  wanderlust.quote  [write]  exposed\n    receives   dates (date-range), stayId (identifier), travelers (party)\n    exposes    quote.dates (date-range), quote.expiresAt (datetime), quote.nights (quantity), quote.quoteId (identifier), quote.stayId (identifier), quote.total (money)\n    withholds  unknown — no recorded contract\n\n  wanderlust.room-status  [read]  exposed\n    receives   date (date), propertyId (identifier)\n    exposes    rooms[].code (text), rooms[].message (text, optional), rooms[].pricePerNight (quantity), rooms[].room (text), rooms[].status (enum)\n    withholds  $.date (string), $.propertyId (string)\n               as observed in fixtures/wanderlust.room-status.golden.json (sha256:d00727…)\n\n  wanderlust.search  [read]  exposed\n    receives   budget (money, optional), dates (date-range), destination (location), travelers (party)\n    exposes    stays[].id (identifier), stays[].location (location), stays[].name (text), stays[].pricePerNight (quantity), stays[].rating (quantity, optional), totalMatches (quantity, extract)\n    withholds  $.stays[].commission (number), $.stays[].currency (string), $.stays[].description_html (string), $.stays[].hostContact (object), $.stays[].hostContact.name (string), $.stays[].hostContact.phone (string), $.stays[].margin (number), $.stays[].net (number)\n               as observed in fixtures/wanderlust.search.golden.json (sha256:aa7724…)\n\n  wanderlust.stay-details  [read]  exposed\n    receives   stayId (identifier)\n    exposes    stay.location (location), stay.name (text), stay.pricePerNight (quantity), stay.rating (quantity, optional), stay.rooms (wanderlust.Room[])\n    withholds  $.commission (number), $.currency (string), $.description_html (string), $.guests (array), $.guests[] (object), $.guests[].email (string), $.guests[].name (string), $.guests[].passport (string), $.guests[].phone (string), $.id (string), $.margin (number), $.net (number)\n               as observed in fixtures/wanderlust.stay-details.golden.json (sha256:697659…)\n\n  wanderlust.stay-page  [read]  exposed\n    receives   stayId (identifier)\n    exposes    pages[].name (text), pages[].url (web-page, optional)\n    withholds  unknown — no recorded contract\n\n  wanderlust.stay-photos  [read]  exposed\n    receives   stayId (identifier)\n    exposes    gallery.photos (image[])\n    withholds  unknown — no recorded contract\n\n  → run 'archstone serve examples/showcase/manifest' to expose 13 tool(s) to an AI agent over MCP\n\n"
+    }
+  ],
+  "asserts": [
+    {
+      "claim": "`apply --exposure` exits 0 on the live manifest",
+      "negative": false
+    },
+    {
+      "claim": "the same report as JSON exits 0",
+      "negative": false
+    },
+    {
+      "claim": "the report covers all 13 capabilities",
+      "negative": false
+    },
+    {
+      "claim": "the exposed list is not empty (the check below is not vacuous)",
+      "negative": false
+    },
+    {
+      "claim": "no exposed field is named or nested under 'margin'",
+      "negative": true
+    },
+    {
+      "claim": "no exposed field is named or nested under 'passport'",
+      "negative": true
+    },
+    {
+      "claim": "no exposed field is named or nested under 'phone'",
+      "negative": true
+    },
+    {
+      "claim": "no exposed field is named or nested under 'description_html'",
+      "negative": true
+    },
+    {
+      "claim": "no capability in the list deletes anything",
+      "negative": true
+    },
+    {
+      "claim": "`build` exits 0 on the live manifest",
+      "negative": false
+    },
+    {
+      "claim": "the manifest declares at least 30 resource fields in total",
+      "negative": false
+    },
+    {
+      "claim": "no resource declares a field named 'margin'",
+      "negative": true
+    },
+    {
+      "claim": "no resource declares a field named 'passport'",
+      "negative": true
+    },
+    {
+      "claim": "no resource declares a field named 'phone'",
+      "negative": true
+    },
+    {
+      "claim": "no resource declares a field named 'description_html'",
+      "negative": true
+    },
+    {
+      "claim": "the backend was observed returning 'margin' (listed under withholds, never exposed)",
+      "negative": false
+    },
+    {
+      "claim": "the backend was observed returning 'passport' (listed under withholds, never exposed)",
+      "negative": false
+    },
+    {
+      "claim": "the backend was observed returning 'phone' (listed under withholds, never exposed)",
+      "negative": false
+    },
+    {
+      "claim": "the backend was observed returning 'description_html' (listed under withholds, never exposed)",
+      "negative": false
+    },
+    {
+      "claim": "no outbound connection was attempted",
+      "negative": true
+    }
+  ],
+  "normalisation": []
+}

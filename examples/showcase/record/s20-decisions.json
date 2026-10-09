@@ -1,0 +1,35 @@
+{
+  "version": "0",
+  "company": {
+    "id": "wanderlust",
+    "name": "Wanderlust Agency (synthetic)",
+    "description": "An invented travel agency; this draft is what `archstone init` proposes from its OpenAPI document."
+  },
+  "provider": "wanderlust-api",
+  "baseUrlEnvVar": "SHOWCASE_API_URL",
+  "decisions": [
+    {
+      "operation": "POST /v1/stays/search",
+      "keep": true,
+      "capabilityId": "wanderlust.search",
+      "effect": "read"
+    },
+    {
+      "operation": "GET /v1/stays/{stayId}",
+      "keep": true,
+      "capabilityId": "wanderlust.stay-details",
+      "effect": "read"
+    },
+    {
+      "operation": "GET /v1/availability",
+      "keep": true,
+      "capabilityId": "wanderlust.availability",
+      "effect": "read"
+    },
+    {
+      "operation": "DELETE /v1/guests/{name}/bookings",
+      "keep": false,
+      "note": "A delete function exists in the agency's system. A person declined it; nothing offers it to an AI."
+    }
+  ]
+}

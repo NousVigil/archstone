@@ -1,0 +1,17 @@
+# Business only: what an analyst can ask and what comes back. No table, no query, no tenant. Whose
+# bookings these are is the caller's identity, enforced by the database (see fixture.sql).
+capability:
+  id: wanderlust.bookings-by-city
+  description: How many bookings the caller's own agency took in each city in one month.
+  effect: read
+
+  input:
+    month:
+      type: text
+      description: The month, as YYYY-MM.
+
+  output:
+    cities:
+      collection: CityBookings
+
+  provider: agency-warehouse

@@ -98,6 +98,17 @@ jobs:
           (cd examples/demo/remote-mcp-worker && pnpm exec wrangler deploy --dry-run)
           pnpm --filter archstone-demo-remote-mcp-worker run test:workerd
 
+      # #170 — the recorded Showcase scenarios (S-15 .. S-21). Regenerates every transcript against the
+      # workspace build and fails on any byte that differs from examples/showcase/transcripts/, so the
+      # documentation that renders them cannot drift from what the CLI does. S-15 builds a throwaway
+      # database from examples/showcase/local/reporting/fixture.sql in this job's Postgres; under CI a
+      # missing URL fails the scenario, it is never skipped. After an intended change in output, run
+      # `pnpm showcase:record` and commit the diff.
+      - name: Showcase recorded scenarios are current
+        run: node examples/showcase/record/record.mjs --check
+        env:
+          ARCHSTONE_TEST_PG_URL: postgres://postgres:archstone-ci@localhost:5432/postgres
+
   # The same real-Postgres suites against the oldest major we support (16), so a behaviour that
   # differs between majors — catalog visibility, error precedence, role-membership semantics —
   # fails here rather than at a user's database. Only the integration files run: everything else

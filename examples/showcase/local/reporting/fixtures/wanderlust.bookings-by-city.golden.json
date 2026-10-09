@@ -1,0 +1,8 @@
+{
+  "capabilityId": "wanderlust.bookings-by-city",
+  "recordedAt": "2027-05-01T10:07:00Z",
+  "request": { "month": "2027-05" },
+  "identity": { "principal": "demo:analyst" },
+  "negativeIdentity": { "principal": "demo:outsider" },
+  "expects": { "collectionNonEmpty": true }
+}

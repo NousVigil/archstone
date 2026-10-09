@@ -1,0 +1,10 @@
+resource:
+  name: wanderlust.CityBookings
+  description: The number of bookings one agency took in one city in one month.
+  fields:
+    city:
+      type: text
+      description: The city.
+    bookings:
+      type: quantity
+      description: How many bookings.

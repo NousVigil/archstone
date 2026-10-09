@@ -1,0 +1,17 @@
+# capabilities.yaml - the Wanderlust Agency's reporting question, backed by the agency's own
+# Postgres database instead of the REST API. SYNTHETIC: every city, count and tenant is invented.
+#
+# This manifest is LOCAL ONLY. It is deliberately outside ../../manifest, the one the public
+# Worker serves: the SQL provider is Node-only and opens a database connection, so it is never part
+# of that Worker. See ../../README.md ("Recorded scenarios") and record/s15.mjs.
+
+company:
+  id: wanderlust
+  name: Wanderlust Agency (synthetic)
+  description: An invented travel agency; this manifest answers one reporting question from its own database.
+
+capabilities:
+  - wanderlust.bookings-by-city
+
+providers:
+  - agency-warehouse

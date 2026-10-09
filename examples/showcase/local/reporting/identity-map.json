@@ -1,0 +1,4 @@
+{
+  "demo:analyst": { "tenant_id": "wanderlust" },
+  "demo:outsider": { "tenant_id": "other-agency" }
+}

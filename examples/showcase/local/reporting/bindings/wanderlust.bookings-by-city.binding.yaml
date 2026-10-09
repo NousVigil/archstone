@@ -1,0 +1,41 @@
+# NOT CDL - implementation (how). The connection string is an env placeholder, never a literal.
+#
+# What is NOT here: any tenant. The query does not filter by whose bookings these are, and the
+# grammar has no way to - the caller's identity reaches the database as a transaction-scoped setting
+# that a row-level-security policy reads. Drop the policy and `archstone verify` goes red.
+
+binding:
+  capabilityId: wanderlust.bookings-by-city
+  connector:
+    type: sql
+    sql:
+      engine: postgres
+      dsn: "${REPORTING_DSN}"
+      statementKind: select
+      query: |
+        SELECT city, bookings
+        FROM app.bookings_by_city_v
+        WHERE month = $1
+        ORDER BY bookings DESC, city
+      params:
+        - month
+
+  # Row -> CityBookings. Anything the view returns and this does not name is dropped here.
+  response:
+    collection: "$[*]"
+    resource: CityBookings
+    map:
+      city: "$.city"
+      bookings: "$.bookings"
+
+  contract:
+    source: recorded
+    fingerprint: "sha256:f33c916230bd18141d2e027be1d4158a701962e0597846d971caa1a04627d785"
+    shape:
+      "$": array
+      "$[]": object
+      "$[].bookings": number
+      "$[].city": string
+    verifiedAt: "2027-05-01T10:07:00Z"
+    probe:
+      fixture: fixtures/wanderlust.bookings-by-city.golden.json

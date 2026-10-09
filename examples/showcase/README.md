@@ -84,7 +84,11 @@ reads `capabilities.yaml` from the directory it is given, and the other folders 
 | [`manifest/`](manifest/) | The live manifest: 13 capabilities, resources, two policies, bindings, golden fixtures for `verify`. |
 | [`manifest-variants/`](manifest-variants/) | Authoring fixtures that are never deployed. Today: the mis-declared payment. |
 | [`scenarios.json`](scenarios.json) | The scenario table, S-01 to S-22. |
-| [`test/`](test/) | `api.test.ts`, `manifests.test.ts`, `scenario-json.test.ts`, the negative-scenario suite (`negatives.test.ts`, `denial-reasons.test.ts`, `tool-list.test.ts`), and the shared `harness.ts` and `negatives-support.ts`. |
+| [`test/`](test/) | `api.test.ts`, `manifests.test.ts`, `scenario-json.test.ts`, the negative-scenario suite (`negatives.test.ts`, `denial-reasons.test.ts`, `tool-list.test.ts`), the shared `harness.ts` and `negatives-support.ts`, and for the recorded scenarios `recorded-s15.test.ts` to `recorded-s21.test.ts`, `recorded-determinism.test.ts` and `recorded.ts`. |
+| [`record/`](record/) | The recorder for S-15 to S-21 (`record.mjs`), one module per scenario, and the person's answers for S-20. |
+| [`transcripts/`](transcripts/) | Its output: `s-15.json` to `s-21.json`. Generated; do not edit by hand. |
+| [`local/reporting/`](local/reporting/) | The SQL reporting manifest of S-15, its `fixture.sql` and identity map. Local only: not part of the manifest the Worker serves. |
+| [`sdk/embedded.mjs`](sdk/embedded.mjs) | The runnable embedded-SDK script of S-21. |
 
 ## The capabilities
 
@@ -151,6 +155,115 @@ result a later argument needs, referenced as `"{{name}}"`), `outcome`, `anchor`,
 `issueUrl` (only the two locked rows), and `copy` with English and Romanian slots (`ask`, `happens`,
 `refused`). The Romanian slots exist and are empty. Live rows are run by `test/manifests.test.ts`;
 recorded rows get their tests with the recorder; the two locked rows run nothing.
+
+## Recorded scenarios (S-15 to S-21)
+
+Some things cannot or should not run on the public Worker: the SQL provider is Node-only, and the CLI
+verbs are local by nature. Those seven rows of `scenarios.json` (`mode: "recorded"`) are shown as
+**transcripts**: the real workspace CLI (and, for S-21, the embedded SDK) run against the synthetic API,
+with their output written to [`transcripts/`](transcripts/) and checked in.
+
+| Row | What it runs | What it must show, and its negative |
+|---|---|---|
+| S-15 | `verify` and a tool call over [`local/reporting`](local/reporting/) against a local Postgres | a table of bookings per city; another tenant gets no rows; the live manifest has no sql capability |
+| S-16 | `apply --exposure` | the exposed list names no margin, passport, phone, `description_html` or delete tool, while the backend is observed returning them |
+| S-17 | `verify`, `adopt` against a wrapped backend | `verify` names the new `guestEmail` field; it is absent from the exposure until a person declares it |
+| S-18 | `diff` on two declarations | one added field and one added action, with the backend stopped |
+| S-19 | `audit`, `doctor` and `apply --exposure` | irreversible actions listed (by `audit` over a trail, and by `doctor`); exposed fields listed by `apply --exposure`, not by `audit`; zero outbound requests |
+| S-20 | `init` from the OpenAPI document | no delete action (the delete is declined in the person's decisions file, `record/s20-decisions.json`), no passport or phone, nothing published; without a decisions file `init --non-interactive` refuses and writes nothing |
+| S-21 | [`sdk/embedded.mjs`](sdk/embedded.mjs) | the same tools in three vendor shapes; S-02 and S-14 still hold |
+
+```bash
+pnpm build                                  # the recorder drives the built workspace CLI
+export ARCHSTONE_TEST_PG_URL=postgres://postgres:<password>@127.0.0.1:5432/postgres   # an admin URL, S-15 only
+pnpm showcase:record                        # rewrite examples/showcase/transcripts/
+pnpm showcase:record:check                  # regenerate to a temp directory; fail on any difference
+```
+
+`ARCHSTONE_TEST_PG_URL` is the variable the repository's other real-Postgres suites use. The recorder
+builds a throwaway database from [`local/reporting/fixture.sql`](local/reporting/fixture.sql) with it and
+drops it afterwards; the CLI and the runtime only ever see the runtime role's DSN. Without it, S-15 is
+skipped locally with a message and its committed transcript is left alone. Under CI (`CI=true`) a
+missing URL is a failure, never a skip. `--out <dir>` writes elsewhere and `--only S-17,S-18` runs a
+subset.
+
+Every scenario states what it expects **and** its negative as claims. A claim that does not hold stops
+the scenario, names it, and the recorder exits non-zero without writing anything. A scenario that says
+"offline" runs its commands under [`record/no-network.mjs`](record/no-network.mjs), which makes any
+attempt to open a socket, resolve a name or call `fetch` fail and be logged, so "zero outbound requests"
+is checked on the process and not only on the backend's counter. S-17 does not add a switch to the API:
+the recorder wraps the handler in the recorder's own server to add the field. Archstone does not make
+the backend safe in any of these; they show what the manifest declines to forward and where a person
+decides.
+
+### Transcript format
+
+Each `transcripts/s-NN.json` is two-space JSON in this key order, with one trailing newline:
+
+```jsonc
+{
+  "scenario": "S-17",
+  "title": "The agency added a guest email field (verify, adopt)",
+  "kind": "cli",                    // "cli" | "sdk" | "mcp": the surface the scenario is mainly about
+  "recorded": {
+    "date": "2027-05-01",           // the fixed clock's date (scenarios.json "clock"), never wall time
+    "cli": "0.31.0"                 // the workspace CLI's version when the content last changed
+  },
+  "steps": [
+    {                               // a command
+      "command": "archstone adopt <manifest>",
+      "typed": ["y", "..."],        // only when a person's answers were scripted, in order; [] = nobody there
+      "exit": 0,
+      "stdout": "...",              // omitted when empty
+      "stderr": "..."               // omitted when empty
+    },
+    {                               // an in-process tool call
+      "call": { "tool": "wanderlust_bookings-by-city", "arguments": { "month": "2027-05" } },
+      "result": { "as": "demo:analyst", "isError": false, "structuredContent": { } }   // keys sorted
+    }
+  ],
+  "asserts": [ { "claim": "...", "negative": true } ],   // every claim the recorder checked; negative = must NOT happen
+  "normalisation": [ { "what": "...", "as": "<manifest>" } ]   // only the rewrites that were applied
+}
+```
+
+Machine-specific text is rewritten to placeholders before it is written: the checkout path to `<repo>`,
+temporary directories to `<manifest>`, `<work>`, `<before>` or `<draft>`, the API's ephemeral address to
+`<api>`, and the CLI's own version string inside output to `{cli}`. No timestamps or durations are
+recorded; the one audit trail in S-19 has its random ids and wall-clock times replaced by fixed ones,
+and nothing else in its records is touched.
+
+**The version stamp and releases.** `recorded.cli` says which CLI recorded the content. A release stamps
+a new version into the package files, which would turn every transcript stale on the release commit
+without any output changing. So `--check` treats `recorded.cli` as the one field that may differ: it
+fails on any other byte, and when only the stamp differs it passes and prints a note. The stamp moves the
+next time the content does (`pnpm showcase:record`). Read it as "recorded with", not "current as of".
+
+**Consuming the files.** A documentation site reads them as plain JSON; there is no build step. Pin a
+tag or a commit, not `main`, so the rendered text and the CLI version it names stay together:
+
+```
+raw.githubusercontent.com/NousVigil/archstone/<tag-or-commit>/examples/showcase/transcripts/s-17.json
+```
+
+Render `steps` in order, show `recorded.date` and `recorded.cli` beside them, and keep `typed` visible,
+because it is where the person's decision lives.
+
+The tests for these rows are `test/recorded-s15.test.ts` to `test/recorded-s21.test.ts`; they assert each
+scenario's outcome and negative from the committed transcript. `recorded-determinism.test.ts` records
+twice and requires identical bytes that equal the committed files. CI also runs
+`node examples/showcase/record/record.mjs --check` in the job that has the Postgres service.
+
+One reading note on S-17: in this version a gained field is a yellow reading in `verify`, which names it
+and exits 0; only a lost field, a changed type or a missing required value are red and exit 1. A strict
+`verify` that exits non-zero on a gained field is not available in this version and is tracked in
+[#178](https://github.com/NousVigil/archstone/issues/178); the transcript says so in a claim. S-17 runs
+`adopt` on `wanderlust.stay-details` because `adopt` resolves a resource by bare name and this manifest
+has two resources called `Stay`, a known bug tracked in
+[#177](https://github.com/NousVigil/archstone/issues/177).
+
+A note on S-19: `audit` reads Execution-record trails, so it lists what ran (including the irreversible
+`cancel` and `pay`). The exposed fields in that transcript come from `apply --exposure`, not from `audit`.
 
 ## Test
 
