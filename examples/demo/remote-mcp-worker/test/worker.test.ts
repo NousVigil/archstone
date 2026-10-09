@@ -268,6 +268,15 @@ describe("POST /run/{scenarioId}", () => {
     expect((await tap("198.51.100.9")).body.result.isError).toBe(false);
   });
 
+  it("the body of a rate-limited scenario states the limit is approximate; others carry no such field", async () => {
+    const w = newWorker();
+    const s11 = (await (await w.fetch("/run/S-11", { method: "POST" })).json()) as { rateLimit?: string; result: Record<string, unknown> };
+    expect(s11.rateLimit).toMatch(/approximate/i);
+    expect(Object.keys(s11.result).every((k) => ["content", "structuredContent", "_meta", "isError"].includes(k))).toBe(true);
+    const s01 = (await (await w.fetch("/run/S-01", { method: "POST" })).json()) as Record<string, unknown>;
+    expect("rateLimit" in s01).toBe(false);
+  });
+
   it("S-11 neither returns nor reveals the per-visitor principal", async () => {
     const w = newWorker();
     const res = await w.fetch("/run/S-11", { method: "POST", headers: { "cf-connecting-ip": "203.0.113.7" } });

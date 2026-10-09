@@ -35,6 +35,8 @@ const scenarios = (scenarioDoc as unknown as { scenarios: ScenarioRow[] }).scena
 const registry = new Registry(ir as IR);
 
 // One counter per isolate (module scope). Approximate by construction; see RATE_LIMIT_NOTE.
+// It never prunes keys: per-visitor S-11 keys accumulate until the isolate is recycled (bounded by
+// the isolate's lifetime).
 const moduleCounter = new InMemoryRateLimitCounter();
 
 export interface WorkerOptions {
@@ -199,6 +201,8 @@ export function createWorker(options: WorkerOptions = {}) {
       tool: row.tool,
       arguments: args,
       caller: callerName(row.key),
+      // The limited capability's own responses say the limit is approximate; `result` stays raw.
+      ...(row.tool === "wanderlust_availability" ? { rateLimit: RATE_LIMIT_NOTE } : {}),
       result: {
         content: result.content,
         ...(result.structuredContent !== undefined ? { structuredContent: result.structuredContent } : {}),

@@ -40,6 +40,9 @@ makes that call itself. Unknown ids, and scenarios that are not `live`, are `404
 }
 ```
 
+For the rate-limited capability (S-11) the body also has a top-level `rateLimit` string saying the
+limit is approximate; no other scenario has it.
+
 `result` is what the tool call returned, unedited: no prose is added. It is **a direct tool call, not
 a model's answer**; it shows the call an AI would make and what came back.
 
