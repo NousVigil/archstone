@@ -188,6 +188,7 @@ describe("AC-1.12: public-repo hygiene", () => {
         seen.add(host);
         const ok =
           host.endsWith(".example") ||
+          host === "demo.archstone.dev" || // the public demo Worker, which serves the images
           host === "localhost" ||
           host === "127.0.0.1" ||
           host === "www.w3.org" ||

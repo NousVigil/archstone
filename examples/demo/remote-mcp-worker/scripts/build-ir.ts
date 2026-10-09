@@ -1,6 +1,6 @@
 // Build-time only (runs on Node, not at the edge). Runs the REAL Archstone pipeline —
 // load -> validateSemantics -> compile, from @archstone/schema / @archstone/compiler via
-// @archstone/runtime's buildRegistry — against the tourism example, and freezes the result
+// @archstone/runtime's buildRegistry — against the Showcase manifest, and freezes the result
 // as a committed-shape IR JSON asset the Worker imports at cold start. This keeps the edge
 // runtime free of the schema loader's fs/path/url dependencies (see README.md).
 import { writeFileSync } from "node:fs";
@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { buildRegistry } from "@archstone/runtime";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const manifestDir = resolve(here, "../../../manifests/tourism");
+const manifestDir = resolve(here, "../../../showcase/manifest");
 const outFile = resolve(here, "../src/ir.generated.json");
 
 const built = buildRegistry(manifestDir);

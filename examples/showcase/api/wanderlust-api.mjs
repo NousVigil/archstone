@@ -21,9 +21,11 @@
 /* global Response, URL */
 import { ACCEPTED_KEYS } from "../credentials.mjs";
 
-/** The origin the agency's own image host answers on. Constant on purpose: not derived from the
- *  request, so the output is identical under any runtime and any local address. */
-export const IMAGE_BASE = "https://images.wanderlust-agency.example";
+/** The origin the agency's own images answer on: the public demo Worker, which serves `/img/...`
+ *  from the same script as the API. Constant on purpose: not derived from the request, so the output
+ *  is identical under any runtime and any local address (a local run still names this origin). The
+ *  stay-photos binding declares the same origin; change the two together. */
+export const IMAGE_BASE = "https://demo.archstone.dev";
 /** The origin of the agency's own hotel pages. */
 export const PAGES_BASE = "https://www.wanderlust-agency.example";
 /** OVER-EXPOSED: hosts the manifest does not declare (images, links, markup). */

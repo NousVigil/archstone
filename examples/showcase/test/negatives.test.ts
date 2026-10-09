@@ -158,7 +158,7 @@ describe("N-03 / AC-2.4, AC-2.5: a photo on an undeclared host is withheld, by p
     expect(JSON.stringify(r.withheld)).not.toMatch(/https?:|partner-photos|\.svg/);
     const photos = (r.data as { gallery: { photos: string[] } }).gallery.photos;
     expect(photos).toHaveLength(4); // the other items remain
-    expect(photos.every((u) => u.startsWith("https://images.wanderlust-agency.example/"))).toBe(true);
+    expect(photos.every((u) => u.startsWith("https://demo.archstone.dev/"))).toBe(true);
     expect(JSON.stringify(r)).not.toContain("partner-photos");
   });
 
