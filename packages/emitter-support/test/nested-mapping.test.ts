@@ -273,8 +273,39 @@ describe("composite semantic scalars keep only their declared keys", () => {
     expect(map("date-range", { from: "2026-01-01", to: "2026-01-03", internal: "x" }).data).toEqual({ stay: { name: "Casa", v: { from: "2026-01-01", to: "2026-01-03" } } });
   });
 
-  it("a primitive in a composite slot carries no keys and passes as before (`price: 120`)", () => {
-    expect(map("money", 120)).toEqual({ status: "ok", data: { stay: { name: "Casa", v: 120 } } });
+  it("a primitive in a composite slot other than money carries no keys and passes as before", () => {
+    expect(map("party", 2)).toEqual({ status: "ok", data: { stay: { name: "Casa", v: 2 } } });
+  });
+
+  it("money must be {amount: finite number, currency: ISO-4217 shape}: anything else is absent (#176)", () => {
+    const absent = { status: "degraded", data: { stay: { name: "Casa" } }, degraded: ["v"] };
+    for (const bad of [
+      "129.00",
+      120,
+      true,
+      { amount: 120 },
+      { currency: "EUR" },
+      { amount: "129.00", currency: "EUR" },
+      { amount: Number.POSITIVE_INFINITY, currency: "EUR" },
+      { amount: 120, currency: "eur" },
+      { amount: 120, currency: "EURO" },
+      { amount: 120, currency: 978 },
+      [120, "EUR"],
+    ]) {
+      expect(map("money", bad), JSON.stringify(bad)).toEqual(absent);
+    }
+    expect(map("money", { amount: 129, currency: "EUR" }).data).toEqual({ stay: { name: "Casa", v: { amount: 129, currency: "EUR" } } });
+    expect(map("money", { amount: 0, currency: "RON" }).status).toBe("ok");
+  });
+
+  it("a required money field given a string is a violation, not a pass (#176)", () => {
+    const required = applyResponseMapping(
+      stayTool(["name", "v"]),
+      { name: "Casa", v: "129.00" },
+      { Stay: [field("name", { kind: "scalar", semantic: "text" }, true), field("v", { kind: "scalar", semantic: "money" }, true)] },
+    );
+    expect(required.status).toBe("violation");
+    expect(JSON.stringify(required)).not.toContain("129.00");
   });
 
   it("missing a required sub-key, or a non-primitive sub-value, is absent", () => {
@@ -294,7 +325,7 @@ describe("composite semantic scalars keep only their declared keys", () => {
   it("the projected keys are exactly the keys the closed lowering declares — the table cannot drift", () => {
     for (const semantic of ["money", "party", "date-range"] as SemanticType[]) {
       const props = (extractionJsonSchema([field("v", { kind: "scalar", semantic })]).properties as Record<string, { properties: Record<string, unknown> }>).v.properties;
-      const every = Object.fromEntries(Object.keys(props).map((k) => [k, k === "adults" || k === "children" || k === "amount" ? 1 : "x"]));
+      const every = Object.fromEntries(Object.keys(props).map((k) => [k, k === "adults" || k === "children" || k === "amount" ? 1 : k === "currency" ? "EUR" : "x"]));
       const out = (map(semantic, { ...every, extra: "x" }).data?.stay as { v: Record<string, unknown> }).v;
       expect(Object.keys(out).sort()).toEqual(Object.keys(props).sort());
     }

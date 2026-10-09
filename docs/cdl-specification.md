@@ -178,6 +178,11 @@ The registered set is `location`, `date-range`, `party`, `preference-set`, `mone
 `identifier`, `string`, `text`, `time-slot`, `quantity`, `enum`, `date`, `datetime`,
 `web-page` and `image`.
 
+A `money` value in an output is an object with a finite numeric `amount` and a `currency` of
+three uppercase letters (the ISO 4217 form; the code list is not checked). Any other value,
+including a bare number or string, does not have the declared shape: it is withheld when the
+field is optional and is a contract violation when it is required.
+
 #### `web-page` — *Experimental*, output-only
 
 **Definition.** The page where a person can see this resource on the provider's own site:

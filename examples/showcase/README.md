@@ -123,6 +123,13 @@ Tool names are the capability ids with dots replaced by underscores (`wanderlust
   payment-quote check in the API (missing, expired or foreign quotes get 422).
 - One property whose room status contains an error row (`ws-1002`) and one whose price is the wrong
   type (`ws-1003`).
+
+  Follow-up (#176): a `money` output value that is not `{amount: number, currency: "EUR"-shaped}`
+  is now a shape mismatch, so a bare string such as `"129.00"` is rejected like any other wrong type
+  (`test/negatives.test.ts`, on `wanderlust.quote`'s `total`). S-13 keeps its present trigger because
+  `room-status.pricePerNight` is a `quantity`, which still accepts a bare string; moving S-13 to the
+  string-price trigger means declaring that field `money` and changing the `ws-1003` body, which is a
+  separate change to the scenario, its copy and its recordings.
 - The legacy `POST /v1/search`, byte-compatible with the demo's mock backend, margin and all.
 
 ## Stateless and deterministic

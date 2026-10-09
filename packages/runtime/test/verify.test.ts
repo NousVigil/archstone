@@ -11,7 +11,7 @@ const resources: IRResourceRegistry = {
   Stay: [
     { name: "name", required: true, type: { kind: "scalar", semantic: "text" } },
     { name: "location", required: true, type: { kind: "scalar", semantic: "location" } },
-    { name: "price", required: true, type: { kind: "scalar", semantic: "money" } },
+    { name: "price", required: true, type: { kind: "scalar", semantic: "quantity" } },
     { name: "rating", required: false, type: { kind: "scalar", semantic: "quantity" } },
   ],
 };

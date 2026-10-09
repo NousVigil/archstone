@@ -47,7 +47,7 @@ const searchOperation = operation("POST", "/v1/search", {
           [
             property("name", scalarNode({ type: "text", nullable: false }), { declaredRequired: true }),
             property("location", scalarNode({ type: "location", nullable: false }), { declaredRequired: true }),
-            property("pricePerNight", scalarNode({ type: "money", nullable: false }), { declaredRequired: true }),
+            property("pricePerNight", scalarNode({ type: "quantity", nullable: false }), { declaredRequired: true }),
             property("rating", scalarNode({ type: "quantity" }), { declaredRequired: false }),
           ],
           { name: "Stay", description: "A place to stay." },
