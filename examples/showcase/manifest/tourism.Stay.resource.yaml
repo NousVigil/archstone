@@ -1,0 +1,18 @@
+# The unit the legacy tourism.search returns - identical to examples/manifests/tourism.
+resource:
+  name: tourism.Stay
+  description: "A bookable place to stay matching a traveler's search."
+  fields:
+    name:
+      type: text
+      description: "The property's display name."
+    location:
+      type: location
+      description: "Where the stay is - city, region, or address."
+    pricePerNight:
+      type: quantity
+      description: "Nightly rate for the stay."
+    rating:
+      type: quantity
+      required: false
+      description: "Guest review score, when available."

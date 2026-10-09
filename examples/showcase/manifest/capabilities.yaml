@@ -1,0 +1,31 @@
+# capabilities.yaml - the Wanderlust Agency Showcase manifest (CDL 0.2).
+#
+# A SYNTHETIC agency: every hotel, guest, price and id is invented, and the backend it points at
+# (../api/wanderlust-api.mjs) over-exposes on purpose. The manifest is the contract; what it leaves
+# unnamed never reaches a model. See ../README.md.
+#
+#   archstone apply examples/showcase/manifest
+#   SHOWCASE_API_URL=http://localhost:8788 archstone serve examples/showcase/manifest
+
+company:
+  id: wanderlust
+  name: Wanderlust Agency (synthetic)
+  description: An invented travel agency that exercises every Archstone feature against a deliberately over-exposing backend.
+
+capabilities:
+  - wanderlust.search
+  - wanderlust.stay-details
+  - wanderlust.stay-photos
+  - wanderlust.stay-page
+  - wanderlust.quote
+  - wanderlust.book
+  - wanderlust.cancel
+  - wanderlust.pay
+  - wanderlust.availability
+  - wanderlust.room-status
+  - wanderlust.neighbourhood
+  - tourism.search
+  - tourism.search-classic
+
+providers:
+  - wanderlust-api

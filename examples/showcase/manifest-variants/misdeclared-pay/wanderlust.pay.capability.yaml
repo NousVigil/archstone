@@ -1,0 +1,19 @@
+# Written without a quote step on purpose: no paymentQuote input, no failures, no authenticated.
+capability:
+  id: wanderlust.pay
+  description: "Pay for a booking with the demo card."
+  effect: irreversible
+
+  input:
+    bookingId:
+      type: identifier
+    amount:
+      type: money
+
+  output:
+    payment:
+      type: Payment
+
+  policies:
+    - human-approval
+  provider: wanderlust-api

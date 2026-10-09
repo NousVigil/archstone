@@ -13,6 +13,7 @@ Deployable CDL — `capabilities.yaml` + `*.capability.yaml` + `bindings/`.
 | [`manifests/tourism/`](manifests/tourism/) | Demo: one bound `tourism.search` capability |
 | [`manifests/booking/`](manifests/booking/) | Fuller: 4 capabilities, provider mapping, bound + unbound |
 | [`manifests/bank/`](manifests/bank/) | Banking capabilities incl. an irreversible transfer |
+| [`showcase/manifest/`](showcase/manifest/) | A synthetic travel agency: 13 capabilities over a backend that over-exposes on purpose; see [`showcase/`](showcase/) |
 
 ---
 

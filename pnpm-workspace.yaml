@@ -2,6 +2,7 @@ packages:
   - "packages/*"
   - "providers/*"
   - "examples/demo/*"
+  - "examples/showcase"
 allowBuilds:
   esbuild: true
   sharp: false

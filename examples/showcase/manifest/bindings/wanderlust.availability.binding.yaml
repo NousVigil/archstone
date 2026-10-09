@@ -1,0 +1,17 @@
+# Implementation binding - how wanderlust.availability reaches the synthetic agency. NOT CDL.
+binding:
+  capabilityId: wanderlust.availability
+  connector:
+    type: rest
+    rest:
+      baseUrl: "${SHOWCASE_API_URL}"
+      method: GET
+      path: /v1/availability
+
+  response:
+    resource: Availability
+    map:
+      propertyId: "$.propertyId"
+      date: "$.date"
+      roomsFree: "$.roomsFree"
+      pricePerNight: "$.pricePerNight"

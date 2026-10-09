@@ -1,0 +1,33 @@
+# Implementation binding - how wanderlust.neighbourhood reaches the synthetic agency. NOT CDL.
+binding:
+  capabilityId: wanderlust.neighbourhood
+  connector:
+    type: rest
+    rest:
+      baseUrl: "${SHOWCASE_API_URL}"
+      method: GET
+      path: /v1/neighbourhoods
+
+  response:
+    resource: Neighbourhood
+    map:
+      area: "$.area"
+      summary: "$.summary"
+      walkability: "$.walkability"
+
+  # What the synthetic API last returned for the fixture's request (recorded: paths and types, never values).
+  # The shape includes fields this manifest never maps (net, margin, guests, ...): drift in them is still
+  # detected, and they are still never forwarded to a model.
+  contract:
+    source: recorded
+    fingerprint: "sha256:fa7430f9d6668f5029cc8144952fc598abd14d39f7084c53232a0a9a532aa4c7"
+    shape:
+      "$": object
+      "$.area": string
+      "$.localTips": array
+      "$.localTips[]": string
+      "$.summary": string
+      "$.walkability": number
+    verifiedAt: "2026-10-10T00:00:00Z"
+    probe:
+      fixture: fixtures/wanderlust.neighbourhood.golden.json

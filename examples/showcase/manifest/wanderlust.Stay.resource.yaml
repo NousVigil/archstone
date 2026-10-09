@@ -1,0 +1,20 @@
+resource:
+  name: wanderlust.Stay
+  description: "A place to stay in a search result. Only what is declared here reaches a model: the agency's rate sheet and markup description are not named, so they are not shown."
+  fields:
+    id:
+      type: identifier
+      description: "The agency's id for the stay; pass it to the other stay tools."
+    name:
+      type: text
+      description: "The property's display name."
+    location:
+      type: location
+      description: "Where the stay is."
+    pricePerNight:
+      type: quantity
+      description: "Nightly rate in euro."
+    rating:
+      type: quantity
+      required: false
+      description: "Guest review score, when available."

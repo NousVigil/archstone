@@ -1,0 +1,24 @@
+capability:
+  id: wanderlust.search
+  description: "Find places to stay matching a traveler's destination, dates, party and budget. Results come in the agency's own order; nothing here ranks them."
+  effect: read
+
+  input:
+    destination:
+      type: location
+    dates:
+      type: date-range
+    travelers:
+      type: party
+    budget:
+      type: money
+      required: false
+
+  output:
+    stays:
+      collection: Stay
+    totalMatches:
+      type: quantity
+      description: "How many stays the agency found."
+
+  provider: wanderlust-api

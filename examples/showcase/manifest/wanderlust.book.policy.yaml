@@ -1,0 +1,14 @@
+# Who may book. Principals are asserted by whoever hosts the server; Archstone matches them as
+# exact strings and verifies nothing about them. deny wins over allow.
+apiVersion: archstone/v1
+kind: Policy
+metadata:
+  id: wanderlust-book-principals
+  name: Who may book
+  scope: capability
+  capabilityId: wanderlust.book
+spec:
+  allow:
+    - "demo:visitor"
+  deny:
+    - "demo:blocked"

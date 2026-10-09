@@ -1,0 +1,15 @@
+capability:
+  id: wanderlust.neighbourhood
+  description: "A short description of an area. Experimental: not listed to clients, still callable by name."
+  effect: read
+
+  input:
+    area:
+      type: text
+
+  output:
+    neighbourhood:
+      type: Neighbourhood
+
+  lifecycle: experimental
+  provider: wanderlust-api

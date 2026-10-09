@@ -1,0 +1,19 @@
+# A MIS-DECLARED payment, kept as a fixture outside the live manifest and never deployed.
+#
+# Same payment as ../../manifest, written carelessly: no quote step, no declared failures, no
+# authenticated caller, and an approval token that this version of Archstone does not enforce.
+# `archstone apply` reports three warnings naming the capability and still exits 0: the checks
+# warn, they do not block, and nothing here stops a payment sequence the agency would refuse.
+#
+#   archstone apply examples/showcase/manifest-variants/misdeclared-pay
+
+company:
+  id: wanderlust
+  name: Wanderlust Agency (synthetic) - mis-declared payment
+  description: A fixture showing what the irreversible-action checks say about a careless payment declaration.
+
+capabilities:
+  - wanderlust.pay
+
+providers:
+  - wanderlust-api

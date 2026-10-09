@@ -1,0 +1,18 @@
+# Implementation binding - how wanderlust.stay-photos reaches the synthetic agency. NOT CDL.
+binding:
+  capabilityId: wanderlust.stay-photos
+  connector:
+    type: rest
+    rest:
+      baseUrl: "${SHOWCASE_API_URL}"
+      method: GET
+      path: /v1/stays/{stayId}/photos
+
+  response:
+    resource: Gallery
+    map:
+      photos: "$.photos"
+
+  origins:
+    images:
+      - "https://images.wanderlust-agency.example"

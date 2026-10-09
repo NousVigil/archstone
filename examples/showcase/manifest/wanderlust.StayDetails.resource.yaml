@@ -1,0 +1,20 @@
+resource:
+  name: wanderlust.StayDetails
+  description: "One stay in detail, with its rooms and their amenities (nested). The nested values carry only the fields declared on Room and Amenity."
+  fields:
+    name:
+      type: text
+      description: "The property's display name."
+    location:
+      type: location
+      description: "Where the stay is."
+    pricePerNight:
+      type: quantity
+      description: "Nightly rate from, in euro."
+    rating:
+      type: quantity
+      required: false
+      description: "Guest review score, when available."
+    rooms:
+      collection: Room
+      description: "The room types on offer."

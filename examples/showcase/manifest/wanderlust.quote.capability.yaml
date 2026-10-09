@@ -1,0 +1,19 @@
+capability:
+  id: wanderlust.quote
+  description: "Price a stay for given dates and party. The quote expires; it books nothing and charges nothing."
+  effect: write
+
+  input:
+    stayId:
+      type: identifier
+      description: "A stay id from wanderlust.search."
+    dates:
+      type: date-range
+    travelers:
+      type: party
+
+  output:
+    quote:
+      type: Quote
+
+  provider: wanderlust-api

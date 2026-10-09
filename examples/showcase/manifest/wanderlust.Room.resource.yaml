@@ -1,0 +1,16 @@
+resource:
+  name: wanderlust.Room
+  description: "A kind of room a stay offers."
+  fields:
+    name:
+      type: text
+      description: "Room type."
+    sleeps:
+      type: quantity
+      description: "How many people it sleeps."
+    pricePerNight:
+      type: quantity
+      description: "Nightly rate for this room in euro."
+    amenities:
+      collection: Amenity
+      description: "What the room offers."

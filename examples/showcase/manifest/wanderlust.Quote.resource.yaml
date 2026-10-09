@@ -1,0 +1,22 @@
+resource:
+  name: wanderlust.Quote
+  description: "A price the agency will honour until it expires. A quote books nothing."
+  fields:
+    quoteId:
+      type: identifier
+      description: "Pass this to wanderlust.book before it expires."
+    stayId:
+      type: identifier
+      description: "The quoted stay."
+    dates:
+      type: date-range
+      description: "The quoted stay window."
+    nights:
+      type: quantity
+      description: "Number of nights."
+    total:
+      type: money
+      description: "Total price for the stay."
+    expiresAt:
+      type: datetime
+      description: "When the quote stops being valid."

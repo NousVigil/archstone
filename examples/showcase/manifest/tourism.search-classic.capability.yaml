@@ -1,0 +1,22 @@
+capability:
+  id: tourism.search-classic
+  description: "The oldest search. Retired: switched off, neither listed nor callable."
+  effect: read
+
+  input:
+    destination:
+      type: location
+    dates:
+      type: date-range
+    travelers:
+      type: party
+    budget:
+      type: money
+      required: false
+
+  output:
+    stays:
+      collection: Stay
+
+  lifecycle: retired
+  provider: wanderlust-api

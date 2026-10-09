@@ -1,0 +1,17 @@
+capability:
+  id: wanderlust.room-status
+  description: "Is a property's room free on a date? Some rows may come back as errors when the agency's system is busy."
+  effect: read
+
+  input:
+    propertyId:
+      type: identifier
+      description: "A stay id from wanderlust.search."
+    date:
+      type: date
+
+  output:
+    rooms:
+      collection: RoomStatus
+
+  provider: wanderlust-api

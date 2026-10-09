@@ -1,0 +1,17 @@
+{
+  "capabilityId": "wanderlust.search",
+  "recordedAt": "2026-10-10T00:00:00Z",
+  "request": {
+    "destination": "Lisbon",
+    "dates": {
+      "from": "2027-05-12",
+      "to": "2027-05-15"
+    },
+    "travelers": {
+      "adults": 2
+    }
+  },
+  "expects": {
+    "collectionNonEmpty": true
+  }
+}

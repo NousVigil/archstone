@@ -1,0 +1,44 @@
+# Implementation binding - how wanderlust.room-status reaches the synthetic agency. NOT CDL.
+binding:
+  capabilityId: wanderlust.room-status
+  connector:
+    type: rest
+    rest:
+      baseUrl: "${SHOWCASE_API_URL}"
+      method: GET
+      path: /v1/room-status
+
+  response:
+    collection: "$.rows[*]"
+    resource: RoomStatus
+    map:
+      room: "$.room"
+      status: "$.status"
+      pricePerNight: "$.pricePerNight"
+    onError:
+      errorResource: RoomStatusError
+      when:
+        path: "$.error"
+        exists: true
+      map:
+        code: "$.error.code"
+        message: "$.error.message"
+
+  # What the synthetic API last returned for the fixture's request (recorded: paths and types, never values).
+  # The shape includes fields this manifest never maps (net, margin, guests, ...): drift in them is still
+  # detected, and they are still never forwarded to a model.
+  contract:
+    source: recorded
+    fingerprint: "sha256:d0072760e0c7773dabf7bb4e588857f5f310d5b0c55a301c061ad8d243b2d5ed"
+    shape:
+      "$": object
+      "$.date": string
+      "$.propertyId": string
+      "$.rows": array
+      "$.rows[]": object
+      "$.rows[].pricePerNight": number
+      "$.rows[].room": string
+      "$.rows[].status": string
+    verifiedAt: "2026-10-10T00:00:00Z"
+    probe:
+      fixture: fixtures/wanderlust.room-status.golden.json

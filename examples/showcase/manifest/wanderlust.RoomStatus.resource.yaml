@@ -1,0 +1,14 @@
+resource:
+  name: wanderlust.RoomStatus
+  description: "One room's status on a date."
+  fields:
+    room:
+      type: text
+      description: "Room type."
+    status:
+      type: enum
+      values: [free, taken]
+      description: "Whether it is free."
+    pricePerNight:
+      type: quantity
+      description: "Nightly rate in euro."

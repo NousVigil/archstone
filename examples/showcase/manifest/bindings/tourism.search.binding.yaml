@@ -1,0 +1,46 @@
+# Implementation binding - how tourism.search reaches the synthetic agency. NOT CDL.
+binding:
+  capabilityId: tourism.search
+  connector:
+    type: rest
+    rest:
+      baseUrl: "${SHOWCASE_API_URL}"
+      method: POST
+      path: /v1/search
+
+  response:
+    collection: "$.stays[*]"
+    resource: Stay
+    map:
+      name: "$.name"
+      location: "$.location"
+      pricePerNight: "$.pricePerNight"
+      rating: "$.rating"
+
+  extract:
+    totalMatches: "$.totalMatches"
+
+  # What the synthetic API last returned for the fixture's request (recorded: paths and types, never values).
+  # The shape includes fields this manifest never maps (net, margin, guests, ...): drift in them is still
+  # detected, and they are still never forwarded to a model.
+  contract:
+    source: recorded
+    fingerprint: "sha256:f5475f16fbc6d9f151b8cb565dfbe1243633929816aabdacdd40ec45bb89d241"
+    shape:
+      "$": object
+      "$.stays": array
+      "$.stays[]": object
+      "$.stays[].boardType": string
+      "$.stays[].commission": number
+      "$.stays[].freeCancellationUntil": string
+      "$.stays[].id": string
+      "$.stays[].location": string
+      "$.stays[].name": string
+      "$.stays[].net": number
+      "$.stays[].pricePerNight": number
+      "$.stays[].rating": number
+      "$.stays[].roomDescription": string
+      "$.totalMatches": number
+    verifiedAt: "2026-10-10T00:00:00Z"
+    probe:
+      fixture: fixtures/tourism.search.golden.json

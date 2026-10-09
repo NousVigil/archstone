@@ -1,0 +1,22 @@
+capability:
+  id: wanderlust.cancel
+  description: "Cancel a booking. This cannot be undone. The manifest declares that a person should approve it; this version of Archstone does not enforce that."
+  effect: irreversible
+
+  input:
+    bookingId:
+      type: identifier
+      description: "The booking reference from wanderlust.book."
+
+  output:
+    cancellation:
+      type: Cancellation
+
+  failures:
+    booking-not-found: No booking has that reference.
+    already-cancelled: The booking was already cancelled.
+
+  policies:
+    - authenticated
+    - human-approval
+  provider: wanderlust-api

@@ -1,0 +1,11 @@
+resource:
+  name: wanderlust.RoomStatusError
+  description: "A row the agency could not answer, in place of a room status."
+  fields:
+    code:
+      type: text
+      description: "A short machine-readable reason."
+    message:
+      type: text
+      required: false
+      description: "What the agency said."

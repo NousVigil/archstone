@@ -1,0 +1,230 @@
+openapi: 3.1.0
+info:
+  title: Wanderlust Agency (synthetic)
+  version: 1.0.0
+  description: |
+    The backend of the Archstone Showcase. Everything in it is invented: the agency, the hotels,
+    the guests, the passport numbers (DEMO-PASS-nnnnnn), the phone numbers (+00 000 000 nnn) and
+    the addresses (reserved .example domain).
+
+    It is deliberately stateless and deliberately over-exposing. Responses carry fields that no
+    capability declares (the agency's rate sheet, raw HTML, guest passports and phones at every
+    nesting level), images and links on hosts the manifest never names, and there is an endpoint
+    that deletes bookings which no capability exposes. This document describes what the backend
+    returns, not what a model should see; the manifest in ../manifest is the contract.
+servers:
+  - url: http://localhost:8788
+    description: node examples/showcase/api/serve.mjs
+components:
+  securitySchemes:
+    agencyKey:
+      type: http
+      scheme: bearer
+      description: One of the two public demo keys (see credentials.mjs). Any other value is refused with 401.
+  schemas:
+    Money:
+      type: object
+      required: [amount, currency]
+      properties:
+        amount: { type: number }
+        currency: { type: string }
+    Dates:
+      type: object
+      required: [from, to]
+      properties:
+        from: { type: string, format: date }
+        to: { type: string, format: date }
+    Party:
+      type: object
+      required: [adults]
+      properties:
+        adults: { type: integer, minimum: 1 }
+        children: { type: integer, minimum: 0 }
+    Guest:
+      description: OVER-EXPOSED. Invented personal data, present at every nesting level.
+      type: object
+      properties:
+        name: { type: string }
+        passport: { type: string, examples: ["DEMO-PASS-123456"] }
+        phone: { type: string, examples: ["+00 000 000 123"] }
+        email: { type: string, examples: ["ana.pop@guest.example"] }
+    RateSheet:
+      description: OVER-EXPOSED. The agency's private rate sheet.
+      type: object
+      properties:
+        net: { type: number }
+        margin: { type: number }
+        commission: { type: number }
+    Problem:
+      type: object
+      properties:
+        error: { type: string }
+        message: { type: string }
+paths:
+  /health:
+    get:
+      summary: Liveness
+      responses:
+        "200": { description: "{ status: ok }" }
+  /img/{stayId}/{file}:
+    get:
+      summary: A placeholder SVG picture, served from the agency's own image host
+      parameters:
+        - { name: stayId, in: path, required: true, schema: { type: string, examples: ["ws-1001"] } }
+        - { name: file, in: path, required: true, schema: { type: string, examples: ["1.svg"] } }
+      responses:
+        "200": { description: image/svg+xml }
+  /v1/stays/search:
+    post:
+      summary: Search stays (agency's own order)
+      description: Rows carry id, name, location, pricePerNight, rating, plus OVER-EXPOSED net, margin, commission, description_html and hostContact.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [destination]
+              properties:
+                destination: { type: string }
+                dates: { $ref: "#/components/schemas/Dates" }
+                travelers: { $ref: "#/components/schemas/Party" }
+                budget: { $ref: "#/components/schemas/Money" }
+      responses:
+        "200": { description: "{ stays: [...], totalMatches }" }
+  /v1/stays/{stayId}:
+    get:
+      summary: One stay in detail
+      description: Rooms, amenities, and OVER-EXPOSED guests (passport, phone) at stay, room, amenity and history level, the rate sheet again inside rooms, and raw description_html.
+      parameters:
+        - { name: stayId, in: path, required: true, schema: { type: string, examples: ["ws-1001"] } }
+      responses:
+        "200": { description: The stay }
+        "404": { description: No such stay }
+  /v1/stays/{stayId}/photos:
+    get:
+      summary: Five photo URLs, one of them on a host the manifest does not declare
+      parameters:
+        - { name: stayId, in: path, required: true, schema: { type: string, examples: ["ws-1001"] } }
+      responses:
+        "200": { description: "{ stayId, photos: [5 URLs] }" }
+  /v1/stays/{stayId}/pages:
+    get:
+      summary: Hotel page links, one of them on an origin the manifest does not declare
+      parameters:
+        - { name: stayId, in: path, required: true, schema: { type: string, examples: ["ws-1001"] } }
+      responses:
+        "200": { description: "{ pages: [{ name, url }, ...] }" }
+  /v1/quotes:
+    post:
+      summary: Quote a stay. Valid until the end of the current 15-minute window; books nothing.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [stayId, dates]
+              properties:
+                stayId: { type: string }
+                dates: { $ref: "#/components/schemas/Dates" }
+                travelers: { $ref: "#/components/schemas/Party" }
+      responses:
+        "200": { description: A quote }
+  /v1/bookings:
+    post:
+      summary: Book a quoted stay (agency key required)
+      description: The quote must be one this agency issued in the current window for the same stay, dates and party. The response carries OVER-EXPOSED guests (passport, phone) and the rate sheet.
+      security: [{ agencyKey: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [quoteId, stayId, dates, guestName]
+              properties:
+                quoteId: { type: string }
+                stayId: { type: string }
+                dates: { $ref: "#/components/schemas/Dates" }
+                travelers: { $ref: "#/components/schemas/Party" }
+                guestName: { type: string }
+      responses:
+        "201": { description: A booking with its payment quote }
+        "401": { description: Not an agency key }
+        "422": { description: Quote missing, expired or foreign }
+  /v1/bookings/{bookingId}/cancel:
+    post:
+      summary: Cancel a booking (agency key required; cannot be undone)
+      security: [{ agencyKey: [] }]
+      parameters:
+        - { name: bookingId, in: path, required: true, schema: { type: string, examples: ["B-0123abcd"] } }
+      responses:
+        "200": { description: The cancellation }
+        "401": { description: Not an agency key }
+        "404": { description: Not a booking id }
+  /v1/payments:
+    post:
+      summary: Pay for a booking with the demo card (agency key required; cannot be undone)
+      description: Needs a payment quote derived from booking, amount and window. The agency, not any gateway in front of it, refuses a missing, expired or foreign one.
+      security: [{ agencyKey: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [bookingId, amount, paymentQuote]
+              properties:
+                bookingId: { type: string }
+                amount: { $ref: "#/components/schemas/Money" }
+                paymentQuote: { type: string }
+      responses:
+        "201": { description: The payment }
+        "401": { description: Not an agency key }
+        "422": { description: Payment quote missing, expired or foreign }
+  /v1/availability:
+    get:
+      summary: Rooms free on a date
+      parameters:
+        - { name: propertyId, in: query, required: true, schema: { type: string, examples: ["ws-1001"] } }
+        - { name: date, in: query, required: true, schema: { type: string, format: date } }
+      responses:
+        "200": { description: Availability }
+  /v1/room-status:
+    get:
+      summary: Per-room status on a date. ws-1002 answers with an error row; ws-1003 with a wrong-typed price.
+      parameters:
+        - { name: propertyId, in: query, required: true, schema: { type: string, examples: ["ws-1001"] } }
+        - { name: date, in: query, required: true, schema: { type: string, format: date } }
+      responses:
+        "200": { description: "{ rows: [...] }" }
+  /v1/neighbourhoods:
+    get:
+      summary: A short description of an area
+      parameters:
+        - { name: area, in: query, required: true, schema: { type: string, examples: ["Alfama"] } }
+      responses:
+        "200": { description: The area }
+  /v1/search:
+    post:
+      summary: Legacy search, byte-compatible with the demo's mock backend (still carries net and commission)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                destination: { type: string }
+      responses:
+        "200": { description: "{ stays: [...], totalMatches }" }
+  /v1/classic-search:
+    post:
+      summary: The retired classic search. Always 410.
+      responses:
+        "410": { description: Gone }
+  /v1/guests/{name}/bookings:
+    delete:
+      summary: Delete every booking for a guest. OVER-EXPOSED. No capability binds this endpoint.
+      security: [{ agencyKey: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string, examples: ["Ana Pop"] } }
+      responses:
+        "200": { description: "{ guest, deletedBookings, deletedAt }" }
+        "401": { description: Not an agency key }

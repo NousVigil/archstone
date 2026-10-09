@@ -1,0 +1,15 @@
+capability:
+  id: wanderlust.stay-photos
+  description: "Photos of one stay, from the agency's own image host."
+  effect: read
+
+  input:
+    stayId:
+      type: identifier
+      description: "A stay id from wanderlust.search."
+
+  output:
+    gallery:
+      type: Gallery
+
+  provider: wanderlust-api
