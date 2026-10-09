@@ -48,6 +48,12 @@ export function locateFiles(dir: string, tool: IRTool): Target | { problem: stri
   let doc = res.resourceDocs.find((d) => d.resource.name === wanted);
   if (!doc) {
     const candidates = res.resourceDocs.filter((d) => d.resource.name === bare || d.resource.name.endsWith(`.${bare}`));
+    // #188: a namespace-qualified name never crosses namespaces. The bare-name fallback is for
+    // unqualified input only; a qualified miss lists same-bare-name resources as a hint.
+    if (wanted.includes(".")) {
+      const hint = candidates.length ? ` — did you mean ${candidates.map((d) => `'${d.resource.name}' (${d.file})`).join(", ")}?` : "";
+      return { problem: `${tool.id}: no resource '${wanted}'${hint}; nothing to adopt into` };
+    }
     if (candidates.length > 1) {
       const names = candidates.map((d) => `'${d.resource.name}' (${d.file})`).join(", ");
       return { problem: `${tool.id}: resource '${wanted}' is ambiguous — it could be ${names}; nothing to adopt into until the reference is qualified` };

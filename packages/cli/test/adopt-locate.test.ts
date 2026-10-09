@@ -47,3 +47,19 @@ describe("locateFiles — resource lookup across namespaces (#177)", () => {
     }
   });
 });
+
+describe("locateFiles — a qualified name never crosses namespaces (#188)", () => {
+  it("a qualified name with no exact match is a problem, even when one same-bare-name resource exists elsewhere", () => {
+    const located = locateFiles(showcase, tool("tourism.Amenity"));
+    expect("problem" in located).toBe(true);
+    if (!("problem" in located)) return;
+    expect(located.problem).toContain("no resource 'tourism.Amenity'");
+    expect(located.problem).toContain("wanderlust.Amenity");
+  });
+
+  it("an unqualified name that matches exactly one resource still resolves", () => {
+    const located = locateFiles(showcase, tool("Amenity"));
+    if ("problem" in located) throw new Error(located.problem);
+    expect(basename(located.resourceFile)).toBe("wanderlust.Amenity.resource.yaml");
+  });
+});
