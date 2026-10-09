@@ -84,7 +84,7 @@ reads `capabilities.yaml` from the directory it is given, and the other folders 
 | [`manifest/`](manifest/) | The live manifest: 13 capabilities, resources, two policies, bindings, golden fixtures for `verify`. |
 | [`manifest-variants/`](manifest-variants/) | Authoring fixtures that are never deployed. Today: the mis-declared payment. |
 | [`scenarios.json`](scenarios.json) | The scenario table, S-01 to S-22. |
-| [`test/`](test/) | `api.test.ts`, `manifests.test.ts`, `scenario-json.test.ts`, and the shared `harness.ts`. |
+| [`test/`](test/) | `api.test.ts`, `manifests.test.ts`, `scenario-json.test.ts`, the negative-scenario suite (`negatives.test.ts`, `denial-reasons.test.ts`, `tool-list.test.ts`), and the shared `harness.ts` and `negatives-support.ts`. |
 
 ## The capabilities
 

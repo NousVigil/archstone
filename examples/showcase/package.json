@@ -8,6 +8,7 @@
     "api": "node api/serve.mjs"
   },
   "devDependencies": {
+    "@archstone/agent": "workspace:*",
     "@archstone/compiler": "workspace:*",
     "@archstone/emitter-support": "workspace:*",
     "@archstone/runtime": "workspace:*",
