@@ -8,7 +8,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
-import type { AddressInfo } from "node:net";
+import { connect, type AddressInfo } from "node:net";
 import { parse as parseYaml } from "yaml";
 import {
   BOOKING_ID_RE,
@@ -385,6 +385,38 @@ describe("the agency judges the credential and the quote; Archstone is not in th
     expect((await pay({ amount: { amount: 1, currency: "EUR" } })).body.error).toBe("payment_quote_mismatch");
     expect((await pay({ bookingId: "B-ffffffff" })).body.error).toBe("payment_quote_mismatch");
     expect((await pay({}, CLOCK_MS + QUOTE_WINDOW_MS)).body.error).toBe("payment_quote_expired");
+  });
+});
+
+describe("malformed requests are refused, never fatal", () => {
+  it("answers 400 JSON for a malformed % sequence in the path", async () => {
+    for (const path of ["/v1/stays/%E0%A4%A", "/img/%zz/1.svg", "/v1/guests/%/bookings"]) {
+      const r = await call("GET", path);
+      expect(r.status, path).toBe(400);
+      expect(r.body.error).toBe("bad_request");
+    }
+  });
+
+  it("the Node wrapper answers 400 to a malformed Host header and keeps serving", async () => {
+    const server = createApiServer({ now: CLOCK_MS });
+    await new Promise<void>((ok) => server.listen(0, "127.0.0.1", ok));
+    const port = (server.address() as AddressInfo).port;
+    const raw = (text: string) =>
+      new Promise<string>((done, fail) => {
+        const sock = connect(port, "127.0.0.1", () => sock.write(text));
+        let out = "";
+        sock.on("data", (d) => (out += d));
+        sock.on("end", () => done(out));
+        sock.on("error", fail);
+      });
+    try {
+      const bad = await raw("GET /health HTTP/1.1\r\nHost: a b\r\nConnection: close\r\n\r\n");
+      expect(bad.startsWith("HTTP/1.1 400")).toBe(true);
+      const after = await fetch(`http://127.0.0.1:${port}/health`);
+      expect(after.status).toBe(200);
+    } finally {
+      await new Promise<void>((done) => server.close(() => done()));
+    }
   });
 });
 

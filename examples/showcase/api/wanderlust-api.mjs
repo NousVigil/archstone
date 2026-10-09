@@ -521,7 +521,12 @@ export async function handle(request, options = {}) {
   const imageBase = options.imageBase ?? IMAGE_BASE;
   const url = new URL(request.url);
   const method = request.method.toUpperCase();
-  const seg = url.pathname.split("/").filter(Boolean).map((s) => decodeURIComponent(s));
+  let seg;
+  try {
+    seg = url.pathname.split("/").filter(Boolean).map((s) => decodeURIComponent(s));
+  } catch {
+    return problem(400, "bad_request", "The path contains a malformed % sequence.");
+  }
 
   const only = (...methods) =>
     methods.includes(method) ? undefined : problem(405, "method_not_allowed", `Use ${methods.join(" or ")}.`);

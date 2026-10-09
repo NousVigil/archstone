@@ -20,11 +20,19 @@ export function createApiServer(options = {}) {
     req.on("end", () => {
       const method = req.method ?? "GET";
       const hasBody = method !== "GET" && method !== "HEAD";
-      const request = new Request(`http://${req.headers.host ?? "localhost"}${req.url ?? "/"}`, {
-        method,
-        headers: Object.fromEntries(Object.entries(req.headers).filter(([, v]) => typeof v === "string")),
-        body: hasBody ? Buffer.concat(chunks) : undefined,
-      });
+      let request;
+      try {
+        request = new Request(`http://${req.headers.host ?? "localhost"}${req.url ?? "/"}`, {
+          method,
+          headers: Object.fromEntries(Object.entries(req.headers).filter(([, v]) => typeof v === "string")),
+          body: hasBody ? Buffer.concat(chunks) : undefined,
+        });
+      } catch {
+        // A malformed Host or request target: refuse this request, keep the server up.
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "bad_request", message: "Malformed request." }));
+        return;
+      }
       handle(request, { now: options.now, imageBase: options.imageBase })
         .then(async (response) => {
           res.writeHead(response.status, Object.fromEntries(response.headers));
