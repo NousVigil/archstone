@@ -9,7 +9,7 @@ const out = stepWith(t, "archstone apply examples/showcase/manifest --exposure")
 
 /** The report, as { capability, exposes[], withholds[] } read off its lines. */
 const sections = out
-  .split(/\n(?= {2}\S+ {2}\[(?:read|write|irreversible)\]\n)/)
+  .split(/\n(?= {2}\S+ {2}\[(?:read|write|irreversible)\](?: {2}[^\n]*)?\n)/)
   .slice(1)
   .map((block) => ({
     capability: /^ {2}(\S+) {2}\[/.exec(block)![1],
