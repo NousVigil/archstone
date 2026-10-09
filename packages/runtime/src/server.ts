@@ -175,8 +175,7 @@ export interface McpToolDef {
 export function toolDefinitions(registry: Registry): McpToolDef[] {
   const resources = registry.ir.resources;
   return registry
-    .invocableTools()
-    .filter(({ tool: t }) => registry.getExposure(t.id).listed)
+    .listedTools()
     .map(({ name, tool: t }) => {
       const hint = registry.getExposure(t.id).hint;
       const def: McpToolDef = {

@@ -36,7 +36,7 @@
 
 import type { IR, IRField, IRTool } from "@archstone/compiler";
 import { toolName } from "./lowering";
-import { lifecycleExposure, combineExposure, type Exposure, type HealthStatus } from "./exposure";
+import { lifecycleExposure, combineExposure, surfaceOf, type Exposure, type HealthStatus, type Surface } from "./exposure";
 
 export interface ToolNameCollision {
   /** The sanitized name (`toolName()` output) two or more capabilities share. */
@@ -156,6 +156,23 @@ export class Registry {
    *  the single source `buildToolDefs`/`toolDefinitions` read (ADD-30 D-3). */
   invocableTools(): ReadonlyArray<NamedTool> {
     return this.invocable;
+  }
+
+  /** The tools a discovery listing advertises: invocable (bound) AND `listed` by their combined
+   *  exposure. The one predicate behind MCP `tools/list` (`toolDefinitions`), `buildToolDefs`
+   *  and `apply --exposure`'s totals (#173) — a listing and a report of what is listed cannot
+   *  disagree because they read this, not two copies of the filter. */
+  listedTools(): ReadonlyArray<NamedTool> {
+    return this.invocable.filter(({ tool: t }) => this.getExposure(t.id).listed);
+  }
+
+  /** Where one declared capability stands on the surface a model sees (#173): `exposed` (in
+   *  `listedTools()`), `unlisted` (callable by id, not advertised) or `not_exposed` (refused, or
+   *  no binding), with the reason. Derived from the same exposure + boundness `listedTools()`
+   *  reads. */
+  surface(id: string): Surface {
+    const bound = this.invocable.some(({ tool }) => tool.id === id);
+    return surfaceOf(this.getExposure(id), bound);
   }
 
   /**

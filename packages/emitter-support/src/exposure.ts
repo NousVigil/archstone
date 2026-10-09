@@ -113,6 +113,24 @@ export function lifecycleExposure(lifecycle: Lifecycle): Exposure {
   }
 }
 
+/** Where a capability stands on the surface a model sees (#173). `exposed`: advertised and
+ *  callable. `unlisted`: callable by id but not advertised (`experimental`). `not_exposed`:
+ *  neither advertised nor callable — `retired` (a business withdrew it), `unevaluatable` (a
+ *  lifecycle this build does not recognise), or `unbound` (no binding to call). */
+export type Surface =
+  | { state: "exposed" }
+  | { state: "unlisted"; reason: "experimental" }
+  | { state: "not_exposed"; reason: "retired" | "unevaluatable" | "unbound" };
+
+/** Lower a combined exposure plus boundness to a `Surface`. `exposed` holds exactly when the
+ *  capability is bound and `listed` — the `Registry.listedTools()` predicate. */
+export function surfaceOf(exposure: Exposure, bound: boolean): Surface {
+  if (exposure.blockedReason) return { state: "not_exposed", reason: exposure.blockedReason };
+  if (!bound) return { state: "not_exposed", reason: "unbound" };
+  if (!exposure.listed) return { state: "unlisted", reason: "experimental" };
+  return { state: "exposed" };
+}
+
 function healthHint(health: HealthStatus): ExposureHint | undefined {
   switch (health) {
     case "red":

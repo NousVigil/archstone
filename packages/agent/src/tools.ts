@@ -226,9 +226,7 @@ export function toolEnvelope(format: ToolFormat, name: string, description: stri
  *  per-format-envelope rendering of the neutral exposure emitter-support computed. */
 export function buildToolDefs(registry: Registry, format: ToolFormat): ToolDef[] {
   const resources = registry.ir.resources;
-  const tools = registry
-    .invocableTools()
-    .filter(({ tool: t }) => registry.getExposure(t.id).listed);
+  const tools = registry.listedTools();
   const describe = (t: (typeof tools)[number]["tool"]): string => {
     const hint = registry.getExposure(t.id).hint;
     return hint ? `${t.description} (${hint.text})` : t.description;

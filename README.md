@@ -78,7 +78,7 @@ needs no checkout of this one
 | Command | What it does |
 |---|---|
 | `archstone init <openapi>` | Draft a manifest from an OpenAPI document |
-| `archstone apply <dir>` | Validate and compile to IR; `--exposure` lists what a model sees and what it never sees |
+| `archstone apply <dir>` | Validate and compile to IR; `--exposure` lists what a model sees and what it never sees, and which capabilities are exposed, unlisted or not exposed (retired, unbound) |
 | `archstone build <dir>` | Write a portable IR artifact for embedding |
 | `archstone serve <dir>` | Serve MCP tools over stdio; `--http --token <t>` for HTTP |
 | `archstone verify <dir>` | Replay recorded fixtures against the live backend and report drift; `--json` for CI |
