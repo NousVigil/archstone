@@ -51,7 +51,7 @@ import { INIT_USAGE, runInitCmd } from "./init";
 import { runAuditCmd } from "./audit-cmd";
 import { diagnose, formatReport } from "./doctor";
 import { runAdoptCmd } from "./adopt";
-import { formatExposure } from "./exposure-report";
+import { formatExposure, totalsOf, type ExposureEntry } from "./exposure-report";
 
 /** `archstone --version` is the first thing a human types after installing, and until this
  *  existed it printed the usage block and exited 2 — which reads as "broken install" at the
@@ -202,9 +202,14 @@ function runApply(dir: string, exposure = false, json = false): void {
     const invocable = registry.listCapabilities().filter((t) => t.connector).length;
     say(`  registry   IR v${registry.ir.version} — ${registry.size} capabilities, ${invocable} invocable (bound)`);
     if (exposure) {
-      const report = exposureOfIR(registry.ir);
+      // The field report is the compiler's; where each capability stands on the surface is the
+      // Registry's, read from the same predicate `tools/list` filters by (#173).
+      const report: ExposureEntry[] = exposureOfIR(registry.ir).map((e) => {
+        const { capabilityId, effect, ...rest } = e;
+        return { capabilityId, effect, ...registry.surface(capabilityId), ...rest };
+      });
       if (structured) {
-        console.log(JSON.stringify({ exposure: report }, null, 2));
+        console.log(JSON.stringify({ exposure: report, totals: totalsOf(report) }, null, 2));
         process.exit(0);
       }
       for (const line of formatExposure(report)) say(line);

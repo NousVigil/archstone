@@ -5,6 +5,36 @@
 // is flagged, nothing is proposed for adoption.
 
 import type { IRType, ToolExposure } from "@archstone/compiler";
+import type { Surface } from "@archstone/emitter-support";
+
+/** A capability's field report plus where it stands on the surface a model sees (#173). */
+export type ExposureEntry = ToolExposure & Surface;
+
+export interface ExposureTotals {
+  declared: number;
+  /** Equals the number of tools `tools/list` advertises for the same manifest. */
+  exposed: number;
+  /** Callable by id, not advertised (`experimental`). */
+  unlisted: number;
+  /** Neither advertised nor callable (`retired`, unrecognised lifecycle, or unbound). */
+  notExposed: number;
+}
+
+export function totalsOf(entries: ExposureEntry[]): ExposureTotals {
+  const count = (state: Surface["state"]): number => entries.filter((e) => e.state === state).length;
+  return { declared: entries.length, exposed: count("exposed"), unlisted: count("unlisted"), notExposed: count("not_exposed") };
+}
+
+function stateLabel(e: Surface): string {
+  switch (e.state) {
+    case "exposed":
+      return "exposed";
+    case "unlisted":
+      return `unlisted (${e.reason}) — callable by id, not advertised`;
+    case "not_exposed":
+      return `not exposed (${e.reason})`;
+  }
+}
 
 /** An IR type as a reader would name it: the semantic type, a resource name, or `Name[]`. */
 function typeName(t: IRType): string {
@@ -34,10 +64,12 @@ function shortFingerprint(fp: string): string {
 const INDENT = "               ";
 
 /** The report as lines, one block per capability, in `exposureOfIR`'s order. */
-export function formatExposure(report: ToolExposure[]): string[] {
+export function formatExposure(report: ExposureEntry[]): string[] {
+  const t = totalsOf(report);
   const lines: string[] = ["", "  exposure   what a model sends, is shown, and never sees — names and types only"];
+  lines.push(`  totals     ${t.declared} declared — ${t.exposed} exposed, ${t.unlisted} unlisted, ${t.notExposed} not exposed`);
   for (const e of report) {
-    lines.push("", `  ${e.capabilityId}  [${e.effect}]`);
+    lines.push("", `  ${e.capabilityId}  [${e.effect}]  ${stateLabel(e)}`);
 
     const receives = e.receives.map((f) => field(f.name, f.type, f.required ? [] : ["optional"]));
     lines.push(`    receives   ${receives.length > 0 ? receives.join(", ") : "nothing"}`);

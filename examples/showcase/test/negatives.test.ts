@@ -455,15 +455,24 @@ describe("N-12 / AC-2.13: deprecated still works with a note; retired is refused
     });
   });
 
-  it("N-12 `apply --exposure` reports fields per DECLARED capability: it lists the retired one, which the tool list does not", async () => {
-    // Pinned as observed in this version: the exposure report answers "what would a model see of
-    // each declared capability", not "which tools are served". Whether a client can call a
-    // capability is the tool list's and the lifecycle gate's job (both asserted above).
+  it("N-12 `apply --exposure` marks the retired capability not exposed (reason retired) and its totals match the tool list", async () => {
     const r = await cliRun(["apply", MANIFEST_DIR, "--exposure", "--json"]);
     expect(r.code).toBe(0);
-    const ids = (JSON.parse(r.stdout) as { exposure: { capabilityId: string }[] }).exposure.map((e) => e.capabilityId);
-    expect(ids).toContain("tourism.search-classic");
-    expect(ids).toHaveLength(13);
+    const doc = JSON.parse(r.stdout) as {
+      exposure: { capabilityId: string; state: string; reason?: string }[];
+      totals: { declared: number; exposed: number; unlisted: number; notExposed: number };
+    };
+    const classic = doc.exposure.find((e) => e.capabilityId === "tourism.search-classic");
+    expect(classic).toMatchObject({ state: "not_exposed", reason: "retired" });
+    const s = session();
+    await s.withClient("none", async (client) => {
+      const listed = (await client.listTools()).tools.length;
+      expect(doc.totals.exposed).toBe(listed);
+      expect(doc.exposure.filter((e) => e.state === "exposed")).toHaveLength(listed);
+    });
+    const { declared, exposed, unlisted, notExposed } = doc.totals;
+    expect(declared).toBe(doc.exposure.length);
+    expect(exposed + unlisted + notExposed).toBe(declared);
   });
 });
 

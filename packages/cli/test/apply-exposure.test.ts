@@ -3,8 +3,9 @@ import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { buildRegistry, toolDefinitions } from "@archstone/runtime";
 
 // `archstone apply --exposure [--json]` (ADD-309 §7 step 4), end to end through the real CLI.
 //
@@ -78,10 +79,10 @@ describe("archstone apply --exposure", () => {
 });
 
 describe("archstone apply --exposure --json", () => {
-  it("prints { exposure } alone on stdout — one parseable document, nothing else", async () => {
+  it("prints { exposure, totals } alone on stdout — one parseable document, nothing else", async () => {
     const { stdout, stderr } = await run("apply", "examples/manifests/tourism", "--exposure", "--json");
     const doc = JSON.parse(stdout) as Record<string, unknown>;
-    expect(Object.keys(doc)).toEqual(["exposure"]);
+    expect(Object.keys(doc)).toEqual(["exposure", "totals"]);
     expect(doc).toEqual(JSON.parse(fixture("tourism.exposure.json")));
     expect(stderr).toBe("");
   }, 20000);
@@ -111,4 +112,44 @@ describe("archstone apply --exposure --json", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   }, 20000);
+});
+
+describe("archstone apply --exposure: lifecycle (#173)", () => {
+  // The bank manifest, with its deprecated capability retired and its beta one made experimental.
+  const withLifecycles = (): string => {
+    const dir = mkdtempSync(join(tmpdir(), "archstone-exposure-lifecycle-"));
+    cpSync(join(root, "examples/manifests/bank"), dir, { recursive: true });
+    for (const f of readdirSync(dir).filter((n) => n.endsWith(".capability.yaml"))) {
+      const text = readFileSync(join(dir, f), "utf8");
+      writeFileSync(join(dir, f), text.replace("lifecycle: deprecated", "lifecycle: retired").replace("lifecycle: beta", "lifecycle: experimental"));
+    }
+    return dir;
+  };
+
+  it("retired is not exposed (reason retired), experimental is unlisted, and the totals equal tools/list", async () => {
+    const dir = withLifecycles();
+    try {
+      const { stdout } = await run("apply", dir, "--exposure", "--json");
+      const doc = JSON.parse(stdout) as { exposure: { capabilityId: string; state: string; reason?: string }[]; totals: Record<string, number> };
+      const of = (id: string) => doc.exposure.find((e) => e.capabilityId === id);
+      expect(of("banking.generate-statement")).toMatchObject({ state: "not_exposed", reason: "retired" });
+      expect(of("banking.quote-transfer")).toMatchObject({ state: "not_exposed", reason: "unbound" });
+      expect(of("banking.initiate-transfer")).toMatchObject({ state: "unlisted", reason: "experimental" });
+
+      const built = buildRegistry(dir);
+      const listed = toolDefinitions(built.registry!).length;
+      expect(doc.totals.exposed).toBe(listed);
+      expect(doc.exposure.filter((e) => e.state === "exposed").map((e) => e.capabilityId).sort()).toEqual(
+        built.registry!.listedTools().map((t) => t.tool.id).sort(),
+      );
+      expect(doc.totals).toMatchObject({ declared: doc.exposure.length, unlisted: 1, notExposed: 2 });
+
+      const human = (await run("apply", dir, "--exposure")).stdout;
+      expect(human).toContain("banking.generate-statement  [read]  not exposed (retired)");
+      expect(human).toContain("banking.initiate-transfer  [irreversible]  unlisted (experimental) — callable by id, not advertised");
+      expect(human).toMatch(/totals {5}\d+ declared — \d+ exposed, 1 unlisted, 2 not exposed/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30000);
 });

@@ -12,8 +12,9 @@ archstone apply examples/manifests/tourism
   registry   IR v0 — 1 capabilities, 1 invocable (bound)
 
   exposure   what a model sends, is shown, and never sees — names and types only
+  totals     1 declared — 1 exposed, 0 unlisted, 0 not exposed
 
-  tourism.search  [read]
+  tourism.search  [read]  exposed
     receives   budget (money, optional), dates (date-range), destination (location), travelers (party)
     exposes    stays[].location (location), stays[].name (text), stays[].pricePerNight (quantity), stays[].rating (quantity, optional), totalMatches (quantity, extract)
     withholds  $.stays[].boardType (string), $.stays[].commission (number), $.stays[].freeCancellationUntil (string), $.stays[].id (string), $.stays[].net (number), $.stays[].roomDescription (string)

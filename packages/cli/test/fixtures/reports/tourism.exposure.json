@@ -3,6 +3,7 @@
     {
       "capabilityId": "tourism.search",
       "effect": "read",
+      "state": "exposed",
       "receives": [
         {
           "name": "budget",
@@ -120,5 +121,11 @@
         "fingerprint": "sha256:f5475f16fbc6d9f151b8cb565dfbe1243633929816aabdacdd40ec45bb89d241"
       }
     }
-  ]
+  ],
+  "totals": {
+    "declared": 1,
+    "exposed": 1,
+    "unlisted": 0,
+    "notExposed": 0
+  }
 }
