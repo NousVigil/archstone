@@ -67,6 +67,18 @@ describe("deploy workflow", () => {
     expect(wf.jobs.deploy.steps[battery].run).toContain("live-battery");
   });
 
+  it("waits for the rollout to be consistent (10 consecutive answers, bounded) and retries the battery once", () => {
+    const steps = wf.jobs.deploy.steps;
+    const wait = steps.find((s) => /wait for the new version/i.test(s.name ?? ""));
+    const battery = steps.find((s) => /live battery/i.test(s.name ?? ""));
+    expect(wait?.run).toMatch(/-ge 10/);
+    expect(wait?.run).toMatch(/ok=0/); // a stale answer resets the streak
+    expect(wait?.run).toMatch(/seq 1 90/);
+    expect(wait?.run).not.toMatch(/\[ "\$code" = "405" \] && exit 0/);
+    expect((battery?.run ?? "").match(/live-battery/g)).toHaveLength(2);
+    expect(battery?.run).toMatch(/sleep 45/);
+  });
+
   it("uses the existing repository secrets, and holds no secret value or local path", () => {
     expect(raw).toContain("secrets.CLOUDFLARE_API_TOKEN");
     expect(raw).toContain("secrets.CLOUDFLARE_ACCOUNT_ID");
