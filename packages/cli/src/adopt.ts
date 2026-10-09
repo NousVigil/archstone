@@ -36,13 +36,24 @@ interface Target {
 
 /** Which files hold this capability's resource, its binding, and its own capability document.
  *  All three come from the loader, never from guessing a filename off a resource name. */
-function locateFiles(dir: string, tool: IRTool): Target | { problem: string } {
+export function locateFiles(dir: string, tool: IRTool): Target | { problem: string } {
   const res = load(dir);
   const wanted = tool.response?.resource;
   if (!wanted) return { problem: `${tool.id}: no response mapping — nothing to adopt into` };
 
+  // #177: an exact name wins outright. `find` over three OR-ed predicates returned whichever
+  // document came first, so `wanderlust.Stay` could resolve to `tourism.Stay`'s file. The bare-name
+  // fallback (a resource referenced without its namespace) is used only when it is unambiguous.
   const bare = wanted.includes(".") ? wanted.slice(wanted.lastIndexOf(".") + 1) : wanted;
-  const doc = res.resourceDocs.find((d) => d.resource.name === wanted || d.resource.name.endsWith(`.${bare}`) || d.resource.name === bare);
+  let doc = res.resourceDocs.find((d) => d.resource.name === wanted);
+  if (!doc) {
+    const candidates = res.resourceDocs.filter((d) => d.resource.name === bare || d.resource.name.endsWith(`.${bare}`));
+    if (candidates.length > 1) {
+      const names = candidates.map((d) => `'${d.resource.name}' (${d.file})`).join(", ");
+      return { problem: `${tool.id}: resource '${wanted}' is ambiguous — it could be ${names}; nothing to adopt into until the reference is qualified` };
+    }
+    doc = candidates[0];
+  }
   if (!doc) return { problem: `${tool.id}: could not find the file declaring resource '${wanted}'` };
 
   const binding = res.bindings.find((b) => b.binding.capabilityId === tool.id);
