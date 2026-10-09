@@ -4,7 +4,10 @@
 // Runs the recorder twice into temp directories (serially), compares them with each other, then with
 // the committed files. It drives the built workspace CLI, so `pnpm build` must have run (`pnpm test`
 // does). Without it, locally, the test skips and says why; under CI it fails. S-15 is part of the run
-// only when ARCHSTONE_TEST_PG_URL is set; under CI the recorder fails without it.
+// only when ARCHSTONE_TEST_PG_URL is set: without it the test records S-16..S-21 via the recorder's
+// `--only`, so a job with no Postgres (deploy-gate) still checks the other six. The recorder itself
+// keeps its rule (a missing URL is a failure under CI), and S-15 stays mandatory in the ci.yml step
+// "Showcase recorded scenarios are current", which has Postgres.
 
 import { describe, it, expect } from "vitest";
 import { execFile } from "node:child_process";
@@ -20,8 +23,10 @@ const recorder = resolve(REPO_ROOT, "examples/showcase/record/record.mjs");
 const built = existsSync(resolve(REPO_ROOT, "packages/cli/dist/index.js"));
 const runnable = built || Boolean(process.env.CI);
 
+const scenarios = process.env.ARCHSTONE_TEST_PG_URL ? [] : ["--only", "S-16,S-17,S-18,S-19,S-20,S-21"];
+
 async function record(out: string): Promise<void> {
-  await execFileAsync(process.execPath, [recorder, "--out", out], { cwd: REPO_ROOT, env: process.env, maxBuffer: 16 * 1024 * 1024 });
+  await execFileAsync(process.execPath, [recorder, "--out", out, ...scenarios], { cwd: REPO_ROOT, env: process.env, maxBuffer: 16 * 1024 * 1024 });
 }
 
 const read = (dir: string): Record<string, string> =>
