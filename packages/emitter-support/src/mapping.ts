@@ -225,6 +225,19 @@ function isPrimitive(v: unknown): v is string | number | boolean {
   return typeof v === "string" || typeof v === "number" || typeof v === "boolean";
 }
 
+const ISO_4217_SHAPE = /^[A-Z]{3}$/;
+
+function isMoneyShape(o: Record<string, unknown>): boolean {
+  return (
+    hasOwn(o, "amount") &&
+    typeof o.amount === "number" &&
+    Number.isFinite(o.amount) &&
+    hasOwn(o, "currency") &&
+    typeof o.currency === "string" &&
+    ISO_4217_SHAPE.test(o.currency)
+  );
+}
+
 function hasOwn(o: Record<string, unknown>, k: string): boolean {
   return Object.prototype.hasOwnProperty.call(o, k);
 }
@@ -270,6 +283,16 @@ function projectSemantic(w: Walk, semantic: SemanticType, value: unknown, path: 
     return { ok: false, reason: "withheld", missing: [], withheld: [path] };
   }
   const shape = COMPOSITE_SHAPES[semantic];
+  if (semantic === "money") {
+    // #176: money is the one composite where a bare primitive is NOT passed. A price sent as
+    // "129.00" or 120 has no currency, so it is not a money value; it is a shape mismatch like any
+    // other, absent and decided by the required-ness rule. `amount` is a finite JSON number
+    // (the lowering's `number`; a decimal string is not accepted) and `currency` has the
+    // ISO-4217 shape (three uppercase letters). No code list is kept: only the form is checked.
+    if (!isPlainObject(value) || !isMoneyShape(value)) return misfit(w, type, path, acc);
+    for (const k of Object.keys(value)) if (k !== "amount" && k !== "currency") noteUndeclared(w, `${path}.${k}`);
+    return ok({ amount: value.amount, currency: value.currency });
+  }
   if (shape) {
     // A primitive carries no keys, so nothing undeclared can ride along: passed as it always was
     // (a provider that sends `price: 120` is common). An object keeps only the declared keys.

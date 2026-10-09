@@ -7,7 +7,7 @@ import { applyResponseMapping } from "../src/mapping";
 const resources: IRResourceRegistry = {
   "shop.Widget": [
     { name: "name", required: true, type: { kind: "scalar", semantic: "text" } },
-    { name: "price", required: true, type: { kind: "scalar", semantic: "money" } },
+    { name: "price", required: true, type: { kind: "scalar", semantic: "quantity" } },
     { name: "tag", required: false, type: { kind: "scalar", semantic: "text" } },
   ],
 };

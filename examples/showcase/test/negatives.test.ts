@@ -516,6 +516,25 @@ describe("N-13 / AC-2.14, AC-2.15: a failing backend is an error, a wrong-typed 
     expect(await s.execute("wanderlust.room-status", bad)).toEqual({ status: "violation", missing: ["pricePerNight"] });
   });
 
+  it("N-13 (#176) a price sent as a bare string for a money field is a violation too, and the string is not passed on", async () => {
+    // The string-price trigger: `wanderlust.quote` declares `total` as money, so "129.00" has no
+    // currency and is not a money value. (`room-status.pricePerNight` is a quantity, not money.)
+    const s = session({
+      intercept: (request) =>
+        request.method === "POST" && new URL(request.url).pathname === "/v1/quotes"
+          ? new Response(
+              JSON.stringify({ quoteId: "Q-1", stayId: "ws-1001", dates: { from: "2027-05-12", to: "2027-05-15" }, nights: 3, total: "129.00", expiresAt: "2027-05-12T10:00:00Z" }),
+              { status: 200, headers: { "content-type": "application/json" } },
+            )
+          : undefined,
+    });
+    const result = await s.call("wanderlust_quote", row("S-05").arguments!);
+    expect(result.isError).toBe(true);
+    expect(reasonOf(result._meta)).toBe("contract_violation");
+    expect(result._meta?.[CONTRACT]).toMatchObject({ error: "contract_violation", capability: "wanderlust.quote", missing: ["total"] });
+    expect(JSON.stringify(result)).not.toContain("129.00");
+  });
+
   it("N-13 over the wire the client still reads the violation from _meta, not from structured content", async () => {
     const s = session();
     await s.withClient("none", async (client) => {
