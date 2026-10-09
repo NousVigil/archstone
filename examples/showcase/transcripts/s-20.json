@@ -11,6 +11,11 @@
       "command": "archstone init examples/showcase/api/wanderlust.openapi.yaml --out <draft> --decisions examples/showcase/record/s20-decisions.json --non-interactive",
       "exit": 0,
       "stdout": "\narchstone init — examples/showcase/api/wanderlust.openapi.yaml (openapi adapter)\n\nWrote 7 file(s) to <draft>, and the shipped compiler compiled them.\n\nCandidates: 16 proposed, 3 emitted, 1 not emitted.\n  ✓ wanderlust.search  [read]  POST /v1/stays/search (no resource — untyped output)\n  ✓ wanderlust.stay-details  [read]  GET /v1/stays/{stayId} (no resource — untyped output)\n  ✓ wanderlust.availability  [read]  GET /v1/availability (no resource — untyped output)\n\n  Declined by you (1) — most operations in a spec are not capabilities:\n    - DELETE /v1/guests/{name}/bookings — A delete function exists in the agency's system. A person declined it; nothing offers it to an AI.\n\nWhat did not survive the trip — read these before committing:\n  no-response-shape [operation] (3) — no usable response shape — emitted without a resource, output or response mapping\n    - wanderlust.search\n    - wanderlust.stay-details\n    - wanderlust.availability\n  failures-not-emitted [operation] (1) — error responses carry no derivable business meaning — no `failures:` emitted\n    - GET /v1/stays/{stayId}: error responses declared: 404\n  contract-not-recorded [operation] (3) — no probe ran — no fixture, no contract\n    - wanderlust.search\n    - wanderlust.stay-details\n    - wanderlust.availability\n  semantic-type-degraded [field] (4) — semantic type fell back to string/text\n    - POST /v1/stays/search: POST /v1/stays/search/requestBody/content/application/json/schema/properties/destination: a bare `type: string` implies no richer type\n    - POST /v1/stays/search: #/components/schemas/Money/properties/currency: a bare `type: string` implies no richer type\n    - GET /v1/stays/{stayId}: GET /v1/stays/{stayId}/parameters/0: a bare `type: string` implies no richer type\n    - GET /v1/availability: GET /v1/availability/parameters/0: a bare `type: string` implies no richer type\n  input-property-omitted [field] (3) — an optional input the connector cannot carry was left out — the agent cannot set it\n    - POST /v1/stays/search#dates: object\n    - POST /v1/stays/search#travelers: object\n    - POST /v1/stays/search#budget: object\n  identity-ref-not-inferred [field] (2) — emitted as `identifier`; this may be a `ref:` to a resource — only you know\n    - wanderlust.stay-details#stayId: if this identifies a resource another capability returns, change `type: identifier` to `ref: <Resource>`\n    - wanderlust.availability#propertyId: if this identifies a resource another capability returns, change `type: identifier` to `ref: <Resource>`\n\nWhat no tool could infer for you, and what to check by hand:\n  - Every `description:` is the source's own words. An agent reads them to decide\n    whether to call you. They are the highest-leverage thing to rewrite.\n  - Every `response.map` line carries the field it came from and a real example.\n    A mapping can be structurally right and semantically wrong; only you can see that.\n  - An input typed `identifier` may really be a `ref:` to a resource another\n    capability returns. No source construct says so — only you know.\n\nReport also written to <draft>/INIT-REPORT.md\n\n"
+    },
+    {
+      "command": "archstone init examples/showcase/api/wanderlust.openapi.yaml --out <refused> --non-interactive",
+      "exit": 2,
+      "stderr": "archstone init: --non-interactive requires --decisions <file>. `init` never defaults an `effect`.\n"
     }
   ],
   "asserts": [
@@ -25,6 +30,14 @@
     {
       "claim": "it emitted exactly the 3 confirmed capabilities",
       "negative": false
+    },
+    {
+      "claim": "`init --non-interactive` without --decisions refuses (non-zero): it never defaults an effect",
+      "negative": false
+    },
+    {
+      "claim": "and it wrote nothing: the output directory does not exist",
+      "negative": true
     },
     {
       "claim": "the draft has a capability file for each confirmed capability and no other",
@@ -80,6 +93,10 @@
     }
   ],
   "normalisation": [
+    {
+      "what": "a directory init was told to write to and did not",
+      "as": "<refused>"
+    },
     {
       "what": "the directory init was told to write to",
       "as": "<draft>"

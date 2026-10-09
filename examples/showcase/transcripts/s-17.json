@@ -45,6 +45,10 @@
       "negative": false
     },
     {
+      "claim": "strict verify (exit non-zero on a gained field): not available in this version - #178",
+      "negative": false
+    },
+    {
       "claim": "after the change, `verify` names the new field: a yellow reading on wanderlust.stay-details, \"gained 1 field(s): $.guestEmail\"",
       "negative": false
     },
