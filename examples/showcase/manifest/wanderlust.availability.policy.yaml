@@ -1,0 +1,13 @@
+# The only rate limit in the Showcase: 3 calls per minute per caller. A counter is supplied by
+# whoever hosts the server; a capability that declares a rate limit and runs without one is refused.
+apiVersion: archstone/v1
+kind: Policy
+metadata:
+  id: wanderlust-availability-rate
+  name: Availability rate limit
+  scope: capability
+  capabilityId: wanderlust.availability
+spec:
+  rateLimit:
+    maxInvocations: 3
+    windowSeconds: 60

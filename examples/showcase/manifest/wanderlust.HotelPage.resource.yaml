@@ -1,0 +1,11 @@
+resource:
+  name: wanderlust.HotelPage
+  description: "A page where a person can see a property on the agency's own site."
+  fields:
+    name:
+      type: text
+      description: "Which property the page is for."
+    url:
+      type: web-page
+      required: false
+      description: "The page, when it lives on the agency's own site."

@@ -1,0 +1,860 @@
+{
+  "$comment": "One row per scenario: the single table the tests, the documentation and any front end read. Everything is invented; no row names a real business or person. See README.md for the field reference.",
+  "version": 1,
+  "clock": "2027-05-01T10:07:00Z",
+  "keys": {
+    "none": "no credential",
+    "A": "public demo key A (principal demo:visitor)",
+    "B": "public demo key B (principal demo:blocked)",
+    "other": "negatives only: a credential the agency accepts whose principal is on no list"
+  },
+  "scenarios": [
+    {
+      "id": "S-01",
+      "negative": {
+        "id": "N-01"
+      },
+      "group": "read",
+      "mode": "live",
+      "tool": "wanderlust_search",
+      "capability": "wanderlust.search",
+      "arguments": {
+        "destination": "Lisbon",
+        "dates": {
+          "from": "2027-05-12",
+          "to": "2027-05-15"
+        },
+        "travelers": {
+          "adults": 2
+        },
+        "budget": {
+          "amount": 150,
+          "currency": "EUR"
+        }
+      },
+      "key": "none",
+      "outcome": "success",
+      "anchor": "/demo/how-it-works#s-01",
+      "test": {
+        "file": "examples/showcase/test/manifests.test.ts",
+        "name": "S-01"
+      },
+      "issue": null,
+      "issueUrl": null,
+      "copy": {
+        "en": {
+          "ask": "Find me a stay in Lisbon for two, 12-15 May, under 150 EUR a night.",
+          "happens": "A list of stays with price and rating.",
+          "refused": "The agency's private profit margin on each stay is never shown. The order is the agency's own; Archstone ranks nothing."
+        },
+        "ro": {
+          "ask": "",
+          "happens": "",
+          "refused": ""
+        }
+      }
+    },
+    {
+      "id": "S-02",
+      "negative": {
+        "id": "N-02"
+      },
+      "group": "projection",
+      "mode": "live",
+      "tool": "wanderlust_stay-details",
+      "capability": "wanderlust.stay-details",
+      "arguments": {
+        "stayId": "ws-1001"
+      },
+      "key": "none",
+      "outcome": "success",
+      "anchor": "/demo/how-it-works#s-02",
+      "test": {
+        "file": "examples/showcase/test/manifests.test.ts",
+        "name": "S-02"
+      },
+      "issue": null,
+      "issueUrl": null,
+      "copy": {
+        "en": {
+          "ask": "Tell me more about Casa Alfama.",
+          "happens": "Rooms, and what each room offers.",
+          "refused": "Past guests' passport numbers and phone numbers are never shown, at any level. The raw page code of the description is left out too."
+        },
+        "ro": {
+          "ask": "",
+          "happens": "",
+          "refused": ""
+        }
+      }
+    },
+    {
+      "id": "S-03",
+      "negative": {
+        "id": "N-03"
+      },
+      "group": "origins",
+      "mode": "live",
+      "tool": "wanderlust_stay-photos",
+      "capability": "wanderlust.stay-photos",
+      "arguments": {
+        "stayId": "ws-1001"
+      },
+      "key": "none",
+      "outcome": "success",
+      "anchor": "/demo/how-it-works#s-03",
+      "test": {
+        "file": "examples/showcase/test/manifests.test.ts",
+        "name": "S-03"
+      },
+      "issue": null,
+      "issueUrl": null,
+      "copy": {
+        "en": {
+          "ask": "Show me photos of Casa Alfama.",
+          "happens": "Photos from the agency's own image host.",
+          "refused": "One photo from an unknown website is left out and the rest still show. Archstone never downloads any photo."
+        },
+        "ro": {
+          "ask": "",
+          "happens": "",
+          "refused": ""
+        }
+      }
+    },
+    {
+      "id": "S-04",
+      "negative": {
+        "id": "N-04"
+      },
+      "group": "origins",
+      "mode": "live",
+      "tool": "wanderlust_stay-page",
+      "capability": "wanderlust.stay-page",
+      "arguments": {
+        "stayId": "ws-1001"
+      },
+      "key": "none",
+      "outcome": "success",
+      "anchor": "/demo/how-it-works#s-04",
+      "test": {
+        "file": "examples/showcase/test/manifests.test.ts",
+        "name": "S-04"
+      },
+      "issue": null,
+      "issueUrl": null,
+      "copy": {
+        "en": {
+          "ask": "Give me the official page for Casa Alfama.",
+          "happens": "A link to the hotel's page on the agency's own site.",
+          "refused": "A second link points somewhere the agency never declared: it is left out, and never opened."
+        },
+        "ro": {
+          "ask": "",
+          "happens": "",
+          "refused": ""
+        }
+      }
+    },
+    {
+      "id": "S-05",
+      "negative": {
+        "id": "N-05"
+      },
+      "group": "write",
+      "mode": "live",
+      "tool": "wanderlust_quote",
+      "capability": "wanderlust.quote",
+      "arguments": {
+        "stayId": "ws-1001",
+        "dates": {
+          "from": "2027-05-12",
+          "to": "2027-05-15"
+        },
+        "travelers": {
+          "adults": 2
+        }
+      },
+      "key": "none",
+      "outcome": "success",
+      "anchor": "/demo/how-it-works#s-05",
+      "test": {
+        "file": "examples/showcase/test/manifests.test.ts",
+        "name": "S-05"
+      },
+      "issue": null,
+      "issueUrl": null,
+      "copy": {
+        "en": {
+          "ask": "Quote Casa Alfama for 12-15 May, two adults.",
+          "happens": "A price, and a quote that expires.",
+          "refused": "A quote books nothing. Whether the AI asks you first is up to the AI."
+        },
+        "ro": {
+          "ask": "",
+          "happens": "",
+          "refused": ""
+        }
+      }
+    },
+    {
+      "id": "S-06",
+      "negative": {
+        "id": "N-06",
+        "key": "none"
+      },
+      "group": "policy",
+      "mode": "live",
+      "tool": "wanderlust_book",
+      "capability": "wanderlust.book",
+      "arguments": {
+        "quoteId": "{{quoteId}}",
+        "stayId": "ws-1001",
+        "dates": {
+          "from": "2027-05-12",
+          "to": "2027-05-15"
+        },
+        "travelers": {
+          "adults": 2
+        },
+        "guestName": "Ana Pop"
+      },
+      "key": "A",
+      "setup": [
+        {
+          "tool": "wanderlust_quote",
+          "key": "none",
+          "arguments": {
+            "stayId": "ws-1001",
+            "dates": {
+              "from": "2027-05-12",
+              "to": "2027-05-15"
+            },
+            "travelers": {
+              "adults": 2
+            }
+          },
+          "capture": {
+            "quoteId": "quote.quoteId"
+          }
+        }
+      ],
+      "outcome": "success",
+      "anchor": "/demo/how-it-works#s-06",
+      "test": {
+        "file": "examples/showcase/test/manifests.test.ts",
+        "name": "S-06"
+      },
+      "issue": null,
+      "issueUrl": null,
+      "copy": {
+        "en": {
+          "ask": "Book that quote for Ana Pop (with the public demo key).",
+          "happens": "A booking number.",
+          "refused": "Without the key the call is refused. Archstone does not check who you are; the agency's own system does."
+        },
+        "ro": {
+          "ask": "",
+          "happens": "",
+          "refused": ""
+        }
+      }
+    },
+    {
+      "id": "S-07",
+      "negative": {
+        "id": "N-07",
+        "key": "other",
+        "note": "an accepted credential whose principal is on no list; the other negatives (no principal at all, a malformed credential header) are host-level and belong to the runner"
+      },
+      "group": "policy",
+      "mode": "live",
+      "tool": "wanderlust_book",
+      "capability": "wanderlust.book",
+      "arguments": {
+        "quoteId": "{{quoteId}}",
+        "stayId": "ws-1001",
+        "dates": {
+          "from": "2027-05-12",
+          "to": "2027-05-15"
+        },
+        "travelers": {
+          "adults": 2
+        },
+        "guestName": "Ana Pop"
+      },
+      "key": "B",
+      "setup": [
+        {
+          "tool": "wanderlust_quote",
+          "key": "none",
+          "arguments": {
+            "stayId": "ws-1001",
+            "dates": {
+              "from": "2027-05-12",
+              "to": "2027-05-15"
+            },
+            "travelers": {
+              "adults": 2
+            }
+          },
+          "capture": {
+            "quoteId": "quote.quoteId"
+          }
+        }
+      ],
+      "outcome": "refused",
+      "anchor": "/demo/how-it-works#s-07",
+      "test": {
+        "file": "examples/showcase/test/manifests.test.ts",
+        "name": "S-07"
+      },
+      "issue": null,
+      "issueUrl": null,
+      "copy": {
+        "en": {
+          "ask": "Book that quote, using the second public key (the blocked one).",
+          "happens": "Refused: this caller is not allowed to book.",
+          "refused": "A caller nobody listed is refused too, and a rule that cannot be checked refuses rather than guesses."
+        },
+        "ro": {
+          "ask": "",
+          "happens": "",
+          "refused": ""
+        }
+      }
+    },
+    {
+      "id": "S-08",
+      "negative": {
+        "id": "N-08"
+      },
+      "group": "irreversible",
+      "mode": "live",
+      "tool": "wanderlust_cancel",
+      "capability": "wanderlust.cancel",
+      "arguments": {
+        "bookingId": "B-0000cafe"
+      },
+      "key": "A",
+      "outcome": "success",
+      "anchor": "/demo/how-it-works#s-08",
+      "test": {
+        "file": "examples/showcase/test/manifests.test.ts",
+        "name": "S-08"
+      },
+      "issue": null,
+      "issueUrl": null,
+      "copy": {
+        "en": {
+          "ask": "Cancel booking B-0000cafe.",
+          "happens": "The cancellation goes through.",
+          "refused": "Archstone does not pause it. The manifest says a person should approve it, but this version does not enforce that; any confirmation comes from your AI app, not from Archstone."
+        },
+        "ro": {
+          "ask": "",
+          "happens": "",
+          "refused": ""
+        }
+      }
+    },
+    {
+      "id": "S-09",
+      "negative": {
+        "id": "N-09",
+        "variant": "misdeclared-pay",
+        "manifest": "examples/showcase/manifest-variants/misdeclared-pay"
+      },
+      "group": "irreversible",
+      "mode": "live",
+      "tool": "wanderlust_pay",
+      "capability": "wanderlust.pay",
+      "arguments": {
+        "bookingId": "{{bookingId}}",
+        "amount": "{{total}}",
+        "paymentQuote": "{{paymentQuote}}"
+      },
+      "key": "A",
+      "setup": [
+        {
+          "tool": "wanderlust_quote",
+          "key": "none",
+          "arguments": {
+            "stayId": "ws-1001",
+            "dates": {
+              "from": "2027-05-12",
+              "to": "2027-05-15"
+            },
+            "travelers": {
+              "adults": 2
+            }
+          },
+          "capture": {
+            "quoteId": "quote.quoteId"
+          }
+        },
+        {
+          "tool": "wanderlust_book",
+          "key": "A",
+          "arguments": {
+            "quoteId": "{{quoteId}}",
+            "stayId": "ws-1001",
+            "dates": {
+              "from": "2027-05-12",
+              "to": "2027-05-15"
+            },
+            "travelers": {
+              "adults": 2
+            },
+            "guestName": "Ana Pop"
+          },
+          "capture": {
+            "bookingId": "booking.bookingId",
+            "total": "booking.total",
+            "paymentQuote": "booking.paymentQuote"
+          }
+        }
+      ],
+      "outcome": "success",
+      "anchor": "/demo/how-it-works#s-09",
+      "test": {
+        "file": "examples/showcase/test/manifests.test.ts",
+        "name": "S-09"
+      },
+      "issue": null,
+      "issueUrl": null,
+      "copy": {
+        "en": {
+          "ask": "Pay for the booking with the demo card.",
+          "happens": "The payment goes through for a booking the agency quoted a moment ago.",
+          "refused": "A payment needs a price the agency quoted a moment ago, and the agency checks that, not Archstone. Archstone's checks flag a payment action declared without safeguards; they warn and do not block."
+        },
+        "ro": {
+          "ask": "",
+          "happens": "",
+          "refused": ""
+        }
+      }
+    },
+    {
+      "id": "S-10",
+      "negative": null,
+      "group": "irreversible",
+      "mode": "locked",
+      "tool": null,
+      "capability": null,
+      "arguments": null,
+      "key": "none",
+      "outcome": "locked",
+      "parent": "S-08/S-09",
+      "anchor": "/demo/how-it-works#s-10",
+      "test": null,
+      "issue": 165,
+      "issueUrl": "https://github.com/NousVigil/archstone/issues/165",
+      "copy": {
+        "en": {
+          "ask": "A person approves before it happens.",
+          "happens": "Planned: not available yet.",
+          "refused": "Nothing runs today. Approval is written down in the manifest, not enforced."
+        },
+        "ro": {
+          "ask": "",
+          "happens": "",
+          "refused": ""
+        }
+      }
+    },
+    {
+      "id": "S-11",
+      "negative": {
+        "id": "N-11",
+        "calls": 4,
+        "limit": 3,
+        "windowSeconds": 60
+      },
+      "group": "rate-limit",
+      "mode": "live",
+      "tool": "wanderlust_availability",
+      "capability": "wanderlust.availability",
+      "arguments": {
+        "propertyId": "ws-1001",
+        "date": "2027-06-05"
+      },
+      "key": "none",
+      "outcome": "success",
+      "anchor": "/demo/how-it-works#s-11",
+      "test": {
+        "file": "examples/showcase/test/manifests.test.ts",
+        "name": "S-11"
+      },
+      "issue": null,
+      "issueUrl": null,
+      "copy": {
+        "en": {
+          "ask": "Check availability for every weekend in June.",
+          "happens": "The first few checks answer, then a polite refusal.",
+          "refused": "Too many requests too fast are refused. On the live demo the limit is approximate."
+        },
+        "ro": {
+          "ask": "",
+          "happens": "",
+          "refused": ""
+        }
+      }
+    },
+    {
+      "id": "S-12",
+      "negative": {
+        "id": "N-12",
+        "tool": "tourism_search-classic",
+        "capability": "tourism.search-classic"
+      },
+      "group": "lifecycle",
+      "mode": "live",
+      "tool": "tourism_search",
+      "capability": "tourism.search",
+      "arguments": {
+        "destination": "Lisbon",
+        "dates": {
+          "from": "2027-05-12",
+          "to": "2027-05-15"
+        },
+        "travelers": {
+          "adults": 2
+        }
+      },
+      "key": "none",
+      "outcome": "success",
+      "anchor": "/demo/how-it-works#s-12",
+      "test": {
+        "file": "examples/showcase/test/manifests.test.ts",
+        "name": "S-12"
+      },
+      "issue": null,
+      "issueUrl": null,
+      "copy": {
+        "en": {
+          "ask": "Search Lisbon with the older search.",
+          "happens": "It works, with a note that it is being phased out.",
+          "refused": "The oldest search is switched off and is refused."
+        },
+        "ro": {
+          "ask": "",
+          "happens": "",
+          "refused": ""
+        }
+      }
+    },
+    {
+      "id": "S-13",
+      "negative": {
+        "id": "N-13",
+        "arguments": {
+          "propertyId": "ws-1003",
+          "date": "2027-05-12"
+        }
+      },
+      "group": "errors",
+      "mode": "live",
+      "tool": "wanderlust_room-status",
+      "capability": "wanderlust.room-status",
+      "arguments": {
+        "propertyId": "ws-1002",
+        "date": "2027-05-12"
+      },
+      "key": "none",
+      "outcome": "success",
+      "anchor": "/demo/how-it-works#s-13",
+      "test": {
+        "file": "examples/showcase/test/manifests.test.ts",
+        "name": "S-13"
+      },
+      "issue": null,
+      "issueUrl": null,
+      "copy": {
+        "en": {
+          "ask": "Is Pensão Azul free on 12 May?",
+          "happens": "The rooms the agency could answer, and a clear marker for the one it could not because its system was busy.",
+          "refused": "A price in the wrong format is flagged as broken, not passed on as fine."
+        },
+        "ro": {
+          "ask": "",
+          "happens": "",
+          "refused": ""
+        }
+      }
+    },
+    {
+      "id": "S-14",
+      "negative": {
+        "id": "N-14"
+      },
+      "group": "absence",
+      "mode": "live",
+      "tool": "wanderlust_delete-guest-bookings",
+      "capability": null,
+      "arguments": {
+        "name": "Ana Pop"
+      },
+      "key": "none",
+      "outcome": "unknown-tool",
+      "absent": true,
+      "anchor": "/demo/how-it-works#s-14",
+      "test": {
+        "file": "examples/showcase/test/manifests.test.ts",
+        "name": "S-14"
+      },
+      "issue": null,
+      "issueUrl": null,
+      "copy": {
+        "en": {
+          "ask": "Delete all bookings for Ana Pop.",
+          "happens": "Your AI says it has no way to do that.",
+          "refused": "The agency's system has a delete function; it was never offered to the AI."
+        },
+        "ro": {
+          "ask": "",
+          "happens": "",
+          "refused": ""
+        }
+      }
+    },
+    {
+      "id": "S-15",
+      "negative": {
+        "id": "N-15"
+      },
+      "group": "sql",
+      "mode": "recorded",
+      "tool": null,
+      "capability": null,
+      "arguments": null,
+      "key": "none",
+      "outcome": "recorded",
+      "command": "archstone serve (sql binding, local only)",
+      "anchor": "/demo/how-it-works#s-15",
+      "test": null,
+      "issue": null,
+      "issueUrl": null,
+      "copy": {
+        "en": {
+          "ask": "How many bookings per city this month?",
+          "happens": "A small table, from the agency's own database (recorded).",
+          "refused": "Reports run on the agency's own machine only, not on the live demo."
+        },
+        "ro": {
+          "ask": "",
+          "happens": "",
+          "refused": ""
+        }
+      }
+    },
+    {
+      "id": "S-16",
+      "negative": {
+        "id": "N-16"
+      },
+      "group": "cli",
+      "mode": "recorded",
+      "tool": null,
+      "capability": null,
+      "arguments": null,
+      "key": "none",
+      "outcome": "recorded",
+      "command": "archstone apply examples/showcase/manifest --exposure",
+      "anchor": "/demo/how-it-works#s-16",
+      "test": null,
+      "issue": null,
+      "issueUrl": null,
+      "copy": {
+        "en": {
+          "ask": "What exactly can the AI see?",
+          "happens": "Everything the AI is shown, in one list.",
+          "refused": "None of the hidden fields above appear in it."
+        },
+        "ro": {
+          "ask": "",
+          "happens": "",
+          "refused": ""
+        }
+      }
+    },
+    {
+      "id": "S-17",
+      "negative": {
+        "id": "N-17"
+      },
+      "group": "cli",
+      "mode": "recorded",
+      "tool": null,
+      "capability": null,
+      "arguments": null,
+      "key": "none",
+      "outcome": "recorded",
+      "command": "archstone verify; archstone adopt",
+      "anchor": "/demo/how-it-works#s-17",
+      "test": null,
+      "issue": null,
+      "issueUrl": null,
+      "copy": {
+        "en": {
+          "ask": "The agency added a guest email field.",
+          "happens": "Archstone notices and names the change.",
+          "refused": "The new field does not reach the AI until a person adds it."
+        },
+        "ro": {
+          "ask": "",
+          "happens": "",
+          "refused": ""
+        }
+      }
+    },
+    {
+      "id": "S-18",
+      "negative": {
+        "id": "N-18"
+      },
+      "group": "cli",
+      "mode": "recorded",
+      "tool": null,
+      "capability": null,
+      "arguments": null,
+      "key": "none",
+      "outcome": "recorded",
+      "command": "archstone diff",
+      "anchor": "/demo/how-it-works#s-18",
+      "test": null,
+      "issue": null,
+      "issueUrl": null,
+      "copy": {
+        "en": {
+          "ask": "What changed between last week and today?",
+          "happens": "Your AI can now see one more field and do one more thing.",
+          "refused": "Comparing needs no connection to the agency."
+        },
+        "ro": {
+          "ask": "",
+          "happens": "",
+          "refused": ""
+        }
+      }
+    },
+    {
+      "id": "S-19",
+      "negative": {
+        "id": "N-19"
+      },
+      "group": "cli",
+      "mode": "recorded",
+      "tool": null,
+      "capability": null,
+      "arguments": null,
+      "key": "none",
+      "outcome": "recorded",
+      "command": "archstone audit; archstone doctor",
+      "anchor": "/demo/how-it-works#s-19",
+      "test": null,
+      "issue": null,
+      "issueUrl": null,
+      "copy": {
+        "en": {
+          "ask": "Check my setup.",
+          "happens": "A list of every risky action and what is shown to the AI, plus a health check.",
+          "refused": "Neither sends anything anywhere."
+        },
+        "ro": {
+          "ask": "",
+          "happens": "",
+          "refused": ""
+        }
+      }
+    },
+    {
+      "id": "S-20",
+      "negative": {
+        "id": "N-20"
+      },
+      "group": "cli",
+      "mode": "recorded",
+      "tool": null,
+      "capability": null,
+      "arguments": null,
+      "key": "none",
+      "outcome": "recorded",
+      "command": "archstone init",
+      "anchor": "/demo/how-it-works#s-20",
+      "test": null,
+      "issue": null,
+      "issueUrl": null,
+      "copy": {
+        "en": {
+          "ask": "Start from the description of my existing system.",
+          "happens": "Archstone drafts the actions and checks them against the agency.",
+          "refused": "The draft never offers the delete function or personal data by default, and publishes nothing."
+        },
+        "ro": {
+          "ask": "",
+          "happens": "",
+          "refused": ""
+        }
+      }
+    },
+    {
+      "id": "S-21",
+      "negative": {
+        "id": "N-21"
+      },
+      "group": "sdk",
+      "mode": "recorded",
+      "tool": null,
+      "capability": null,
+      "arguments": null,
+      "key": "none",
+      "outcome": "recorded",
+      "command": "@archstone/agent: tools() and execute()",
+      "anchor": "/demo/how-it-works#s-21",
+      "test": null,
+      "issue": null,
+      "issueUrl": null,
+      "copy": {
+        "en": {
+          "ask": "Use it inside my own app, without connecting an AI app.",
+          "happens": "The same actions, ready for three AI vendors.",
+          "refused": "The same withholding and refusals apply."
+        },
+        "ro": {
+          "ask": "",
+          "happens": "",
+          "refused": ""
+        }
+      }
+    },
+    {
+      "id": "S-22",
+      "negative": null,
+      "group": "phase-2",
+      "mode": "locked",
+      "tool": null,
+      "capability": null,
+      "arguments": null,
+      "key": "none",
+      "outcome": "locked",
+      "anchor": "/demo/how-it-works#s-22",
+      "test": null,
+      "issue": 166,
+      "issueUrl": "https://github.com/NousVigil/archstone/issues/166",
+      "copy": {
+        "en": {
+          "ask": "HTML response: hotel descriptions with formatting.",
+          "happens": "Planned: not available yet.",
+          "refused": "Today the raw description is not sent at all."
+        },
+        "ro": {
+          "ask": "",
+          "happens": "",
+          "refused": ""
+        }
+      }
+    }
+  ]
+}

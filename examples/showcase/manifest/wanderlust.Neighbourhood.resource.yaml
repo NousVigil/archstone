@@ -1,0 +1,14 @@
+resource:
+  name: wanderlust.Neighbourhood
+  description: "A short description of an area."
+  fields:
+    area:
+      type: text
+      description: "The area asked about."
+    summary:
+      type: text
+      description: "A short summary."
+    walkability:
+      type: quantity
+      required: false
+      description: "A 0-100 walkability score."

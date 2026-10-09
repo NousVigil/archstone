@@ -1,0 +1,17 @@
+resource:
+  name: wanderlust.Cancellation
+  description: "The outcome of cancelling a booking."
+  fields:
+    bookingId:
+      type: identifier
+      description: "The cancelled booking."
+    status:
+      type: enum
+      values: [cancelled]
+      description: "Always cancelled when the call succeeds."
+    refund:
+      type: money
+      description: "What is refunded."
+    cancelledAt:
+      type: datetime
+      description: "When the agency recorded the cancellation."

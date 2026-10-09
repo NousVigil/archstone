@@ -1,0 +1,15 @@
+capability:
+  id: wanderlust.stay-page
+  description: "The page where a person can see a stay on the agency's own site."
+  effect: read
+
+  input:
+    stayId:
+      type: identifier
+      description: "A stay id from wanderlust.search."
+
+  output:
+    pages:
+      collection: HotelPage
+
+  provider: wanderlust-api

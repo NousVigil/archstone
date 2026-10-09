@@ -1,0 +1,19 @@
+# Implementation binding - how wanderlust.quote reaches the synthetic agency. NOT CDL.
+binding:
+  capabilityId: wanderlust.quote
+  connector:
+    type: rest
+    rest:
+      baseUrl: "${SHOWCASE_API_URL}"
+      method: POST
+      path: /v1/quotes
+
+  response:
+    resource: Quote
+    map:
+      quoteId: "$.quoteId"
+      stayId: "$.stayId"
+      dates: "$.dates"
+      nights: "$.nights"
+      total: "$.total"
+      expiresAt: "$.expiresAt"

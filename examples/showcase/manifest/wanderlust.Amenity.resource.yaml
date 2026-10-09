@@ -1,0 +1,11 @@
+resource:
+  name: wanderlust.Amenity
+  description: "Something a room offers, with its fee if it has one."
+  fields:
+    name:
+      type: text
+      description: "What the amenity is."
+    fee:
+      type: quantity
+      required: false
+      description: "Fee in euro; absent when it is free."

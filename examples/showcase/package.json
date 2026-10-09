@@ -1,0 +1,19 @@
+{
+  "name": "archstone-showcase",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The Archstone Showcase: a synthetic travel agency API that over-exposes on purpose, and the manifests that contain it. Examples and tests only; not published.",
+  "scripts": {
+    "api": "node api/serve.mjs"
+  },
+  "devDependencies": {
+    "@archstone/compiler": "workspace:*",
+    "@archstone/emitter-support": "workspace:*",
+    "@archstone/runtime": "workspace:*",
+    "@archstone/schema": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "vitest": "^4.1.11",
+    "yaml": "^2.6.1"
+  }
+}

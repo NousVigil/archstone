@@ -1,0 +1,26 @@
+resource:
+  name: wanderlust.Booking
+  description: "A confirmed booking. It declares no guest field at all: nothing about who is staying is shown, even if the agency returns it."
+  fields:
+    bookingId:
+      type: identifier
+      description: "The booking reference."
+    status:
+      type: enum
+      values: [confirmed, cancelled]
+      description: "Current state."
+    stayId:
+      type: identifier
+      description: "The booked stay."
+    dates:
+      type: date-range
+      description: "The booked window."
+    total:
+      type: money
+      description: "Total price."
+    paymentQuote:
+      type: identifier
+      description: "The agency's payment quote for this booking and total; pass it to wanderlust.pay."
+    payBy:
+      type: datetime
+      description: "When the payment quote stops being valid."

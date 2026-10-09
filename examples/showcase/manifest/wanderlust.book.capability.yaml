@@ -1,0 +1,30 @@
+capability:
+  id: wanderlust.book
+  description: "Book a quoted stay for a guest. Needs the agency key and a principal the manifest's policy allows."
+  effect: write
+
+  input:
+    quoteId:
+      type: identifier
+      description: "The quote id from wanderlust.quote, still valid."
+    stayId:
+      type: identifier
+    dates:
+      type: date-range
+    travelers:
+      type: party
+    guestName:
+      type: string
+      description: "Who the booking is for."
+
+  output:
+    booking:
+      type: Booking
+
+  failures:
+    quote-expired: The quote has expired; request a new one with wanderlust.quote.
+    quote-mismatch: The quote was issued for a different stay, dates or party.
+
+  policies:
+    - authenticated
+  provider: wanderlust-api

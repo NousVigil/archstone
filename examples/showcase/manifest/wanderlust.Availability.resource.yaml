@@ -1,0 +1,16 @@
+resource:
+  name: wanderlust.Availability
+  description: "How many rooms a property has free on a date."
+  fields:
+    propertyId:
+      type: identifier
+      description: "The property."
+    date:
+      type: date
+      description: "The date asked about."
+    roomsFree:
+      type: quantity
+      description: "Rooms free that night."
+    pricePerNight:
+      type: quantity
+      description: "Nightly rate in euro."

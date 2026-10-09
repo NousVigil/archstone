@@ -1,0 +1,15 @@
+capability:
+  id: wanderlust.stay-details
+  description: "Tell me more about one stay: its rooms and what each room offers."
+  effect: read
+
+  input:
+    stayId:
+      type: identifier
+      description: "A stay id from wanderlust.search."
+
+  output:
+    stay:
+      type: StayDetails
+
+  provider: wanderlust-api

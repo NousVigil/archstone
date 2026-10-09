@@ -74,6 +74,20 @@ jobs:
         env:
           ARCHSTONE_TEST_PG_URL: postgres://postgres:archstone-ci@localhost:5432/postgres
 
+      # The release gate walks examples/manifests, so the Showcase manifest (examples/showcase) is
+      # not in it. This is its own apply + verify leg against the workspace build, with the synthetic
+      # API wrapper serving the backend locally; no network beyond localhost. The mis-declared
+      # payment variant must still apply with exit 0 (its lints warn, they do not block).
+      - name: Showcase manifest (apply, and verify against the synthetic API)
+        run: |
+          node packages/cli/dist/index.js apply examples/showcase/manifest
+          node packages/cli/dist/index.js apply examples/showcase/manifest-variants/misdeclared-pay
+          PORT=18788 node examples/showcase/api/serve.mjs &
+          API_PID=$!
+          trap 'kill $API_PID' EXIT
+          for i in $(seq 1 30); do curl -sf http://localhost:18788/health >/dev/null && break; sleep 1; done
+          SHOWCASE_API_URL=http://localhost:18788 node packages/cli/dist/index.js verify examples/showcase/manifest
+
   # The same real-Postgres suites against the oldest major we support (16), so a behaviour that
   # differs between majors — catalog visibility, error precedence, role-membership semantics —
   # fails here rather than at a user's database. Only the integration files run: everything else

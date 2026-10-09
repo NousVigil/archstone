@@ -76,6 +76,30 @@ importers:
         specifier: ^4.131.0
         version: 4.131.0(@cloudflare/workers-types@4.20260702.1)(@types/node@22.20.1)
 
+  examples/showcase:
+    devDependencies:
+      '@archstone/compiler':
+        specifier: workspace:*
+        version: link:../../packages/compiler
+      '@archstone/emitter-support':
+        specifier: workspace:*
+        version: link:../../packages/emitter-support
+      '@archstone/runtime':
+        specifier: workspace:*
+        version: link:../../packages/runtime
+      '@archstone/schema':
+        specifier: workspace:*
+        version: link:../../packages/schema
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.32.1
+        version: 1.32.1(zod@4.4.3)
+      vitest:
+        specifier: ^4.1.11
+        version: 4.1.11(@types/node@22.20.1)(vite@7.3.6(@types/node@22.20.1)(tsx@4.23.12)(yaml@2.9.0))
+      yaml:
+        specifier: ^2.6.1
+        version: 2.9.0
+
   packages/agent:
     dependencies:
       '@archstone/compiler':

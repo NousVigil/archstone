@@ -1,0 +1,81 @@
+# Implementation binding - how wanderlust.stay-details reaches the synthetic agency. NOT CDL.
+binding:
+  capabilityId: wanderlust.stay-details
+  connector:
+    type: rest
+    rest:
+      baseUrl: "${SHOWCASE_API_URL}"
+      method: GET
+      path: /v1/stays/{stayId}
+
+  response:
+    resource: StayDetails
+    map:
+      name: "$.name"
+      location: "$.location"
+      pricePerNight: "$.pricePerNight"
+      rating: "$.rating"
+      rooms: "$.rooms"
+
+  # What the synthetic API last returned for the fixture's request (recorded: paths and types, never values).
+  # The shape includes fields this manifest never maps (net, margin, guests, ...): drift in them is still
+  # detected, and they are still never forwarded to a model.
+  contract:
+    source: recorded
+    fingerprint: "sha256:6976597657f0731f95ca45e049418e8498dedae47446dc590f6d558ee9f1dbf5"
+    shape:
+      "$": object
+      "$.commission": number
+      "$.currency": string
+      "$.description_html": string
+      "$.guests": array
+      "$.guests[]": object
+      "$.guests[].email": string
+      "$.guests[].name": string
+      "$.guests[].passport": string
+      "$.guests[].phone": string
+      "$.id": string
+      "$.location": string
+      "$.margin": number
+      "$.name": string
+      "$.net": number
+      "$.pricePerNight": number
+      "$.rating": number
+      "$.rooms": array
+      "$.rooms[]": object
+      "$.rooms[].amenities": array
+      "$.rooms[].amenities[]": object
+      "$.rooms[].amenities[].fee": number
+      "$.rooms[].amenities[].history": array
+      "$.rooms[].amenities[].history[]": object
+      "$.rooms[].amenities[].history[].guests": array
+      "$.rooms[].amenities[].history[].guests[]": object
+      "$.rooms[].amenities[].history[].guests[].email": string
+      "$.rooms[].amenities[].history[].guests[].name": string
+      "$.rooms[].amenities[].history[].guests[].passport": string
+      "$.rooms[].amenities[].history[].guests[].phone": string
+      "$.rooms[].amenities[].host": object
+      "$.rooms[].amenities[].host.name": string
+      "$.rooms[].amenities[].host.phone": string
+      "$.rooms[].amenities[].lastUsedBy": object
+      "$.rooms[].amenities[].lastUsedBy.email": string
+      "$.rooms[].amenities[].lastUsedBy.name": string
+      "$.rooms[].amenities[].lastUsedBy.passport": string
+      "$.rooms[].amenities[].lastUsedBy.phone": string
+      "$.rooms[].amenities[].name": string
+      "$.rooms[].commission": number
+      "$.rooms[].guests": array
+      "$.rooms[].guests[]": object
+      "$.rooms[].guests[].email": string
+      "$.rooms[].guests[].name": string
+      "$.rooms[].guests[].passport": string
+      "$.rooms[].guests[].phone": string
+      "$.rooms[].id": string
+      "$.rooms[].margin": number
+      "$.rooms[].name": string
+      "$.rooms[].net": number
+      "$.rooms[].pricePerNight": number
+      "$.rooms[].sleeps": number
+    verifiedAt: "2026-10-10T00:00:00Z"
+    probe:
+      fixture: fixtures/wanderlust.stay-details.golden.json

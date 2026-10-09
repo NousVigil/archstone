@@ -1,0 +1,30 @@
+capability:
+  id: wanderlust.pay
+  description: "Pay for a booking with the demo card. This cannot be undone. Needs the payment quote the agency returned with the booking; the agency, not Archstone, checks it. The manifest declares that a person should approve it; this version of Archstone does not enforce that."
+  effect: irreversible
+
+  input:
+    bookingId:
+      type: identifier
+      description: "The booking reference from wanderlust.book."
+    amount:
+      type: money
+      description: "The amount the booking total was quoted at."
+    paymentQuote:
+      type: identifier
+      description: "The payment quote returned with the booking, still valid."
+
+  output:
+    payment:
+      type: Payment
+
+  failures:
+    payment-quote-required: No payment quote was given.
+    payment-quote-expired: The payment quote has expired.
+    payment-quote-mismatch: The payment quote was issued for a different booking or amount.
+    booking-not-found: No booking has that reference.
+
+  policies:
+    - authenticated
+    - human-approval
+  provider: wanderlust-api

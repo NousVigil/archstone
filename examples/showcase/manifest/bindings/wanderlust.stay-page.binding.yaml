@@ -1,0 +1,20 @@
+# Implementation binding - how wanderlust.stay-page reaches the synthetic agency. NOT CDL.
+binding:
+  capabilityId: wanderlust.stay-page
+  connector:
+    type: rest
+    rest:
+      baseUrl: "${SHOWCASE_API_URL}"
+      method: GET
+      path: /v1/stays/{stayId}/pages
+
+  response:
+    collection: "$.pages[*]"
+    resource: HotelPage
+    map:
+      name: "$.name"
+      url: "$.url"
+
+  origins:
+    pages:
+      - "https://www.wanderlust-agency.example"

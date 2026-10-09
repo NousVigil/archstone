@@ -1,0 +1,18 @@
+capability:
+  id: wanderlust.availability
+  description: "How many rooms a property has free on a date. Rate limited."
+  effect: read
+
+  input:
+    propertyId:
+      type: identifier
+      description: "A stay id from wanderlust.search."
+    date:
+      type: date
+
+  output:
+    availability:
+      type: Availability
+
+  lifecycle: beta
+  provider: wanderlust-api

@@ -1,0 +1,25 @@
+capability:
+  id: tourism.search
+  description: "Find places to stay matching a traveler's destination, dates, party and budget. Deprecated: it is being phased out; prefer wanderlust.search."
+  effect: read
+
+  input:
+    destination:
+      type: location
+    dates:
+      type: date-range
+    travelers:
+      type: party
+    budget:
+      type: money
+      required: false
+
+  output:
+    stays:
+      collection: Stay
+    totalMatches:
+      type: quantity
+      description: "Total number of stays the backend found, before this response's own page/limit."
+
+  lifecycle: deprecated
+  provider: wanderlust-api

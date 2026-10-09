@@ -1,0 +1,50 @@
+# Implementation binding - how wanderlust.search reaches the synthetic agency. NOT CDL.
+binding:
+  capabilityId: wanderlust.search
+  connector:
+    type: rest
+    rest:
+      baseUrl: "${SHOWCASE_API_URL}"
+      method: POST
+      path: /v1/stays/search
+
+  response:
+    collection: "$.stays[*]"
+    resource: Stay
+    map:
+      id: "$.id"
+      name: "$.name"
+      location: "$.location"
+      pricePerNight: "$.pricePerNight"
+      rating: "$.rating"
+
+  extract:
+    totalMatches: "$.totalMatches"
+
+  # What the synthetic API last returned for the fixture's request (recorded: paths and types, never values).
+  # The shape includes fields this manifest never maps (net, margin, guests, ...): drift in them is still
+  # detected, and they are still never forwarded to a model.
+  contract:
+    source: recorded
+    fingerprint: "sha256:aa7724b3ef6643421bc196c9b75451c3de99db6e9b5ec0e35ca80f91b0c5c256"
+    shape:
+      "$": object
+      "$.stays": array
+      "$.stays[]": object
+      "$.stays[].commission": number
+      "$.stays[].currency": string
+      "$.stays[].description_html": string
+      "$.stays[].hostContact": object
+      "$.stays[].hostContact.name": string
+      "$.stays[].hostContact.phone": string
+      "$.stays[].id": string
+      "$.stays[].location": string
+      "$.stays[].margin": number
+      "$.stays[].name": string
+      "$.stays[].net": number
+      "$.stays[].pricePerNight": number
+      "$.stays[].rating": number
+      "$.totalMatches": number
+    verifiedAt: "2026-10-10T00:00:00Z"
+    probe:
+      fixture: fixtures/wanderlust.search.golden.json

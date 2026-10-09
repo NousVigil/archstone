@@ -1,0 +1,18 @@
+# Implementation binding - how tourism.search-classic reaches the synthetic agency. NOT CDL.
+binding:
+  capabilityId: tourism.search-classic
+  connector:
+    type: rest
+    rest:
+      baseUrl: "${SHOWCASE_API_URL}"
+      method: POST
+      path: /v1/classic-search
+
+  response:
+    collection: "$.stays[*]"
+    resource: Stay
+    map:
+      name: "$.name"
+      location: "$.location"
+      pricePerNight: "$.pricePerNight"
+      rating: "$.rating"

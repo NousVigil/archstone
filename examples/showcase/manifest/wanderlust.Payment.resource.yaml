@@ -1,0 +1,20 @@
+resource:
+  name: wanderlust.Payment
+  description: "The outcome of a payment with the demo card."
+  fields:
+    paymentId:
+      type: identifier
+      description: "The payment reference."
+    bookingId:
+      type: identifier
+      description: "The booking paid for."
+    status:
+      type: enum
+      values: [paid]
+      description: "Always paid when the call succeeds."
+    amount:
+      type: money
+      description: "What was charged."
+    paidAt:
+      type: datetime
+      description: "When the agency recorded the payment."

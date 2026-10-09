@@ -1,0 +1,7 @@
+resource:
+  name: wanderlust.Gallery
+  description: "Photos of one stay. Each photo must live on the agency's own image host; one that does not is left out, the rest remain."
+  fields:
+    photos:
+      list: image
+      description: "Photo URLs, to be shown and never fetched by Archstone."
