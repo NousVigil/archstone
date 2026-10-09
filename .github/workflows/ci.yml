@@ -54,8 +54,25 @@ jobs:
       # The repo-root release tooling uses Node's built-in runner, outside the Vitest workspace,
       # so `pnpm test` does not reach it. Before this ran on PRs, a broken release list or a
       # misnamed changelog.d fragment was first caught by release.yml, after the tag existed.
+      #
+      # release-gate.postgres.test.mjs (#162) is among them and needs the job's Postgres: it runs
+      # the gate's sql-reporting verify leg against the workspace CLI, green and with isolation
+      # removed from the fixture, so the leg is shown to fail when it should.
       - name: Release script tests
         run: node --test scripts/*.test.mjs
+        env:
+          ARCHSTONE_TEST_PG_URL: postgres://postgres:archstone-ci@localhost:5432/postgres
+
+      # #162 — release.yml's gate runs on dispatch/tag only, so an example whose `verify` needs an
+      # input the gate does not supply (an identity map, a database) was first found by a failed
+      # release. This runs the gate's own per-manifest build + verify legs — same discovery, same
+      # inputs, same code — against the workspace build `pnpm test` produced above. Packaging is
+      # still proven only by the release run; what this adds is that every example's verify leg
+      # passes with what the gate gives it, on every PR.
+      - name: Release gate manifest legs (workspace build)
+        run: node scripts/release-gate.mjs --workspace
+        env:
+          ARCHSTONE_TEST_PG_URL: postgres://postgres:archstone-ci@localhost:5432/postgres
 
   # The same real-Postgres suites against the oldest major we support (16), so a behaviour that
   # differs between majors — catalog visibility, error precedence, role-membership semantics —

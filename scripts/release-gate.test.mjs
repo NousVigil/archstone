@@ -7,8 +7,9 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync, existsSync } from "node:fs";
+import { readFileSync, readdirSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import {
   checkServerManifestVersion,
@@ -17,7 +18,13 @@ import {
   diffStampList,
   checkWorkflowPackageLists,
   findRegistryLeaks,
+  exampleGateInputs,
+  gateInputProblems,
+  runVerifyProbe,
+  PG_URL_VAR,
+  WORKSPACE_PG_FROM,
 } from "./release-gate.mjs";
+import { renameRoles, rolesCreatedBy } from "./lib/script-database.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -385,3 +392,78 @@ test("checkServerManifestVersion: a manifest with no packages[] is still checked
   assert.equal(checkServerManifestVersion({ version: "0.13.0" }, "0.13.0").ok, true);
   assert.equal(checkServerManifestVersion({ version: "0.12.0" }, "0.13.0").ok, false);
 });
+
+// ---------------------------------------------------------------------------------------
+// #162 — gate inputs. The 0.31.0 dispatch failed because `sql-reporting`'s verify needs an
+// identity map and a real database, and the gate supplied neither; nothing on a PR ran that path.
+// ---------------------------------------------------------------------------------------
+
+const MANIFESTS = join(ROOT, "examples", "manifests");
+const SQL_EXAMPLE = join(MANIFESTS, "sql-reporting");
+
+test("exampleGateInputs (#162): sql-reporting needs its identity map, its fixture.sql, and the DSN var its binding names", () => {
+  const inputs = exampleGateInputs(SQL_EXAMPLE);
+  assert.equal(inputs.identityMap, join(SQL_EXAMPLE, "identity-map.json"));
+  assert.deepEqual(inputs.sql, { dsnVars: ["REPORTING_DSN"], fixture: join(SQL_EXAMPLE, "fixture.sql"), unparsedDsn: [] });
+});
+
+test("exampleGateInputs: a REST-only example needs nothing beyond the environment", () => {
+  assert.deepEqual(exampleGateInputs(join(MANIFESTS, "booking")), { identityMap: null, sql: null });
+});
+
+// The PR-time half of the guard that does not need a database: every example's needs, as the gate
+// reads them, are needs the gate can meet once a Postgres is configured. A new example with a sql
+// binding and no fixture.sql, or a dsn that is not a `${VAR}`, fails here on its PR.
+test("every example under examples/manifests/ needs only gate inputs the gate can supply (#162)", () => {
+  const dirs = readdirSync(MANIFESTS, { withFileTypes: true }).filter((e) => e.isDirectory());
+  assert.ok(dirs.length >= 4, `expected the examples, found ${dirs.length}`);
+  for (const e of dirs) {
+    const problems = gateInputProblems(exampleGateInputs(join(MANIFESTS, e.name)), { [PG_URL_VAR]: "postgres://configured" });
+    assert.deepEqual(problems, [], `${e.name}: ${problems.join("; ")}`);
+  }
+});
+
+test("gateInputProblems (#162): a sql example with no Postgres configured is a failure, not a skip", () => {
+  const problems = gateInputProblems(exampleGateInputs(SQL_EXAMPLE), {});
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], new RegExp(`${PG_URL_VAR} is not set`));
+  assert.match(problems[0], /never skipped/);
+});
+
+test("runVerifyProbe (#162): with no Postgres configured the sql example's verify leg FAILS before running anything", async () => {
+  const result = await runVerifyProbe({ name: "sql-reporting", cli: ["/nonexistent/archstone"], mockUrl: "http://127.0.0.1:1", pgFrom: WORKSPACE_PG_FROM, env: {} });
+  assert.equal(result.status, "fail");
+  assert.equal(result.exitCode, null);
+  assert.match(result.detail, /gate inputs missing/);
+});
+
+test("exampleGateInputs + gateInputProblems: a sql binding without fixture.sql, or with a literal dsn, is named", () => {
+  const dir = mkdtempSync(join(tmpdir(), "archstone-gate-inputs-"));
+  try {
+    mkdirSync(join(dir, "bindings"));
+    writeFileSync(
+      join(dir, "bindings", "x.get.binding.yaml"),
+      "binding:\n  capabilityId: x.get\n  connector:\n    type: sql\n    sql:\n      engine: postgres\n      dsn: postgres://literal@host/db\n",
+    );
+    const inputs = exampleGateInputs(dir);
+    assert.deepEqual(inputs.sql, { dsnVars: [], fixture: null, unparsedDsn: ["x.get.binding.yaml"] });
+    const problems = gateInputProblems(inputs, { [PG_URL_VAR]: "postgres://configured" }).join("\n");
+    assert.match(problems, /not a single "\$\{VAR\}" placeholder.*x\.get\.binding\.yaml/);
+    assert.match(problems, /ships no fixture\.sql/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("renameRoles: every role the script creates is renamed wherever it appears, and nothing else is", () => {
+  const sql = "CREATE ROLE a_owner LOGIN;\nCREATE ROLE a_runtime LOGIN;\nCREATE SCHEMA app AUTHORIZATION a_owner;\nGRANT SELECT ON app.v TO a_runtime;\nSELECT a_owner_x;";
+  assert.deepEqual(rolesCreatedBy(sql), ["a_owner", "a_runtime"]);
+  const out = renameRoles(sql, (r) => `z_${r}`);
+  assert.match(out, /AUTHORIZATION z_a_owner;/);
+  assert.match(out, /TO z_a_runtime;/);
+  assert.match(out, /SELECT a_owner_x;/, "a longer identifier that merely starts with a role name is left alone");
+});
+
+// The same example against a real Postgres — positive, and with isolation removed from its fixture —
+// is in release-gate.postgres.test.mjs: it needs `pnpm install` and a built CLI, and release.yml runs
+// THIS file before either exists.

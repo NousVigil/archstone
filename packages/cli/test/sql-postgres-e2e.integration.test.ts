@@ -190,9 +190,6 @@ describePostgres("archstone verify end to end against a real Postgres", () => {
 
 // ----------------------------------------------------------------------------- 2. the example
 
-/** The example's fixed role names, made run-unique: roles are cluster-global. */
-const exampleScript = (rename: (role: string) => string) =>
-  readFileSync(join(example, "fixture.sql"), "utf8").replace(/\breporting_(owner|runtime)\b/g, (_m, role: string) => rename(`ex_${role}`));
 
 describe("examples/manifests/sql-reporting is a valid manifest, and indistinguishable from a REST one", () => {
   it("applies offline and lists one tool", () => {
@@ -228,7 +225,10 @@ describePostgres("examples/manifests/sql-reporting against a database built from
   let db: ScriptDatabase;
 
   beforeAll(async () => {
-    db = await createScriptDatabase(exampleScript, "ex_runtime");
+    // The fixture's own text, as the README runs it. Role names are made run-unique and the runtime
+    // role is found from the catalog by the shared helper — the same code the release gate runs (#162).
+    db = await createScriptDatabase(readFileSync(join(example, "fixture.sql"), "utf8"));
+    expect(db.runtimeRole).toBe("reporting_runtime");
   }, 60_000);
 
   afterAll(async () => {
