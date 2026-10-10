@@ -8,6 +8,11 @@ import type { FetchLike } from "@archstone/provider-rest";
 import { fromIR, type AuditSink, type ExecutionRecord } from "../src/index";
 import { mcpHandler } from "../src/mcp";
 
+// #195: the declared input contract is enforced, so a tourism.search call must carry every
+// required field (destination, dates, travelers) in its declared shape.
+const NICE_SEARCH = { destination: "Nice", dates: { from: "2027-05-12", to: "2027-05-15" }, travelers: { adults: 2 } };
+
+
 // #44 (ADD-44) — the embedded consumer emits. `executeCapability` is the second of the two
 // audited consumers, and the one whose records an auditor will compare against the MCP path's:
 // same builder, same vocabulary, different `spec.consumer` and nothing else.
@@ -79,7 +84,7 @@ describe("execute() — one record per attempt, consumer fixed to function-calli
 
   it("records failed with the shipped error text when the attempt never reaches a backend (S-US4.1)", async () => {
     const s = spySink();
-    const r = await fromIR(artifact(bank)).execute("banking.generate-statement", {}, {
+    const r = await fromIR(artifact(bank)).execute("banking.generate-statement", { account: "acc-1", period: { from: "2027-01-01", to: "2027-01-31" } }, {
       fetchImpl: forbiddenFetch,
       caller: { accessToken: "caller-token-7d1e" },
       auditSink: s.sink,
@@ -98,7 +103,7 @@ describe("execute() — one record per attempt, consumer fixed to function-calli
       new Response(JSON.stringify({ stays: [stay], totalMatches: 1 }), { status: 200 });
 
     const violation = spySink();
-    const v = await a.execute("tourism.search", { destination: "Nice" }, { env, fetchImpl: body({ name: "Azur" }), auditSink: violation.sink });
+    const v = await a.execute("tourism.search", NICE_SEARCH, { env, fetchImpl: body({ name: "Azur" }), auditSink: violation.sink });
     expect(v.status).toBe("violation");
     expect(violation.records[0].status.phase).toBe("failed");
     expect(violation.records[0].status.message).toBe(
@@ -106,7 +111,7 @@ describe("execute() — one record per attempt, consumer fixed to function-calli
     );
 
     const degraded = spySink();
-    const d = await a.execute("tourism.search", { destination: "Nice" }, {
+    const d = await a.execute("tourism.search", NICE_SEARCH, {
       env, fetchImpl: body({ name: "Azur", location: "Nice", pricePerNight: 118 }), auditSink: degraded.sink,
     });
     expect(d.status).toBe("degraded");
@@ -177,8 +182,11 @@ describe("execute() — the audit log cannot leak the credential it audited (US-
       env: { CORE_BANKING_URL: "https://core.example" }, fetchImpl: forbiddenFetch, caller, auditSink: s.sink,
     });
 
-    // failed — a third branch, and the token is also smuggled in as capability input.
-    await fromIR(ir).execute("banking.list-accounts", { note: TOKEN }, {
+    // failed — a third branch, and the token is also smuggled in as capability input. #195: the
+    // field is declared (an undeclared key would now be refused as input_invalid, a denial).
+    const withNote = artifact(bank);
+    withNote.tools.find((t) => t.id === "banking.list-accounts")!.input.push({ name: "note", required: false, type: { kind: "scalar", semantic: "string" } });
+    await fromIR(withNote).execute("banking.list-accounts", { note: TOKEN }, {
       env: {}, fetchImpl: forbiddenFetch, caller, auditSink: s.sink,
     });
 

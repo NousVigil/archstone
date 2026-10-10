@@ -61,10 +61,17 @@ import type { PolicyDenialReason } from "./policy";
  * branch specifically; the *other* fail-closed branch of that same function, "rateLimit declared
  * but no counter supplied", deliberately reuses `policy_unevaluatable` rather than adding a
  * second new code — see `evaluateRateLimit`'s own doc comment for why that is the same meaning,
- * not a different one wearing the same name). Without that rule the enum is a list; with it, it
+ * not a different one wearing the same name), and one from the input-contract gate (#195:
+ * `validateInput` refusing a call whose arguments do not match the declared input fields —
+ * `input_invalid`'s single named producer, run after policy and before the rate limiter). Without that rule the enum is a list; with it, it
  * is a contract — and it is permanent the moment a customer filters on one of these strings.
  */
-export type ExecutionDenialReason = PolicyDenialReason | "lifecycle_blocked" | "lifecycle_unevaluatable" | "rate_limit_exceeded";
+export type ExecutionDenialReason =
+  | PolicyDenialReason
+  | "lifecycle_blocked"
+  | "lifecycle_unevaluatable"
+  | "rate_limit_exceeded"
+  | "input_invalid";
 
 /** The non-policy refusal code for a `retired` capability. Spelled to match the agent-facing
  *  `LIFECYCLE_BLOCKED_META_KEY` the MCP surface already ships — one concept, one spelling,
@@ -77,6 +84,10 @@ export const LIFECYCLE_BLOCKED_REASON = "lifecycle_blocked" satisfies ExecutionD
  *  comment). Spelled to match the agent-facing `LIFECYCLE_UNEVALUATABLE_META_KEY` the MCP
  *  surface ships alongside it — one concept, one spelling, across both surfaces. */
 export const LIFECYCLE_UNEVALUATABLE_REASON = "lifecycle_unevaluatable" satisfies ExecutionDenialReason;
+
+/** #195: the refusal code for arguments that do not match the capability's declared input
+ *  contract. Spelled to match the agent-facing `INPUT_INVALID_META_KEY` suffix on the MCP surface. */
+export const INPUT_INVALID_DENIAL_REASON = "input_invalid" satisfies ExecutionDenialReason;
 
 /**
  * The protocol surface the call arrived on — **fixed by the emitting call site, never

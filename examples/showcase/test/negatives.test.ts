@@ -350,12 +350,18 @@ describe("N-09 / AC-2.11: the mis-declared payment warns and does not block; the
     return { s, result, payCalls: s.spy.apiCalls().slice(before) };
   }
 
-  it("N-09 live pay: a missing payment quote is refused by the agency", async () => {
+  it("N-09 live pay: a missing payment quote is refused by Archstone's input contract, before the call leaves (#195)", async () => {
+    // `paymentQuote` is a REQUIRED input of the real manifest, so an absent one never reaches the
+    // agency: it used to (and the agency answered 422); it is now refused as input_invalid with
+    // zero payment calls. The agency's own answer to a missing quote is still pinned below.
     const { result, payCalls } = await payWith((c) => ({ bookingId: c.bookingId, amount: c.total }));
     expect(result.isError).toBe(true);
-    expect(textOf(result)).toContain("backend returned 422");
-    expect(payCalls).toEqual(["POST /v1/payments"]); // the refusal came from the backend, after the call left
-    expect(result._meta).toBeUndefined(); // no Archstone gate refused it
+    expect(result._meta?.["dev.archstone/input_invalid"]).toEqual({
+      error: "input_invalid",
+      capability: "wanderlust.pay",
+      problems: [{ path: "paymentQuote", expected: "required" }],
+    });
+    expect(payCalls).toEqual([]);
   });
 
   it("N-09 live pay: an expired payment quote is refused by the agency", async () => {

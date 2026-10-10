@@ -34,6 +34,9 @@ import {
   emitExecutionRecord,
   LIFECYCLE_BLOCKED_REASON,
   LIFECYCLE_UNEVALUATABLE_REASON,
+  INPUT_INVALID_DENIAL_REASON,
+  validateInput,
+  inputInvalidMessage,
   type ExecutionStatus,
   type PolicyDecision,
 } from "@archstone/emitter-support";
@@ -239,6 +242,14 @@ export const LIFECYCLE_UNEVALUATABLE_META_KEY = "dev.archstone/lifecycle_unevalu
  *  principal's identifier (BR-30, Rule #7 — the MCP client is the untrusted side). */
 export const POLICY_DENIED_META_KEY = "dev.archstone/policy_denied";
 
+/** #195: the namespaced `_meta` key an input-contract refusal is carried under — the same
+ *  precedent as the other denial keys (never `structuredContent`, which the reference SDK client
+ *  validates against `outputSchema` unconditionally). The object is
+ *  `{ error: "input_invalid", capability, problems: [{ path, expected }], truncated? }`: declared
+ *  field paths and fixed phrases only, never an argument value or an undeclared key's name (the
+ *  arguments are caller-controlled text). At most 16 problems, `truncated: true` when more. */
+export const INPUT_INVALID_META_KEY = "dev.archstone/input_invalid";
+
 /** Route an MCP tool call to the REST provider and format the result as MCP content. */
 export async function callTool(
   registry: Registry,
@@ -368,6 +379,30 @@ export async function callTool(
           // lookup key (BR-28, mirroring ADD-19 and ADD-30 BR-7).
           capability: tool.id,
           reason: decision.denial.reason,
+        },
+      },
+      isError: true,
+    };
+  }
+
+  // #195: the declared input contract is enforced HERE — after lifecycle and policy (a refused
+  // caller learns nothing about the schema, including for capabilities hidden from `tools/list`),
+  // before the rate limiter (a malformed call must not burn quota) and before any connector work
+  // (zero provider calls). `validateInput` and `inputJsonSchema` share their lowering rules, so
+  // what `tools/list` advertises is what is enforced.
+  const inputCheck = validateInput(tool.input, args, registry.ir.resources);
+  if (!inputCheck.ok) {
+    const text = inputInvalidMessage(tool.id, inputCheck.problems, inputCheck.truncated);
+    // `denied`, not `failed`: nothing reached a backend. The text carries no argument values.
+    audit({ phase: "denied", message: text, denialReason: INPUT_INVALID_DENIAL_REASON });
+    return {
+      content: [{ type: "text", text }],
+      _meta: {
+        [INPUT_INVALID_META_KEY]: {
+          error: "input_invalid",
+          capability: tool.id,
+          problems: inputCheck.problems,
+          ...(inputCheck.truncated ? { truncated: true } : {}),
         },
       },
       isError: true,

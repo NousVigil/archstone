@@ -891,6 +891,33 @@ one of five reason codes — `authenticated_no_credential`, `principal_not_allow
 It deliberately does **not** tell the caller which policy refused them or who *is* allowed: that
 would let anyone vary the principal and enumerate your identifiers one refused call at a time.
 
+**Arguments are checked against the declared input before anything reaches your backend.** A call
+whose arguments do not match the capability's `input:` — a wrong type, a missing required field, a
+value outside an `enum`, a malformed `date-range`, `party` or `money`, or any key the capability does
+not declare — is refused with `isError: true` and `_meta["dev.archstone/input_invalid"]`, on
+`ExecuteResult.denial` (`reason: "input_invalid"`) from `execute()`:
+
+```json
+{ "error": "input_invalid", "capability": "tourism.search",
+  "problems": [ { "path": "dates.from", "expected": "date (YYYY-MM-DD)" },
+                { "path": "$", "expected": "no undeclared properties" } ] }
+```
+
+`path` is a dotted path of *declared* field names (`$` is the whole argument object); `expected` is a
+fixed phrase. Neither ever contains what the caller sent: not a value, and not the name of an
+undeclared key. At most 16 problems are returned, with `"truncated": true` when there were more.
+Nothing is coerced, defaulted or dropped (`"42"` is not a number; an extra key is refused rather than
+silently ignored), `null` on an optional field counts as absent, and the `inputSchema` that
+`tools/list` advertises is closed (`additionalProperties: false`, and `party` counts have
+`minimum: 0`) so the contract a client reads is the contract the runtime holds it to. The check runs
+after lifecycle and policy (a caller who is refused learns nothing about your schema) and before
+rate limiting (a malformed call spends no quota) and before any connector work.
+
+The structured keys a refused or failed call can carry on `_meta`, side by side:
+`dev.archstone/policy_denied`, `dev.archstone/lifecycle_blocked`,
+`dev.archstone/lifecycle_unevaluatable`, `dev.archstone/input_invalid`, and
+`dev.archstone/contract_violation`. They are mutually exclusive on one call.
+
 Two operational notes:
 
 - **The compiled artifact is the deployment unit.** Policy travels inside `archstone.ir.json`,
@@ -1047,8 +1074,11 @@ A record looks like this — and this is the whole of it:
   carries the same text the agent was shown, verbatim, so you can grep one and find the other.
   **`denied`** — the platform refused it before any backend work, and `status.denialReason` says
   which kind of refusal: `authenticated_no_credential`, `principal_not_allowed`,
-  `principal_denied`, `policy_unevaluatable` (the four policy codes) or `lifecycle_blocked` (a
-  `retired` capability refused by the exposure gate).
+  `principal_denied`, `policy_unevaluatable` (the four policy codes), `lifecycle_blocked` (a
+  `retired` capability refused by the exposure gate), `lifecycle_unevaluatable` (a lifecycle value
+  this build does not recognise), `rate_limit_exceeded`, or `input_invalid` (the arguments did not
+  match the declared input contract; `status.message` names declared field paths only, never a
+  value).
 - **`status.reachedConnector`** (present only when `phase` is `failed`) tells you which half of
   that list you hit. `true` means the connector answered — a non-2xx response, or a response that
   failed the declared mapping — and is the case a hosted metering integration bills. `false` means

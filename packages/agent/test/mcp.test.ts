@@ -7,6 +7,11 @@ import type { FetchLike } from "@archstone/provider-rest";
 import { fromIR } from "../src/index";
 import { mcpHandler, type CallerContext, type McpHandlerOptions } from "../src/mcp";
 
+// #195: the declared input contract is enforced, so a tourism.search call must carry every
+// required field (destination, dates, travelers) in its declared shape.
+const NICE_SEARCH = { destination: "Nice", dates: { from: "2027-05-12", to: "2027-05-15" }, travelers: { adults: 2 } };
+
+
 // Real Streamable-HTTP round trip against mcpHandler() itself (ADD-0008 #29 DoD) — Web-
 // standard Request/Response, no Workers runtime needed (they work identically in Node's test
 // runner). Modeled on runtime/test/http.test.ts (the bearer-token gate, already covered at
@@ -68,7 +73,7 @@ describe("mcpHandler() — real Streamable-HTTP round trip (ADD-0008 #29)", () =
 
     const call = await handler(
       mcpRequest(
-        { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "tourism_search", arguments: { destination: "Nice" } } },
+        { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "tourism_search", arguments: NICE_SEARCH } },
         auth,
       ),
     );
@@ -122,7 +127,7 @@ describe("mcpHandler() — real Streamable-HTTP round trip (ADD-0008 #29)", () =
     await handler(mcpRequest(INITIALIZE, auth));
     const call = await handler(
       mcpRequest(
-        { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "tourism_search", arguments: { destination: "Nice" } } },
+        { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "tourism_search", arguments: NICE_SEARCH } },
         auth,
       ),
     );

@@ -170,11 +170,22 @@ describe("sanitizeGeminiSchema — Gemini function-calling dialect subset", () =
     expect(clean.required).toEqual(["a"]);
   });
 
-  it("is a no-op on our own lowering's output (no unsupported keyword is ever emitted)", () => {
+  it("only ever removes `additionalProperties` from our own lowering's output (#195)", () => {
+    // The input schema is closed (`additionalProperties: false`) because the runtime refuses
+    // undeclared keys; Gemini's Schema object cannot state that, so the sanitizer drops it and
+    // enforcement stays server-side. It is the ONE keyword the lowering emits that Gemini lacks —
+    // everything else must survive untouched.
+    const open = (s: unknown): unknown =>
+      Array.isArray(s)
+        ? s.map(open)
+        : s && typeof s === "object"
+          ? Object.fromEntries(Object.entries(s).filter(([k]) => k !== "additionalProperties").map(([k, v]) => [k, open(v)]))
+          : s;
     const archstone = fromIR(loadArtifact());
     const [search] = archstone.tools("json-schema") as JsonSchemaToolDef[];
+    expect(JSON.stringify(search.schema)).toContain("additionalProperties");
     const already = sanitizeGeminiSchema(search.schema as Record<string, unknown>);
-    expect(already).toEqual(search.schema);
+    expect(already).toEqual(open(search.schema));
   });
 });
 

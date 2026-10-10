@@ -11,6 +11,8 @@ import { KEY_A, KEY_B, ORIGIN, POLICY_META, newWorker } from "./support";
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "..");
 
+// #195: the declared input contract is enforced, so a search carries every required field.
+const searchArgs = { destination: "Lisbon", dates: { from: "2027-05-12", to: "2027-05-15" }, travelers: { adults: 2 } };
 const quoteArgs = { stayId: "ws-1001", dates: { from: "2027-05-12", to: "2027-05-15" }, travelers: { adults: 2 } };
 
 async function bookArgs(w: ReturnType<typeof newWorker>) {
@@ -53,7 +55,7 @@ describe("AC-3.1 POST /mcp serves the Showcase IR and the synthetic API from one
 
   it("answers a tool call from the API on the same origin, in-process, and counts the requests", async () => {
     const w = newWorker();
-    const r = await w.call("wanderlust_search", { destination: "Lisbon" });
+    const r = await w.call("wanderlust_search", searchArgs);
     expect(r.result?.isError).not.toBe(true);
     expect(w.apiCalls.every((c) => c.includes("/v1/"))).toBe(true);
     expect(r.headers.get("x-showcase-backend-calls")).toBe(String(w.apiCalls.length));
@@ -89,7 +91,7 @@ describe("AC-3.2 the legacy tool keeps working, advertised as deprecated", () =>
     const w = newWorker();
     const tool = (await w.rpc("tools/list", {})).result?.tools?.find((t) => t.name === "tourism_search");
     expect(tool?.description).toMatch(/deprecated/i);
-    const r = await w.call("tourism_search", { destination: "Lisbon" });
+    const r = await w.call("tourism_search", searchArgs);
     expect(r.result?.isError).not.toBe(true);
     expect((r.result?.structuredContent as { stays: unknown[] }).stays).toHaveLength(3);
     expect(JSON.stringify(r.result)).not.toMatch(/"(net|commission|margin)"/);
@@ -174,7 +176,7 @@ describe("AC-3.7 the availability rate limit", () => {
     const w = newWorker();
     for (let i = 0; i < 5; i++) await w.call("wanderlust_availability", args);
     for (let i = 0; i < 5; i++) {
-      expect((await w.call("wanderlust_search", { destination: "Lisbon" })).result?.isError).not.toBe(true);
+      expect((await w.call("wanderlust_search", searchArgs)).result?.isError).not.toBe(true);
     }
   });
 });

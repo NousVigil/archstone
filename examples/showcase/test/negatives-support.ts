@@ -288,6 +288,8 @@ export function reasonOf(meta: Meta): string | undefined {
   if (policy?.reason) return policy.reason;
   const lifecycle = meta?.["dev.archstone/lifecycle_blocked"] as { error?: string } | undefined;
   if (lifecycle?.error) return lifecycle.error;
+  const input = meta?.["dev.archstone/input_invalid"] as { error?: string } | undefined;
+  if (input?.error) return input.error;
   const violation = meta?.["dev.archstone/contract_violation"] as { error?: string } | undefined;
   return violation?.error;
 }
