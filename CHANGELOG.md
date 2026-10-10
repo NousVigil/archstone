@@ -18,6 +18,64 @@ All notable changes to Archstone are documented here. Format loosely follows
 
 ## [Unreleased]
 
+## [0.32.0]
+
+> **0.30.0 and 0.31.0 were tagged but never published to npm.** Their release gate failed on the
+> `sql-reporting` example's verify step (fixed below), so npm kept serving 0.29.0. Everything in the
+> `[0.30.0]` and `[0.31.0]` sections below therefore ships for the first time in 0.32.0, together
+> with the entries listed here.
+
+### Added
+
+- **The Showcase has an executable negative-scenario suite.** `examples/showcase/test/` now asserts, through the real runtime and with a request spy around the synthetic API, what Archstone withholds and refuses: no margin, passport, phone or raw HTML reaches a model; an off-origin image or page link is withheld by field path and never fetched; each of the seven denial reasons is reached and a test fails if one is not; no tool exists for deletion and no `DELETE` is ever issued; and a hand-written passthrough double proves the absence checks cannot pass by accident. Examples and tests only; nothing in the published packages changes.
+
+- **Recorded Showcase scenarios, `examples/showcase` S-15 to S-21.** A recorder (`pnpm showcase:record`,
+  `pnpm showcase:record:check`) runs the workspace CLI and the embedded SDK against the synthetic agency
+  and writes one stable JSON transcript per scenario to `examples/showcase/transcripts/`: a SQL report from
+  a local Postgres that the live manifest does not serve, `apply --exposure`, `verify` and `adopt` on a
+  backend that gains a field, `diff` with the backend stopped, `audit` and `doctor` with no outbound
+  connection (enforced by a preload that makes any attempt fail), `init` from the OpenAPI document, and the
+  `@archstone/agent` SDK in three vendor shapes. Each scenario asserts its expected outcome and its
+  negative and exits non-zero otherwise; `--check` fails CI on any byte that differs from a fresh
+  recording. Examples and tests only: no published package changes.
+
+- **A synthetic travel-agency example, `examples/showcase`.** An invented agency whose backend
+  deliberately over-exposes (guest passports and phones at several nesting levels, a private margin,
+  raw HTML, images and links on undeclared hosts, a DELETE endpoint), and the CDL manifests that
+  contain it: all three effects, every lifecycle state, `authenticated` with `${caller.accessToken}`,
+  a principal allow/deny rule, a rate limit, `onError` rows, nested projection, and the `image` and
+  `web-page` types with declared origins. It ships a mis-declared payment variant that `archstone apply`
+  warns about without blocking, a scenario table (`scenarios.json`), two public demo keys, and tests
+  that run the real pipeline against the API in-process. Examples and tests only: no published package
+  changes.
+
+### Changed
+
+- **Behaviour change: a backend that returns a bare number or string for a `money` field is no longer passed through.** The value is now withheld (optional field, result `degraded`) or a `contract_violation` (required field). Declare such a field `quantity` if the backend really sends a plain number, or have the backend send `{amount, currency}`.
+
+### Fixed
+
+- **`archstone adopt` could edit the wrong namespace's resource file.** When two namespaces declared a resource with the same bare name (`tourism.Stay` and `wanderlust.Stay`), the lookup returned whichever document it met first, so a field adopted into `wanderlust.search` was written into `tourism.Stay`'s file and the edit then failed to compile. An exact name now wins; the bare-name fallback is used only when exactly one resource matches, and an ambiguous one is reported as a problem naming every candidate.
+
+- **`archstone adopt` resolved a namespace-qualified resource name into another namespace.** When `wanderlust.Foo` had no exact match but exactly one resource elsewhere shared the bare name (`tourism.Foo`), the bare-name fallback picked that one and edited its file. A qualified name now never crosses namespaces: with no exact match, adopt reports `no resource '<ns>.<Name>'`, lists same-bare-name resources as a hint, and writes nothing. The bare-name fallback still applies to unqualified names.
+
+- **`apply --exposure` listed a retired capability as exposed.** Each capability now carries a `state` (`exposed`, `unlisted` for an experimental one callable by id, or `not_exposed` with a `reason` of `retired`, `unevaluatable` or `unbound`), in the human report and in `--json`, which also gains a `totals` object. `totals.exposed` equals the number of tools `tools/list` advertises: both read the new `Registry.listedTools()`. (#173)
+
+- **Extraction accepted any string as a `money` currency (#182).** `extractor(resource, format).validate()` passed `{amount: 10, currency: "euro"}` (and `""`, `"eur"`) as valid money, although the response path has required a finite numeric `amount` and a three-uppercase-letter `currency` since #176. Both paths now call one shared check, so they cannot disagree. In extraction a present but malformed `money` value is an `invalid` entry and the document a `violation`, as for every other malformed value (extraction never repairs, ADR-0011).
+
+- **A `money` output field accepted a plain string as valid (#176).** A value such as `"price": "129.00"` was passed on as if it were money. The mapper now requires an object with a finite numeric `amount` and a three-letter uppercase `currency`, and treats anything else as a shape mismatch: the field is withheld and the result `degraded` when it is optional, and a `contract_violation` when it is required, the same rule the other checked types follow.
+
+- **The release gate now verifies the `sql-reporting` example instead of failing on it.** It ran
+  `archstone verify` on every example with only a mock URL in the environment, so the 0.31.0
+  release stopped at `isolation not verified: negative identity did not resolve to any claims`.
+  The gate now passes `--identity-map` to any example that ships an `identity-map.json`. For an
+  example with a `sql` binding, it builds a database from the example's `fixture.sql` in the
+  job's Postgres and connects as the fixture's runtime role, through the variable the binding's
+  `dsn` names. If no database is configured, that example's verify fails rather than being
+  skipped. Pull requests now run the same per-example build and verify against the workspace
+  build, so an example that needs input the gate does not supply fails on its PR, not at
+  release time (#162).
+
 ## [0.31.0]
 
 ### Added
