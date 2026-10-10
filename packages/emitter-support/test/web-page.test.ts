@@ -490,7 +490,7 @@ describe("fail closed on a value whose shape does not match its declared type (S
     const t = singleTool();
     t.response!.fields = [{ name: "name", path: "$.name" }, { name: "host", path: "$.host" }];
     const r = applyResponseMapping(t, { name: "A", host: ["anything"] }, plain);
-    expect(r).toEqual({ status: "degraded", data: { stay: { name: "A" } }, degraded: ["host"] });
+    expect(r).toEqual({ status: "degraded", data: { stay: { name: "A" } }, degraded: ["host"], invalid: [{ field: "host", expected: "Plain" }] });
   });
 });
 
@@ -545,7 +545,7 @@ describe("identity (ref:) slots whose resource reaches web-page", () => {
 
   it("an identity slot whose resource reaches no web-page: an object is absent, named degraded (#146)", () => {
     const plain: IRResourceRegistry = { ...resources, Host: [{ name: "x", required: false, type: { kind: "scalar", semantic: "text" } }] };
-    expect(applyResponseMapping(t(), { name: "A", host: { x: 1 } }, plain)).toEqual({ status: "degraded", data: { stay: { name: "A" } }, degraded: ["host"] });
+    expect(applyResponseMapping(t(), { name: "A", host: { x: 1 } }, plain)).toEqual({ status: "degraded", data: { stay: { name: "A" } }, degraded: ["host"], invalid: [{ field: "host", expected: "reference to Host" }] });
   });
 
   it("passThroughRefusal does not follow ref:, matching the compiler's web-page-needs-mapping", () => {

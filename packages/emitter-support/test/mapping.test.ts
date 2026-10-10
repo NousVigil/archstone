@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import type { IRField, IRResourceRegistry, IRTool } from "@archstone/compiler";
-import { applyResponseMapping } from "../src/mapping";
+import { applyResponseMapping, contractViolationMessage, degradedNotes } from "../src/mapping";
 
 // Required-ness is the resource registry's, NOT the mapping's (single source of truth):
 // name + price required, tag optional.
@@ -380,5 +380,89 @@ describe("applyResponseMapping — extract: scalar arrays (#82, ADD-12 §8.2)", 
     const r = applyResponseMapping(t, { warnings: ["a"], extra: ["b", "c"] }, {});
     expect(r.data).toEqual({ warnings: ["a"] });
     expect(Object.keys(r.data!)).not.toContain("extra");
+  });
+});
+
+// #196: a value that is present but the wrong shape is `invalid`, not `missing`.
+describe("applyResponseMapping — present-but-malformed is invalid, not missing (#196)", () => {
+  // price is `money` here: a bare string is the wrong shape for it (#176).
+  const moneyResources: IRResourceRegistry = {
+    "shop.Widget": [
+      { name: "name", required: true, type: { kind: "scalar", semantic: "text" } },
+      { name: "price", required: true, type: { kind: "scalar", semantic: "money" } },
+      { name: "tag", required: false, type: { kind: "scalar", semantic: "money" } },
+    ],
+  };
+
+  it("VIOLATION: a required field of the wrong shape is named invalid, with its expected type, not missing", () => {
+    const body = { results: [{ n: "Widget A", p: "129.00" }] };
+    const r = applyResponseMapping(tool(collectionMapping), body, moneyResources);
+    expect(r.status).toBe("violation");
+    expect(r.missing).toEqual([]);
+    expect(r.invalid).toEqual([{ field: "price", expected: "money" }]);
+  });
+
+  it("VIOLATION: absent and malformed required fields are listed separately", () => {
+    const body = { results: [{ p: { nested: true } }] }; // name absent, price an object
+    const r = applyResponseMapping(tool(collectionMapping), body, resources);
+    expect(r.status).toBe("violation");
+    expect(r.missing).toEqual(["name"]);
+    expect(r.invalid).toEqual([{ field: "price", expected: "quantity" }]);
+  });
+
+  it("VIOLATION: an absent required field leaves `invalid` off the result", () => {
+    const r = applyResponseMapping(tool(collectionMapping), { results: [{ n: "A" }] }, resources);
+    expect(r.missing).toEqual(["price"]);
+    expect(r.invalid).toBeUndefined();
+  });
+
+  it("never carries the offending value", () => {
+    const r = applyResponseMapping(tool(collectionMapping), { results: [{ n: "A", p: "SECRET-VALUE" }] }, moneyResources);
+    expect(JSON.stringify(r)).not.toContain("SECRET-VALUE");
+  });
+
+  it("DEGRADED: a malformed optional field is named invalid, and stays in `degraded` with the absent ones", () => {
+    const withTagged: IRResourceRegistry = {
+      "shop.Widget": [
+        ...resources["shop.Widget"]!.slice(0, 2),
+        { name: "tag", required: false, type: { kind: "scalar", semantic: "money" } },
+        { name: "note", required: false, type: { kind: "scalar", semantic: "text" } },
+      ],
+    };
+    const mapping: IRTool["response"] = {
+      ...collectionMapping!,
+      fields: [...collectionMapping!.fields, { name: "note", path: "$.o" }],
+    };
+    const r = applyResponseMapping(tool(mapping), { results: [{ n: "A", p: 1, t: "not-money" }] }, withTagged);
+    expect(r.status).toBe("degraded");
+    expect(r.degraded).toEqual(["note", "tag"]);
+    expect(r.invalid).toEqual([{ field: "tag", expected: "money" }]);
+    expect(r.data).toEqual({ items: [{ name: "A", price: 1 }] });
+  });
+});
+
+describe("contractViolationMessage — invalid (#196)", () => {
+  it("names invalid fields with the expected type, apart from missing ones", () => {
+    const text = contractViolationMessage("shop.search", ["name"], [], [{ field: "price", expected: "quantity" }]);
+    expect(text).toBe(
+      "contract violation: capability 'shop.search' — provider response is missing required field(s): name; and has a value of the wrong shape in field(s): price (expected quantity). Declared output shape not met; raw body withheld.",
+    );
+  });
+  it("is byte-identical to the old sentence when nothing is invalid", () => {
+    expect(contractViolationMessage("shop.search", ["name"])).toBe(
+      "contract violation: capability 'shop.search' — provider response is missing required field(s): name. Declared output shape not met; raw body withheld.",
+    );
+  });
+});
+
+describe("degradedNotes (#196)", () => {
+  it("separates optional fields that were not sent from those sent in the wrong shape", () => {
+    expect(degradedNotes(["note", "tag"], [{ field: "tag", expected: "money" }])).toEqual([
+      "note: optional field(s) absent (degraded): note",
+      "note: optional field(s) present but of the wrong shape, omitted (degraded): tag (expected money)",
+    ]);
+  });
+  it("is the old single note when nothing is invalid", () => {
+    expect(degradedNotes(["note"])).toEqual(["note: optional field(s) absent (degraded): note"]);
   });
 });

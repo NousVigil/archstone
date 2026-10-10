@@ -126,7 +126,7 @@ describe("collection: nested inside a resource", () => {
 
   it("one row missing a required field makes the whole slot absent — optional: degraded, never a shortened list", () => {
     const r = applyResponseMapping(tool, { name: "Casa", rooms: [{ label: "1", price: 10 }, { label: "2" }] }, resources(false));
-    expect(r).toEqual({ status: "degraded", data: { stay: { name: "Casa" } }, degraded: ["rooms"] });
+    expect(r).toEqual({ status: "degraded", data: { stay: { name: "Casa" } }, degraded: ["rooms"], invalid: [{ field: "rooms", expected: "collection of Room" }] });
   });
 
   it("required slot: a violation naming the nested field, dotted, no index", () => {
@@ -140,7 +140,7 @@ describe("a required miss at a nested level bubbles to the nearest optional ance
     const tool = stayTool(["name", "host"]);
     const resources = issueResources(false);
     const r = applyResponseMapping(tool, { name: "Casa", host: { phone: "1" } }, resources);
-    expect(r).toEqual({ status: "degraded", data: { stay: { name: "Casa" } }, degraded: ["host"] });
+    expect(r).toEqual({ status: "degraded", data: { stay: { name: "Casa" } }, degraded: ["host"], invalid: [{ field: "host", expected: "Host" }] });
     expectSchemaAgrees(tool, resources, r);
   });
 
@@ -157,7 +157,7 @@ describe("a required miss at a nested level bubbles to the nearest optional ance
       Owner: [field("name", text)],
     };
     const r = applyResponseMapping(stayTool(["name", "host"]), { name: "Casa", host: { name: "Ana", agency: { owner: { phone: "1" } } } }, resources);
-    expect(r).toEqual({ status: "degraded", data: { stay: { name: "Casa", host: { name: "Ana" } } }, degraded: ["host.agency"] });
+    expect(r).toEqual({ status: "degraded", data: { stay: { name: "Casa", host: { name: "Ana" } } }, degraded: ["host.agency"], invalid: [{ field: "host.agency", expected: "Agency" }] });
     // With no optional ancestor on the way up, the response fails, naming the deepest field.
     resources.Host[1] = { ...resources.Host[1], required: true };
     expect(applyResponseMapping(stayTool(["name", "host"]), { name: "Casa", host: { name: "Ana", agency: { owner: {} } } }, resources)).toEqual({
@@ -197,9 +197,9 @@ describe("ref: slots take a bare id only", () => {
   it("an object or array in the id's place is absent — never reduced to an id, never forwarded", () => {
     for (const host of [{ id: "h_1", secret: "s3cret" }, [{ id: "h_1", secret: "s3cret" }]]) {
       const optional = applyResponseMapping(tool, { name: "Casa", host }, resources(false));
-      expect(optional).toEqual({ status: "degraded", data: { stay: { name: "Casa" } }, degraded: ["host"] });
+      expect(optional).toEqual({ status: "degraded", data: { stay: { name: "Casa" } }, degraded: ["host"], invalid: [{ field: "host", expected: "reference to Host" }] });
       const required = applyResponseMapping(tool, { name: "Casa", host }, resources(true));
-      expect(required).toEqual({ status: "violation", missing: ["host"] });
+      expect(required).toEqual({ status: "violation", missing: [], invalid: [{ field: "host", expected: "reference to Host" }] });
       expect(JSON.stringify([optional, required])).not.toContain("s3cret");
     }
   });
@@ -241,7 +241,7 @@ describe("a value of the wrong shape for its declared type is absent, at every l
       expectDropped(r, { stay: { name: "Casa" } }, ["note"]);
     }
     // Required: a violation, the field named.
-    expect(applyResponseMapping(tool, { name: { first: "C", secret: "s3cret" } }, resources)).toEqual({ status: "violation", missing: ["name"] });
+    expect(applyResponseMapping(tool, { name: { first: "C", secret: "s3cret" } }, resources)).toEqual({ status: "violation", missing: [], invalid: [{ field: "name", expected: "text" }] });
   });
 
   it("a scalar-declared field receiving an object — nested: optional dropped (degraded, dotted), required bubbles", () => {
@@ -253,7 +253,7 @@ describe("a value of the wrong shape for its declared type is absent, at every l
 
   it("an extract: scalar receiving an object is absent too", () => {
     const t: IRTool = { ...stayTool([]), response: undefined, output: [field("total", { kind: "scalar", semantic: "quantity" }, false)], extract: [{ name: "total", path: "$.total" }] };
-    expect(applyResponseMapping(t, { total: { value: 3, secret: "s3cret" } }, {})).toEqual({ status: "degraded", data: {}, degraded: ["total"] });
+    expect(applyResponseMapping(t, { total: { value: 3, secret: "s3cret" } }, {})).toEqual({ status: "degraded", data: {}, degraded: ["total"], invalid: [{ field: "total", expected: "quantity" }] });
     expect(applyResponseMapping(t, { total: 3 }, {})).toEqual({ status: "ok", data: { total: 3 } });
   });
 });
@@ -278,7 +278,7 @@ describe("composite semantic scalars keep only their declared keys", () => {
   });
 
   it("money must be {amount: finite number, currency: ISO-4217 shape}: anything else is absent (#176)", () => {
-    const absent = { status: "degraded", data: { stay: { name: "Casa" } }, degraded: ["v"] };
+    const absent = { status: "degraded", data: { stay: { name: "Casa" } }, degraded: ["v"], invalid: [{ field: "v", expected: "money" }] };
     for (const bad of [
       "129.00",
       120,
@@ -309,8 +309,8 @@ describe("composite semantic scalars keep only their declared keys", () => {
   });
 
   it("missing a required sub-key, or a non-primitive sub-value, is absent", () => {
-    expect(map("money", { amount: 120 })).toEqual({ status: "degraded", data: { stay: { name: "Casa" } }, degraded: ["v"] });
-    expect(map("money", { amount: { secret: 1 }, currency: "EUR" })).toEqual({ status: "degraded", data: { stay: { name: "Casa" } }, degraded: ["v"] });
+    expect(map("money", { amount: 120 })).toEqual({ status: "degraded", data: { stay: { name: "Casa" } }, degraded: ["v"], invalid: [{ field: "v", expected: "money" }] });
+    expect(map("money", { amount: { secret: 1 }, currency: "EUR" })).toEqual({ status: "degraded", data: { stay: { name: "Casa" } }, degraded: ["v"], invalid: [{ field: "v", expected: "money" }] });
   });
 
   it("a declared optional sub-key of the wrong shape is a mis-shape (degraded), not an undeclared key", () => {
@@ -341,8 +341,8 @@ describe("non-JSON objects are absent — a provider must hand the mapper JSON (
   it("a Date or a Buffer in a scalar slot is absent: optional → degraded, required → violation", () => {
     for (const odd of [new Date("2026-10-03T00:00:00Z"), Buffer.from("s3cret")]) {
       const optional = applyResponseMapping(tool, { name: "Casa", day: "2026-10-03", at: odd }, resources(true));
-      expect(optional).toEqual({ status: "degraded", data: { stay: { name: "Casa", day: "2026-10-03" } }, degraded: ["at"] });
-      expect(applyResponseMapping(tool, { name: "Casa", day: odd }, resources(true))).toEqual({ status: "violation", missing: ["day"] });
+      expect(optional).toEqual({ status: "degraded", data: { stay: { name: "Casa", day: "2026-10-03" } }, degraded: ["at"], invalid: [{ field: "at", expected: "datetime" }] });
+      expect(applyResponseMapping(tool, { name: "Casa", day: odd }, resources(true))).toEqual({ status: "violation", missing: [], invalid: [{ field: "day", expected: "date" }] });
     }
   });
 

@@ -428,7 +428,10 @@ describe("what each manifest is wired to withhold, observed through the runtime"
 
     const bad = await runRow(newContext(), r13, { arguments: r13.negative!.arguments });
     expect(bad.result.isError).toBe(true);
-    expect(bad.result._meta?.[CONTRACT_VIOLATION_META_KEY]).toMatchObject({ error: "contract_violation", capability: "wanderlust.room-status", missing: ["pricePerNight"] });
+    expect(bad.result._meta?.[CONTRACT_VIOLATION_META_KEY]).toMatchObject({ error: "contract_violation", capability: "wanderlust.room-status", missing: [], invalid: [{ field: "pricePerNight", expected: "quantity" }] });
+    // #196: present but the wrong shape is invalid, not missing, in the text as in `_meta`.
+    expect(JSON.stringify(bad.result.content)).toContain("has a value of the wrong shape in field(s): pricePerNight (expected quantity)");
+    expect(JSON.stringify(bad.result.content)).not.toContain("missing required field");
     expect(JSON.stringify(bad.result)).not.toContain("139,00");
   });
 

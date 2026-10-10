@@ -313,11 +313,18 @@ That's the general rule the runtime applies to every mapped element, checked aga
 `Accommodation`'s required fields:
 
 - every required field present → **OK** — mapped data returned as `structuredContent`;
-- an **optional** field missing → **DEGRADED** — returned, that field omitted, a warning surfaced;
-- a **required** field missing → **VIOLATION** — fail closed: the tool returns `isError:true` with
-  a human-readable `content` message plus a structured error object in
-  `CallToolResult._meta["dev.archstone/contract_violation"]` containing `{error: "contract_violation", capability, missing}` — **not** the raw provider body. The agent can branch deterministically on the
-  stable error code instead of parsing prose.
+- an **optional** field missing, or present in the wrong shape → **DEGRADED** — returned, that field
+  omitted, a note surfaced that says which of the two it was (the wrong-shape note carries the type
+  the field was declared as);
+- a **required** field missing or in the wrong shape → **VIOLATION** — fail closed: the tool returns
+  `isError:true` with a human-readable `content` message plus a structured error object in
+  `CallToolResult._meta["dev.archstone/contract_violation"]` containing
+  `{error: "contract_violation", capability, missing, invalid?}` — **not** the raw provider body.
+  `missing` lists the fields the provider did not send; `invalid`, present only when non-empty,
+  lists those it sent in the wrong shape as `{field, expected}` (`expected` is the declared type,
+  such as `quantity` or `money`). A field is in one list or the other, never both, and neither ever
+  carries the provider's value. The agent can branch deterministically on the stable error code
+  instead of parsing prose.
 
 A capability with **no** binding still validates — it just isn't invocable yet (`apply`
 warns and reports it as not bound). A binding with **no** `response:` still validates too —

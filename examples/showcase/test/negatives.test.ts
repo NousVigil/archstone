@@ -506,14 +506,15 @@ describe("N-13 / AC-2.14, AC-2.15: a failing backend is an error, a wrong-typed 
     const result = await s.call("wanderlust_room-status", bad);
     expect(result.isError).toBe(true);
     expect(reasonOf(result._meta)).toBe("contract_violation");
-    expect(result._meta?.[CONTRACT]).toMatchObject({ error: "contract_violation", capability: "wanderlust.room-status", missing: ["pricePerNight"] });
+    expect(result._meta?.[CONTRACT]).toMatchObject({ error: "contract_violation", capability: "wanderlust.room-status", missing: [], invalid: [{ field: "pricePerNight", expected: "quantity" }] });
+    expect(textOf(result)).toContain("has a value of the wrong shape in field(s): pricePerNight (expected quantity)");
     expect(result.structuredContent).toBeUndefined();
     expect(textOf(result)).toMatch(/raw body withheld/);
     // The agency's wrong-typed price (a formatted string for this property) appears nowhere.
     const raw = (await rawPassthrough(`/v1/room-status?propertyId=${String(bad.propertyId)}&date=${String(bad.date)}`)) as { rows: { pricePerNight: { amount: string } }[] };
     expect(typeof raw.rows[0].pricePerNight).toBe("object"); // the agency really sends an object where a number is promised
     expect(JSON.stringify(result)).not.toContain(raw.rows[0].pricePerNight.amount);
-    expect(await s.execute("wanderlust.room-status", bad)).toEqual({ status: "violation", missing: ["pricePerNight"] });
+    expect(await s.execute("wanderlust.room-status", bad)).toEqual({ status: "violation", missing: [], invalid: [{ field: "pricePerNight", expected: "quantity" }] });
   });
 
   it("N-13 (#176) a price sent as a bare string for a money field is a violation too, and the string is not passed on", async () => {
@@ -531,7 +532,7 @@ describe("N-13 / AC-2.14, AC-2.15: a failing backend is an error, a wrong-typed 
     const result = await s.call("wanderlust_quote", row("S-05").arguments!);
     expect(result.isError).toBe(true);
     expect(reasonOf(result._meta)).toBe("contract_violation");
-    expect(result._meta?.[CONTRACT]).toMatchObject({ error: "contract_violation", capability: "wanderlust.quote", missing: ["total"] });
+    expect(result._meta?.[CONTRACT]).toMatchObject({ error: "contract_violation", capability: "wanderlust.quote", missing: [], invalid: [{ field: "total", expected: "money" }] });
     expect(JSON.stringify(result)).not.toContain("129.00");
   });
 
