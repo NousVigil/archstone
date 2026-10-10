@@ -23,7 +23,7 @@ async function bookArgs(w: ReturnType<typeof newWorker>) {
 
 const reason = (r: { result?: { _meta?: Record<string, { reason?: string }> } }) => r.result?._meta?.[POLICY_META]?.reason;
 
-describe("the legacy mock backend (kept as the byte-compat oracle for POST /v1/search)", () => {
+describe("the legacy mock backend (the tourism demo's own; the Showcase API no longer mirrors it)", () => {
   it("returns three stays for a destination, deterministically", async () => {
     const req = () => new Request(`${ORIGIN}/v1/search`, { method: "POST", body: JSON.stringify({ destination: "Lisbon" }) });
     const a = (await (await mockStaysResponse(req())).json()) as { stays: { location: string }[] };
@@ -93,7 +93,7 @@ describe("AC-3.2 the legacy tool keeps working, advertised as deprecated", () =>
     expect(tool?.description).toMatch(/deprecated/i);
     const r = await w.call("tourism_search", searchArgs);
     expect(r.result?.isError).not.toBe(true);
-    expect((r.result?.structuredContent as { stays: unknown[] }).stays).toHaveLength(3);
+    expect((r.result?.structuredContent as { stays: unknown[] }).stays).toHaveLength(4);
     expect(JSON.stringify(r.result)).not.toMatch(/"(net|commission|margin)"/);
   });
 });

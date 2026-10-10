@@ -12,6 +12,7 @@ import { connect, type AddressInfo } from "node:net";
 import { parse as parseYaml } from "yaml";
 import {
   BOOKING_ID_RE,
+  CATALOGUE,
   IMAGE_BASE,
   PAGES_BASE,
   QUOTE_WINDOW_MS,
@@ -19,10 +20,11 @@ import {
   UNDECLARED_MARKUP_HOST,
   UNDECLARED_PAGE_HOST,
   handle,
+  normalizePreferences,
+  resolveDestination,
 } from "../api/wanderlust-api.mjs";
 import { createApiServer } from "../api/serve.mjs";
 import { ACCEPTED_KEYS, DEMO_KEY_A, DEMO_KEY_B } from "../credentials.mjs";
-import { mockStaysResponse } from "../../demo/remote-mcp-worker/src/mock-backend";
 import { CLOCK_MS, SHOWCASE_DIR } from "./harness";
 
 const ORIGIN = "http://api.showcase.example";
@@ -424,13 +426,17 @@ describe("malformed requests are refused, never fatal", () => {
 });
 
 describe("the legacy search and the retired one", () => {
-  it("POST /v1/search is byte-compatible with the demo's mock backend, margin and all", async () => {
-    for (const destination of ["Nice", "Lisbon", "Paris", "your destination"]) {
-      const theirs = await (await mockStaysResponse(new Request(`${ORIGIN}/v1/search`, { method: "POST", body: JSON.stringify({ destination }) }))).text();
-      const ours = await call("POST", "/v1/search", { body: { destination } });
-      expect(JSON.parse(ours.text), destination).toEqual(JSON.parse(theirs));
-      expect(typeof ours.body.stays[0].net).toBe("number");
-      expect(typeof ours.body.stays[0].commission).toBe("number");
+  it("POST /v1/search reads the same catalogue as the current search, in the legacy row shape, margin and all", async () => {
+    const legacy = await call("POST", "/v1/search", { body: { destination: "Lisbon" } });
+    const current = await call("POST", "/v1/stays/search", { body: { destination: "Lisbon" } });
+    expect(legacy.status).toBe(200);
+    expect(legacy.body.stays.map((s: Body) => s.id).sort()).toEqual(current.body.stays.map((s: Body) => s.id).sort());
+    expect(legacy.body.totalMatches).toBe(current.body.totalMatches);
+    for (const row of legacy.body.stays) {
+      expect(typeof row.net).toBe("number");
+      expect(typeof row.commission).toBe("number");
+      expect(typeof row.boardType).toBe("string");
+      expect(CATALOGUE.map((s) => s.name)).toContain(row.name);
     }
   });
 
@@ -522,5 +528,90 @@ describe("AC-1.11: every person, hotel and contact detail is visibly invented", 
       }
     }
     expect(seen).toBeGreaterThan(40);
+  });
+});
+
+describe("one catalogue, one destination resolver", () => {
+  const LISBON = ["ws-1001", "ws-1002", "ws-1003", "ws-1004"];
+  const idsFor = async (path: string, destination: string, extra: Record<string, unknown> = {}) => {
+    const r = await call("POST", path, { body: { destination, dates: DATES, travelers: PARTY, ...extra } });
+    expect(r.status).toBe(200);
+    return (r.body.stays as Body[]).map((s) => s.id as string).sort();
+  };
+
+  it.each([
+    ["Lisbon", "Lisbon"], ["lisbon", "Lisbon"], ["LISBON", "Lisbon"], ["Lisboa", "Lisbon"], ["Lisabona", "Lisbon"],
+    ["Lisbon, Portugal", "Lisbon"], ["Lisbon Portugal", "Lisbon"], ["  lisbon ,  portugal ", "Lisbon"],
+    ["Bucuresti", "Bucharest"], ["București, Romania", "Bucharest"], ["Bucharest", "Bucharest"],
+    ["Porto, Portugal", "Porto"], ["Barcelona, Spain", "Barcelona"], ["Nice", "Nice"],
+    ["Lisbon, Spain", undefined], ["Atlantis", undefined], ["", undefined], ["Lisbon Porto", undefined],
+  ])("resolveDestination(%j) -> %s", (text, city) => {
+    expect(resolveDestination(text)).toBe(city);
+  });
+
+  it("an unknown destination is an honest empty result on both searches, never invented stays", async () => {
+    for (const path of ["/v1/stays/search", "/v1/search"]) {
+      const r = await call("POST", path, { body: { destination: "Atlantis", dates: DATES, travelers: PARTY } });
+      expect(r.status).toBe(200);
+      expect(r.body).toEqual({ stays: [], totalMatches: 0 });
+    }
+  });
+
+  it("both searches answer a destination spelling with the same stays", async () => {
+    for (const path of ["/v1/stays/search", "/v1/search"]) {
+      for (const spelling of ["Lisbon, Portugal", "lisboa", "LISABONA"]) {
+        expect(await idsFor(path, spelling), `${path} ${spelling}`).toEqual(LISBON);
+      }
+    }
+  });
+
+  it("every id either search returns resolves on details, photos, pages, quote and availability", async () => {
+    const cities = [...new Set(CATALOGUE.map((s) => s.city))];
+    const variants: Record<string, unknown>[] = [
+      {},
+      { budget: { amount: 120, currency: "EUR" } },
+      { preferences: ["pets"] },
+      { budget: { amount: 130, currency: "EUR" }, preferences: ["pet-friendly", "breakfast"] },
+    ];
+    let seen = 0;
+    for (const path of ["/v1/stays/search", "/v1/search"]) {
+      for (const city of cities) {
+        for (const extra of variants) {
+          for (const id of await idsFor(path, city, extra)) {
+            seen++;
+            expect((await call("GET", `/v1/stays/${id}`)).status, `details ${id}`).toBe(200);
+            expect((await call("GET", `/v1/stays/${id}/photos`)).status, `photos ${id}`).toBe(200);
+            expect((await call("GET", `/v1/stays/${id}/pages`)).status, `pages ${id}`).toBe(200);
+            expect((await call("POST", "/v1/quotes", { body: { stayId: id, dates: DATES, travelers: PARTY } })).status, `quote ${id}`).toBe(200);
+            expect((await call("GET", `/v1/availability?propertyId=${id}&date=2027-06-05`)).status, `availability ${id}`).toBe(200);
+          }
+        }
+      }
+    }
+    expect(seen).toBeGreaterThan(40);
+  });
+
+  it("the budget is a per-night EUR ceiling on both searches", async () => {
+    for (const path of ["/v1/stays/search", "/v1/search"]) {
+      const r = await call("POST", path, { body: { destination: "Lisbon", dates: DATES, travelers: PARTY, budget: { amount: 100, currency: "EUR" } } });
+      expect((r.body.stays as Body[]).map((s) => s.id).sort()).toEqual(["ws-1002", "ws-1004"]);
+      const usd = await call("POST", path, { body: { destination: "Lisbon", dates: DATES, travelers: PARTY, budget: { amount: 100, currency: "USD" } } });
+      expect(usd.status).toBe(400);
+      expect(usd.body.message).toContain("USD");
+    }
+  });
+
+  it("search dates are validated: a prose date is a 400, not silently ignored", async () => {
+    for (const path of ["/v1/stays/search", "/v1/search"]) {
+      const r = await call("POST", path, { body: { destination: "Lisbon", dates: "next weekend" } });
+      expect(r.status).toBe(400);
+      expect(r.body.error).toBe("bad_dates");
+    }
+  });
+
+  it("preference synonyms fold to the three declared tags; unknown tags are ignored", () => {
+    expect(normalizePreferences(["pet-friendly", "Cat", "dogs", "pets", "BREAKFAST", "kids", "sea view"]).sort()).toEqual(["breakfast", "family", "pets"]);
+    expect(normalizePreferences(["sea view", 7, null])).toEqual([]);
+    expect(normalizePreferences(undefined)).toEqual([]);
   });
 });

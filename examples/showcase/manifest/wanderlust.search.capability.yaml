@@ -13,6 +13,11 @@ capability:
     budget:
       type: money
       required: false
+      description: "Maximum nightly rate in EUR (a per-night ceiling, not a total for the stay)."
+    preferences:
+      type: preference-set
+      required: false
+      description: "Optional tags, all of which a stay must satisfy: pets (also pet-friendly, cat, dog), breakfast, family. Other tags are ignored."
 
   output:
     stays:

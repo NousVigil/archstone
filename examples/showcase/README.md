@@ -86,6 +86,7 @@ reads `capabilities.yaml` from the directory it is given, and the other folders 
 | [`scenarios.json`](scenarios.json) | The scenario table, S-01 to S-22. |
 | [`test/`](test/) | `api.test.ts`, `manifests.test.ts`, `scenario-json.test.ts`, the negative-scenario suite (`negatives.test.ts`, `denial-reasons.test.ts`, `tool-list.test.ts`), the shared `harness.ts` and `negatives-support.ts`, and for the recorded scenarios `recorded-s15.test.ts` to `recorded-s21.test.ts`, `recorded-determinism.test.ts` and `recorded.ts`. |
 | [`record/`](record/) | The recorder for S-15 to S-21 (`record.mjs`), one module per scenario, and the person's answers for S-20. |
+| [`conversations/`](conversations/) | The local conversation check (`pnpm showcase:conversations`): a real model drives the MCP endpoint. Not part of CI. |
 | [`transcripts/`](transcripts/) | Its output: `s-15.json` to `s-21.json`. Generated; do not edit by hand. |
 | [`local/reporting/`](local/reporting/) | The SQL reporting manifest of S-15, its `fixture.sql` and identity map. Local only: not part of the manifest the Worker serves. |
 | [`sdk/embedded.mjs`](sdk/embedded.mjs) | The runnable embedded-SDK script of S-21. |
@@ -94,7 +95,7 @@ reads `capabilities.yaml` from the directory it is given, and the other folders 
 
 | Capability | Effect | Lifecycle | Notes |
 |---|---|---|---|
-| `wanderlust.search` | read | stable | collection; the agency's own order |
+| `wanderlust.search` | read | stable | collection; the agency's own order; optional `budget` (max nightly rate, EUR) and `preferences` (`pets`, `breakfast`, `family`) |
 | `wanderlust.stay-details` | read | stable | nested projection: stay, rooms, amenities |
 | `wanderlust.stay-photos` | read | stable | `image` list checked against `origins.images` |
 | `wanderlust.stay-page` | read | stable | `web-page` checked against `origins.pages` |
@@ -105,7 +106,7 @@ reads `capabilities.yaml` from the directory it is given, and the other folders 
 | `wanderlust.availability` | read | beta | the only `rateLimit`: 3 calls per 60 seconds |
 | `wanderlust.room-status` | read | stable | `onError` rows; a wrong-typed price is a contract violation |
 | `wanderlust.neighbourhood` | read | experimental | unlisted, still callable by name |
-| `tourism.search` | read | deprecated | the original `tourism_search` tool, same input, output and binding shape |
+| `tourism.search` | read | deprecated | the original `tourism_search` tool; same input and filters as `wanderlust.search`, the old output shape (no ids) |
 | `tourism.search-classic` | read | retired | listed nowhere, refused when called |
 
 There is **no capability** for the DELETE endpoint, for `description_html`, for the margin, or for
@@ -134,7 +135,26 @@ Tool names are the capability ids with dots replaced by underscores (`wanderlust
   `room-status.pricePerNight` is a `quantity`, which still accepts a bare string; moving S-13 to the
   string-price trigger means declaring that field `money` and changing the `ws-1003` body, which is a
   separate change to the scenario, its copy and its recordings.
-- The legacy `POST /v1/search`, byte-compatible with the demo's mock backend, margin and all.
+- The legacy `POST /v1/search`, which still carries `net` and `commission`, over the same catalogue, destination resolver and filters as the current search.
+
+## One catalogue, one resolver
+
+Both searches, details, photos, pages, quote and availability read the same `CATALOGUE` in
+`api/wanderlust-api.mjs`: Lisbon (`ws-1001` to `ws-1004`, the rows the scenarios depend on), Porto,
+Barcelona, Nice and Bucharest. A destination goes through one resolver, tolerant of case, diacritics
+and a country (`Lisbon`, `lisboa`, `Lisabona`, `Lisbon, Portugal`, `Bucuresti`); a country that
+contradicts the city (`Lisbon, Spain`) or an unknown place returns an empty list, never invented
+stays. So every id a search returns resolves on every follow-up tool (`test/api.test.ts`).
+
+- `budget` is a **per-night** ceiling in EUR on both searches. Another currency is a `400`.
+- `preferences` are `pets`, `breakfast` and `family`, combined with AND. Synonyms are folded
+  (`pet-friendly`, `cat`, `dog` mean `pets`); any other tag is ignored.
+- `petPolicy` is a declared field on the search rows and on stay details: e.g. "Cats welcome, EUR 10
+  per night", or "No pets".
+- `dates` that are not an ISO range are a `400`, not silently ignored.
+
+`test/conversations.test.ts` runs the arguments a model sends for these phrasings, deterministically.
+`conversations/run.mjs` does the same with a real model against a live endpoint.
 
 ## Stateless and deterministic
 

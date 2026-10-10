@@ -22,7 +22,9 @@ live in [`examples/showcase`](../../showcase/); this Worker only wires them to H
 | anything else | `404` |
 
 `tourism_search` is still there and still answers. It is advertised as **deprecated** for one release
-(its description says so); the Showcase tools replace it.
+(its description says so); the Showcase tools replace it. It reads the same catalogue, destination
+resolver, `budget` and `preferences` as `wanderlust_search`, but its rows have no ids, so follow-ups go
+through `wanderlust_search`.
 
 ### `POST /run/{scenarioId}`
 
