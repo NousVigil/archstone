@@ -130,7 +130,7 @@ describe("S-B.9: the violation message names the field, says why, and never echo
     expect(contractViolationMessage("shop.get", ["name"], [])).toBe(contractViolationMessage("shop.get", ["name"]));
   });
 
-  it("the model-facing note locates the field in the original response and says what was returned passed", () => {
+  it("the model-facing note locates the place in this result (every other link and image passed) and says what was returned", () => {
     expect(withheldNote([{ path: "stay.listingUrl" }])).toBe(
       "note: withheld — value(s) outside the declared origins, at these places in this result (a number is the item's position in the provider's list, before any removal): stay.listingUrl (field omitted). Every other link and image returned passed the origin check.",
     );

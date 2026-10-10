@@ -272,7 +272,7 @@ Normative:
   items that fail the origin check are **withheld per item** rather than all-or-nothing: a
   list containing mix of off-origin and valid URLs emits only the valid ones, items are
   reordered to remove the withheld ones, and item names in the `withheld` list use 0-based
-  positions from the provider's original array (e.g. `photos[2]`). An empty list means all
+  positions from the provider's list (e.g. `photos[2]`). An empty list means all
   items were withheld. A list where every item is withheld is present and empty (not
   omitted), whether optional or required, and the result is **DEGRADED**.
 - A binding whose capability output reaches an `image` field — directly, or through a

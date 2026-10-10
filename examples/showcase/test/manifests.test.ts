@@ -352,7 +352,7 @@ describe("what each manifest is wired to withhold, observed through the runtime"
     const ctx = newContext();
     const { result } = await runRow(ctx, row("S-03"));
     expect((result.structuredContent as { gallery: { photos: string[] } }).gallery.photos).toHaveLength(4);
-    // The note locates the value in the ORIGINAL response and says the returned list is shorter.
+    // The note locates the value by output field names and the provider's list position, and says the returned list is shorter.
     expect(textOf(result)).toContain("gallery.photos[3] (removed; the list now has 4 items)");
     expect(textOf(result)).toContain("Every other link and image returned passed the origin check.");
     expect(ctx.spy.calls).toEqual(["GET /v1/stays/ws-1001/photos"]);
