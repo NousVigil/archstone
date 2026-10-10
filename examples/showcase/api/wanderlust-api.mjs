@@ -579,15 +579,28 @@ async function postPayment(request, nowMs) {
 // Availability, room status, neighbourhoods
 // ---------------------------------------------------------------------------------------------
 
+// ONE source for "how much is free" so availability and room-status can never disagree:
+// roomsFree is the count; the per-room-type statuses are derived from it. 0 free means every row
+// is taken; 1 free means exactly one room type is free (which one is fixed by the date); 2 or
+// more means both types are free.
+function roomsFree(propertyId, date) {
+  return hash(`${propertyId}|${date}`) % 6;
+}
+function roomStatuses(propertyId, date) {
+  const n = roomsFree(propertyId, date);
+  if (n === 0) return { double: "taken", family: "taken" };
+  if (n === 1) return hash(`${propertyId}|${date}|which`) % 2 ? { double: "free", family: "taken" } : { double: "taken", family: "free" };
+  return { double: "free", family: "free" };
+}
+
 function availability(propertyId, date) {
   const stay = byStayId(propertyId);
   if (!stay) return problem(404, "stay_not_found", "No such property.");
   if (!DATE_RE.test(date ?? "")) return problem(400, "bad_date", "date must be YYYY-MM-DD.");
-  const h = hash(`${propertyId}|${date}`);
   return json({
     propertyId,
     date,
-    roomsFree: h % 6,
+    roomsFree: roomsFree(propertyId, date),
     pricePerNight: stay.pricePerNight, // the stay's nightly rate, as search, quote and room-status say it
     ...rateSheet(stay.pricePerNight), // OVER-EXPOSED
   });
@@ -604,12 +617,13 @@ function roomStatus(propertyId, date) {
   if (!stay) return problem(404, "stay_not_found", "No such property.");
   if (!DATE_RE.test(date ?? "")) return problem(400, "bad_date", "date must be YYYY-MM-DD.");
   const price = stay.pricePerNight;
+  const state = roomStatuses(propertyId, date);
   if (propertyId === BUSY_ON.propertyId && date === BUSY_ON.date) {
     return json({
       propertyId,
       date,
       rows: [
-        { room: "Double Room", status: "free", pricePerNight: price },
+        { room: "Double Room", status: state.double, pricePerNight: price },
         { room: "Family Room", error: { code: "agency-busy", message: "The agency's room system is busy; try again shortly." } },
       ],
     });
@@ -622,8 +636,8 @@ function roomStatus(propertyId, date) {
         // OVER-EXPOSED: a price that is an object where a number is promised. (The mapper accepts
         // any JSON primitive for a scalar, so a price sent as a bare string would pass as-is; an
         // object cannot be a quantity, so every row here is unusable.)
-        { room: "Double Room", status: "free", pricePerNight: { amount: `${price},00`, currency: "EUR" } },
-        { room: "Family Room", status: "taken", pricePerNight: { amount: `${Math.round(price * 1.45)},00`, currency: "EUR" } },
+        { room: "Double Room", status: state.double, pricePerNight: { amount: `${price},00`, currency: "EUR" } },
+        { room: "Family Room", status: state.family, pricePerNight: { amount: `${Math.round(price * 1.45)},00`, currency: "EUR" } },
       ],
     });
   }
@@ -631,8 +645,8 @@ function roomStatus(propertyId, date) {
     propertyId,
     date,
     rows: [
-      { room: "Double Room", status: hash(`${propertyId}|${date}|d`) % 2 ? "free" : "taken", pricePerNight: price },
-      { room: "Family Room", status: hash(`${propertyId}|${date}|f`) % 2 ? "free" : "taken", pricePerNight: round2(price * 1.45) },
+      { room: "Double Room", status: state.double, pricePerNight: price },
+      { room: "Family Room", status: state.family, pricePerNight: round2(price * 1.45) },
     ],
   });
 }
