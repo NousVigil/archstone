@@ -32,3 +32,6 @@ Thumbs.db
 # Everything under this directory ships verbatim to the public repo (release.yml pushes
 # `HEAD:archstone` as its own tree), so editor scratch must never become committable here.
 *.code-workspace
+
+# Local conversation check output
+examples/showcase/conversations/runs/

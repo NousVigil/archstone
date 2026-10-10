@@ -115,15 +115,114 @@ function guestRecord(seed, name) {
 // Stays
 // ---------------------------------------------------------------------------------------------
 
-// Fictional Lisbon properties, listed in the AGENCY's own order: not by price, not by rating.
-// Archstone ranks nothing; whatever order the agency chooses is the order a model sees.
-const CATALOGUE = [
-  { id: "ws-1001", name: "Casa Alfama", pricePerNight: 118, rating: 4.6, slug: "casa-alfama" },
-  { id: "ws-1003", name: "Miradouro Court", pricePerNight: 139, rating: 4.8, slug: "miradouro-court" },
-  { id: "ws-1002", name: "Pensão Azul", pricePerNight: 74, rating: 4.1, slug: "pensao-azul" },
-  { id: "ws-1004", name: "Rio Tejo Lofts", pricePerNight: 96, rating: 4.3, slug: "rio-tejo-lofts" },
+// Fictional properties, listed in the AGENCY's own order: not by price, not by rating. Archstone
+// ranks nothing; whatever order the agency chooses is the order a model sees. This is the ONE
+// catalogue: both searches, details, photos, pages, quote and availability read it, so every id the
+// API emits resolves everywhere by construction. ws-1001..ws-1004 are the Lisbon rows the scenarios
+// and the recorded transcripts depend on; do not change them.
+const NO_PETS = "No pets";
+const stay = (id, city, country, name, slug, pricePerNight, rating, petPolicy, breakfast, family) => ({
+  id, city, country, name, slug, pricePerNight, rating, petPolicy, breakfast, family,
+});
+/** @type {readonly Readonly<{ id: string, city: string, country: string, name: string, slug: string, pricePerNight: number, rating: number, petPolicy: string, breakfast: boolean, family: boolean }>[]} */
+export const CATALOGUE = [
+  stay("ws-1001", "Lisbon", "Portugal", "Casa Alfama", "casa-alfama", 118, 4.6, "Cats and small dogs welcome, EUR 10 per night", true, false),
+  stay("ws-1003", "Lisbon", "Portugal", "Miradouro Court", "miradouro-court", 139, 4.8, NO_PETS, true, true),
+  stay("ws-1002", "Lisbon", "Portugal", "Pensão Azul", "pensao-azul", 74, 4.1, "Pets welcome, free of charge", false, true),
+  stay("ws-1004", "Lisbon", "Portugal", "Rio Tejo Lofts", "rio-tejo-lofts", 96, 4.3, NO_PETS, false, false),
+  stay("ws-2001", "Porto", "Portugal", "Ribeira Terrace", "ribeira-terrace", 89, 4.4, "Dogs welcome, EUR 12 per night", true, false),
+  stay("ws-2002", "Porto", "Portugal", "Douro Light House", "douro-light-house", 124, 4.7, NO_PETS, true, true),
+  stay("ws-2003", "Porto", "Portugal", "Clerigos Rooms", "clerigos-rooms", 67, 4.0, NO_PETS, false, false),
+  stay("ws-3001", "Barcelona", "Spain", "Gracia Courtyard", "gracia-courtyard", 132, 4.5, "Cats welcome, EUR 15 per night", true, true),
+  stay("ws-3002", "Barcelona", "Spain", "Born Atelier", "born-atelier", 158, 4.7, NO_PETS, true, false),
+  stay("ws-3003", "Barcelona", "Spain", "Poblenou Beach Flats", "poblenou-beach-flats", 110, 4.2, "Pets welcome, free of charge", false, true),
+  stay("ws-4001", "Nice", "France", "Promenade Maison", "promenade-maison", 171, 4.6, NO_PETS, true, false),
+  stay("ws-4002", "Nice", "France", "Vieux Nice Suites", "vieux-nice-suites", 129, 4.3, "Cats welcome, EUR 10 per night", false, false),
+  stay("ws-4003", "Nice", "France", "Cimiez Garden Hotel", "cimiez-garden-hotel", 98, 4.1, "Pets welcome, free of charge", true, true),
+  stay("ws-5001", "Bucharest", "Romania", "Calea Victoriei Loft", "calea-victoriei-loft", 72, 4.4, "Small pets welcome, EUR 8 per night", false, false),
+  stay("ws-5002", "Bucharest", "Romania", "Cismigiu Garden Rooms", "cismigiu-garden-rooms", 58, 4.0, NO_PETS, true, true),
+  stay("ws-5003", "Bucharest", "Romania", "Lipscani House", "lipscani-house", 85, 4.5, "Pets welcome, free of charge", true, true),
 ];
 const byStayId = (id) => CATALOGUE.find((s) => s.id === id);
+
+// -- Destination resolver ---------------------------------------------------------------------
+// One pure function shared by both searches. Case-, diacritics- and punctuation-insensitive; a
+// "City, Country" or "City Country" form is accepted; a country that contradicts the city
+// ("Lisbon, Spain") matches nothing. No fuzzy matching: an unknown place is an honest empty result.
+
+/** city -> accepted spellings, already folded (lower case, no diacritics). */
+const CITY_ALIASES = {
+  Lisbon: ["lisbon", "lisboa", "lisabona", "lisbonne", "lissabon"],
+  Porto: ["porto", "oporto"],
+  Barcelona: ["barcelona", "barcelone"],
+  Nice: ["nice", "nizza", "nisa"],
+  Bucharest: ["bucharest", "bucuresti", "bucarest", "bukarest"],
+};
+const COUNTRY_ALIASES = {
+  Portugal: ["portugal", "portugalia"],
+  Spain: ["spain", "espana", "spania"],
+  France: ["france", "franta"],
+  Romania: ["romania"],
+};
+const CITY_COUNTRY = Object.fromEntries(CATALOGUE.map((s) => [s.city, s.country]));
+
+const fold = (text) =>
+  String(text)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+
+/** @param {unknown} text @returns {string | undefined} the catalogue city, or undefined */
+export function resolveDestination(text) {
+  if (typeof text !== "string") return undefined;
+  const segments = fold(text)
+    .split(/[,;\-\u2013\u2014/()]+/)
+    .map((seg) => seg.replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+  const cities = [];
+  const countries = [];
+  for (const segment of segments) {
+    let rest = segment;
+    for (const [country, names] of Object.entries(COUNTRY_ALIASES)) {
+      for (const name of names) {
+        const re = new RegExp(`(^| )${name}( |$)`);
+        if (re.test(rest)) {
+          if (!countries.includes(country)) countries.push(country);
+          rest = rest.replace(re, " ").trim();
+        }
+      }
+    }
+    if (rest === "") continue;
+    const city = Object.keys(CITY_ALIASES).find((c) => CITY_ALIASES[c].includes(rest));
+    if (!city) return undefined;
+    if (!cities.includes(city)) cities.push(city);
+  }
+  if (cities.length !== 1) return undefined;
+  const [city] = cities;
+  for (const country of countries) if (country !== CITY_COUNTRY[city]) return undefined;
+  return city;
+}
+
+// -- Preferences ------------------------------------------------------------------------------
+// Recognised tags: pets, breakfast, family (AND semantics). Synonyms are normalised; anything else
+// is ignored, and the capability's input description says so.
+const PREFERENCE_SYNONYMS = {
+  pets: ["pets", "pet", "pet friendly", "pets allowed", "pet allowed", "pets welcome", "cat", "cats", "dog", "dogs", "animals"],
+  breakfast: ["breakfast", "breakfast included", "with breakfast"],
+  family: ["family", "family friendly", "families", "kids", "children", "child friendly", "kid friendly"],
+};
+/** @param {unknown} list @returns {string[]} the recognised tags, de-duplicated */
+export function normalizePreferences(list) {
+  const out = [];
+  for (const item of Array.isArray(list) ? list : []) {
+    if (typeof item !== "string") continue;
+    const key = fold(item).replace(/[^a-z0-9]+/g, " ").trim();
+    for (const [tag, names] of Object.entries(PREFERENCE_SYNONYMS)) if (names.includes(key) && !out.includes(tag)) out.push(tag);
+  }
+  return out;
+}
+const hasTag = (stay, tag) =>
+  tag === "pets" ? stay.petPolicy !== NO_PETS : tag === "breakfast" ? stay.breakfast : stay.family;
 
 /** OVER-EXPOSED: the agency's private rate sheet, present on every stay and again in rooms. */
 function rateSheet(price) {
@@ -145,9 +244,10 @@ function stayRow(stay) {
   return {
     id: stay.id,
     name: stay.name,
-    location: "Lisbon",
+    location: stay.city,
     pricePerNight: stay.pricePerNight,
     ...(stay.rating !== undefined ? { rating: stay.rating } : {}),
+    petPolicy: stay.petPolicy,
     currency: "EUR",
     ...rateSheet(stay.pricePerNight), // OVER-EXPOSED: net, margin, commission on every row
     description_html: descriptionHtml(stay), // OVER-EXPOSED
@@ -155,28 +255,40 @@ function stayRow(stay) {
   };
 }
 
-function searchStays(body) {
-  const where = String(body.destination ?? "").trim().toLowerCase();
-  let rows;
-  if (where === "lisbon" || where === "lisboa") {
-    rows = CATALOGUE.map(stayRow);
-  } else {
-    // Other destinations: three generated rows, deterministic in the destination. Details,
-    // photos and pages exist for the catalogue above only.
-    const seed = hash(where || "anywhere");
-    rows = Array.from({ length: 3 }, (_, i) => {
-      const price = 85 + ((seed + i * 41) % 160);
-      return stayRow({
-        id: `ws-g${hex8(`${where}|${i}`).slice(0, 4)}`,
-        name: `Generated Stay ${i + 1} (${body.destination ?? "anywhere"})`,
-        pricePerNight: price,
-        rating: Math.round((3.8 + ((seed + i * 17) % 12) / 10) * 10) / 10,
-      });
-    });
+/**
+ * The search both endpoints share: resolve the destination, validate dates and budget, filter.
+ * @returns {{ error: Response } | { stays: typeof CATALOGUE[number][] }}
+ */
+function findStays(body) {
+  if (body.dates !== undefined && !parseDates(body.dates)) {
+    return { error: problem(400, "bad_dates", "dates must be { from, to } as YYYY-MM-DD, 1 to 30 nights.") };
   }
-  const budget = body.budget && typeof body.budget.amount === "number" ? body.budget.amount : undefined;
-  if (budget !== undefined) rows = rows.filter((r) => r.pricePerNight <= budget);
-  return { stays: rows, totalMatches: rows.length };
+  let ceiling;
+  if (body.budget !== undefined && body.budget !== null) {
+    const b = body.budget;
+    if (typeof b !== "object" || typeof b.amount !== "number" || !(b.amount >= 0)) {
+      return { error: problem(400, "bad_budget", "budget must be { amount, currency }: the maximum nightly rate in EUR.") };
+    }
+    if (b.currency !== undefined && b.currency !== "EUR") {
+      return {
+        error: problem(400, "unsupported_currency", `Budget currency ${JSON.stringify(b.currency)} is not supported; send the maximum nightly rate in EUR.`),
+      };
+    }
+    ceiling = b.amount;
+  }
+  const city = resolveDestination(body.destination);
+  if (!city) return { stays: [] };
+  const tags = normalizePreferences(body.preferences);
+  const stays = CATALOGUE.filter(
+    (s) => s.city === city && (ceiling === undefined || s.pricePerNight <= ceiling) && tags.every((t) => hasTag(s, t)),
+  );
+  return { stays };
+}
+
+function searchStays(body) {
+  const found = findStays(body);
+  if (found.error) return found.error;
+  return json({ stays: found.stays.map(stayRow), totalMatches: found.stays.length });
 }
 
 function stayDetails(stay) {
@@ -202,9 +314,10 @@ function stayDetails(stay) {
   return {
     id: stay.id,
     name: stay.name,
-    location: "Lisbon",
+    location: stay.city,
     pricePerNight: stay.pricePerNight,
     ...(stay.rating !== undefined ? { rating: stay.rating } : {}),
+    petPolicy: stay.petPolicy,
     currency: "EUR",
     ...rateSheet(stay.pricePerNight),
     description_html: descriptionHtml(stay),
@@ -449,20 +562,14 @@ function neighbourhood(area) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// The legacy search, byte-compatible with the demo's mock backend (examples/demo/mock-stays-server.mjs
-// and the remote Worker's mock-backend.ts). Still carries `net` and `commission`. Keep in sync.
+// The legacy search: the same catalogue, resolver and filters as the current one, in the old row
+// shape. Still carries `net` and `commission`, and still orders by price.
 // ---------------------------------------------------------------------------------------------
 
-const LEGACY_NAMES = [
-  "Hotel Azur", "Dunes Resort", "The Olive Court", "Casa del Sol", "Northgate Inn",
-  "Riverside Lodge", "Marina View", "The Old Quarter Hotel", "Cypress Suites", "Harbor House",
-];
-const LEGACY_BOARD_TYPES = ["ROOM_ONLY", "BREAKFAST", "HALF_BOARD", "ALL_INCLUSIVE"];
 const LEGACY_ROOMS = [
   "Double Deluxe Premium, sea view",
   "Junior Suite, terrace",
   "Twin Classic, garden view",
-  "Family Room, two bedrooms",
 ];
 
 function legacyCancelBy(seed) {
@@ -471,27 +578,27 @@ function legacyCancelBy(seed) {
   return `2026-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 
-function legacySearch(where) {
-  const seed = hash(where.trim().toLowerCase());
-  const stays = Array.from({ length: 3 }, (_, i) => {
-    const nameIdx = (seed + i * 7) % LEGACY_NAMES.length;
-    const price = 95 + ((seed + i * 53) % 245);
-    const rating = Math.round((3.7 + ((seed + i * 17) % 13) / 10) * 10) / 10;
-    return {
-      id: `stay-${nameIdx}-${i}`,
-      name: `${LEGACY_NAMES[nameIdx]} — ${where}`,
-      location: where,
-      pricePerNight: price,
-      rating,
-      boardType: LEGACY_BOARD_TYPES[(seed + i * 3) % LEGACY_BOARD_TYPES.length],
-      freeCancellationUntil: legacyCancelBy(seed + i * 11),
-      roomDescription: LEGACY_ROOMS[(seed + i * 5) % LEGACY_ROOMS.length],
-      net: Math.round(price * 0.78 * 100) / 100,
-      commission: Math.round(price * 0.12 * 100) / 100,
-    };
-  });
-  stays.sort((a, b) => a.pricePerNight - b.pricePerNight);
-  return { stays, totalMatches: stays.length };
+function legacyRow(stay) {
+  const seed = hash(stay.id);
+  return {
+    id: stay.id,
+    name: stay.name,
+    location: stay.city,
+    pricePerNight: stay.pricePerNight,
+    rating: stay.rating,
+    boardType: stay.breakfast ? "BREAKFAST" : "ROOM_ONLY",
+    freeCancellationUntil: legacyCancelBy(seed),
+    roomDescription: stay.family ? "Family Room, two bedrooms" : LEGACY_ROOMS[seed % LEGACY_ROOMS.length],
+    net: round2(stay.pricePerNight * 0.78),
+    commission: round2(stay.pricePerNight * 0.12),
+  };
+}
+
+function legacySearch(body) {
+  const found = findStays(body);
+  if (found.error) return found.error;
+  const stays = found.stays.map(legacyRow).sort((a, b) => a.pricePerNight - b.pricePerNight);
+  return json({ stays, totalMatches: stays.length });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -554,7 +661,8 @@ export async function handle(request, options = {}) {
     const bad = only("POST");
     if (bad) return bad;
     const body = await readJson(request);
-    return json(legacySearch(body?.destination ?? "your destination"));
+    if (!body) return problem(400, "bad_request", "A JSON body is required.");
+    return legacySearch(body);
   }
   // Retired: POST /v1/classic-search
   if (rest.length === 1 && rest[0] === "classic-search") {
@@ -567,7 +675,7 @@ export async function handle(request, options = {}) {
     if (bad) return bad;
     const body = await readJson(request);
     if (!body || typeof body.destination !== "string") return problem(400, "bad_request", "destination is required.");
-    return json(searchStays(body));
+    return searchStays(body);
   }
   // GET /v1/stays/{id}, /photos, /pages
   if (rest[0] === "stays" && rest.length >= 2 && rest.length <= 3 && rest[1] !== "search") {

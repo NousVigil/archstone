@@ -15,6 +15,7 @@ binding:
       location: "$.location"
       pricePerNight: "$.pricePerNight"
       rating: "$.rating"
+      petPolicy: "$.petPolicy"
       rooms: "$.rooms"
 
   # What the synthetic API last returned for the fixture's request (recorded: paths and types, never values).
@@ -22,7 +23,7 @@ binding:
   # detected, and they are still never forwarded to a model.
   contract:
     source: recorded
-    fingerprint: "sha256:6976597657f0731f95ca45e049418e8498dedae47446dc590f6d558ee9f1dbf5"
+    fingerprint: "sha256:1ed3fe20db84ceb98b34b82d5af0935e18776cb7fe3a68918b5cd7c3da2f40f5"
     shape:
       "$": object
       "$.commission": number
@@ -39,6 +40,7 @@ binding:
       "$.margin": number
       "$.name": string
       "$.net": number
+      "$.petPolicy": string
       "$.pricePerNight": number
       "$.rating": number
       "$.rooms": array

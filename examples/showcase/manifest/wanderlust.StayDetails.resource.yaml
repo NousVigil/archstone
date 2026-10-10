@@ -15,6 +15,10 @@ resource:
       type: quantity
       required: false
       description: "Guest review score, when available."
+    petPolicy:
+      type: text
+      required: false
+      description: "The stay's pet policy, e.g. cats welcome with a nightly fee, or no pets."
     rooms:
       collection: Room
       description: "The room types on offer."

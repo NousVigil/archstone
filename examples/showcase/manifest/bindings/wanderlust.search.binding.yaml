@@ -17,6 +17,7 @@ binding:
       location: "$.location"
       pricePerNight: "$.pricePerNight"
       rating: "$.rating"
+      petPolicy: "$.petPolicy"
 
   extract:
     totalMatches: "$.totalMatches"
@@ -26,7 +27,7 @@ binding:
   # detected, and they are still never forwarded to a model.
   contract:
     source: recorded
-    fingerprint: "sha256:aa7724b3ef6643421bc196c9b75451c3de99db6e9b5ec0e35ca80f91b0c5c256"
+    fingerprint: "sha256:24330230c689b2a45ea450a7851ac760c55707412b314fdf6dc9c507d5d4a04b"
     shape:
       "$": object
       "$.stays": array
@@ -42,6 +43,7 @@ binding:
       "$.stays[].margin": number
       "$.stays[].name": string
       "$.stays[].net": number
+      "$.stays[].petPolicy": string
       "$.stays[].pricePerNight": number
       "$.stays[].rating": number
       "$.totalMatches": number

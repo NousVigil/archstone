@@ -77,7 +77,7 @@ paths:
   /v1/stays/search:
     post:
       summary: Search stays (agency's own order)
-      description: Rows carry id, name, location, pricePerNight, rating, plus OVER-EXPOSED net, margin, commission, description_html and hostContact.
+      description: Rows carry id, name, location, pricePerNight, rating, petPolicy, plus OVER-EXPOSED net, margin, commission, description_html and hostContact.
       requestBody:
         content:
           application/json:
@@ -85,10 +85,11 @@ paths:
               type: object
               required: [destination]
               properties:
-                destination: { type: string }
+                destination: { type: string, description: "A catalogue city, tolerant of case, diacritics, aliases (Lisboa, Bucuresti) and a country (Lisbon, Portugal). An unknown place returns an empty list." }
                 dates: { $ref: "#/components/schemas/Dates" }
                 travelers: { $ref: "#/components/schemas/Party" }
-                budget: { $ref: "#/components/schemas/Money" }
+                budget: { allOf: [{ $ref: "#/components/schemas/Money" }], description: "Maximum nightly rate, in EUR. Another currency is 400." }
+                preferences: { type: array, items: { type: string }, description: "Tags a stay must all satisfy: pets (pet-friendly, cat, dog), breakfast, family. Others are ignored." }
       responses:
         "200": { description: "{ stays: [...], totalMatches }" }
   /v1/stays/{stayId}:
@@ -204,7 +205,7 @@ paths:
         "200": { description: The area }
   /v1/search:
     post:
-      summary: Legacy search, byte-compatible with the demo's mock backend (still carries net and commission)
+      summary: Legacy search over the same catalogue, resolver and filters, in the old row shape (still carries net and commission)
       requestBody:
         content:
           application/json:
@@ -212,6 +213,9 @@ paths:
               type: object
               properties:
                 destination: { type: string }
+                dates: { $ref: "#/components/schemas/Dates" }
+                budget: { allOf: [{ $ref: "#/components/schemas/Money" }], description: "Maximum nightly rate, in EUR." }
+                preferences: { type: array, items: { type: string } }
       responses:
         "200": { description: "{ stays: [...], totalMatches }" }
   /v1/classic-search:

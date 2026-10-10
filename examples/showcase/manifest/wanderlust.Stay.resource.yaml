@@ -14,6 +14,10 @@ resource:
     pricePerNight:
       type: quantity
       description: "Nightly rate in euro."
+    petPolicy:
+      type: text
+      required: false
+      description: "The stay's pet policy, e.g. cats welcome with a nightly fee, or no pets."
     rating:
       type: quantity
       required: false
