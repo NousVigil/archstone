@@ -1,5 +1,5 @@
 {
-  "$comment": "One row per scenario: the single table the tests, the documentation and any front end read. Everything is invented; no row names a real business or person. See README.md for the field reference.",
+  "$comment": "One row per scenario: the single table the tests, the documentation and any front end read. Everything is invented; no row names a real business or person. See README.md for the field reference. Each prompt (copy.en.ask) is meant to be pasted alone into a fresh conversation, so it names the stay, dates, guests and ids it needs; none leans on an earlier turn. A row with a key (A or B) may carry an optional ownAi note: what a visitor's own AI app, connected without a key, will see.",
   "version": 1,
   "clock": "2027-05-01T10:07:00Z",
   "keys": {
@@ -77,7 +77,7 @@
       "issueUrl": null,
       "copy": {
         "en": {
-          "ask": "Tell me more about Casa Alfama.",
+          "ask": "Tell me more about Casa Alfama in Lisbon: its rooms and amenities.",
           "happens": "Rooms, and what each room offers.",
           "refused": "Past guests' passport numbers and phone numbers are never shown, at any level. The raw page code of the description is left out too."
         },
@@ -240,6 +240,10 @@
         }
       ],
       "outcome": "success",
+      "ownAi": {
+        "en": "Your own AI app connects without a key unless it lets you set an Authorization header, so this booking is refused for lack of a key, before the agency is asked. The page's \"Run it live\" button sends the published demo key instead, and the booking goes through.",
+        "ro": ""
+      },
       "anchor": "/demo/how-it-works#s-06",
       "test": {
         "file": "examples/showcase/test/manifests.test.ts",
@@ -249,7 +253,7 @@
       "issueUrl": null,
       "copy": {
         "en": {
-          "ask": "Book that quote for Ana Pop (with the public demo key).",
+          "ask": "Quote Casa Alfama for two adults, 12-15 May 2027, then book that quote for Ana Pop.",
           "happens": "A booking number, at the price that was quoted.",
           "refused": "Without the key, or with one nobody listed, Archstone's rules refuse the call before the agency is asked. Archstone does not check keys itself; once its rules let a call through, the agency checks the key and the quote."
         },
@@ -304,6 +308,10 @@
         }
       ],
       "outcome": "refused",
+      "ownAi": {
+        "en": "Your own AI app connects without a key, so it is refused for lack of a key here too, before the agency is asked. \"Run it live\" sends the second published demo key, which the rules name as blocked.",
+        "ro": ""
+      },
       "anchor": "/demo/how-it-works#s-07",
       "test": {
         "file": "examples/showcase/test/manifests.test.ts",
@@ -313,7 +321,7 @@
       "issueUrl": null,
       "copy": {
         "en": {
-          "ask": "Book that quote, using the second public key (the blocked one).",
+          "ask": "Quote Casa Alfama for two adults, 12-15 May 2027, then book that quote for Ana Pop. Use the second public demo key, the blocked one.",
           "happens": "Refused by Archstone's rules before the agency is asked: this caller is not allowed to book.",
           "refused": "The blocked key is refused for paying and cancelling too. A caller nobody listed is refused the same way, and a rule that cannot be checked refuses rather than guesses."
         },
@@ -338,6 +346,10 @@
       },
       "key": "A",
       "outcome": "success",
+      "ownAi": {
+        "en": "Your own AI app connects without a key unless it lets you set an Authorization header, so the cancellation is refused for lack of a key. \"Run it live\" sends the published demo key instead.",
+        "ro": ""
+      },
       "anchor": "/demo/how-it-works#s-08",
       "test": {
         "file": "examples/showcase/test/manifests.test.ts",
@@ -347,7 +359,7 @@
       "issueUrl": null,
       "copy": {
         "en": {
-          "ask": "Cancel booking B-0000cafe.",
+          "ask": "Cancel booking B-0000cafe (Casa Alfama, 12-15 May 2027). I am sure, go ahead.",
           "happens": "The cancellation goes through, and the refund is the booking's own total.",
           "refused": "It needs the agency key and an allowed caller, like booking: Archstone's rules refuse a missing key before the agency is asked. Archstone does not pause it. The manifest says a person should approve it, but this version does not enforce that; any confirmation comes from your AI app, not from Archstone."
         },
@@ -416,6 +428,10 @@
         }
       ],
       "outcome": "success",
+      "ownAi": {
+        "en": "Your own AI app connects without a key unless it lets you set an Authorization header, so the booking, and with it the payment, is refused for lack of a key. \"Run it live\" sends the published demo key instead.",
+        "ro": ""
+      },
       "anchor": "/demo/how-it-works#s-09",
       "test": {
         "file": "examples/showcase/test/manifests.test.ts",
@@ -425,7 +441,7 @@
       "issueUrl": null,
       "copy": {
         "en": {
-          "ask": "Pay for the booking with the demo card.",
+          "ask": "Book Casa Alfama for Ana Pop, two adults, 12-15 May 2027, and pay for it with the demo card.",
           "happens": "The payment goes through for a booking the agency quoted a moment ago.",
           "refused": "A payment needs the agency key and an allowed caller (Archstone's rules refuse otherwise), and a price the agency quoted a moment ago, and the agency checks that, not Archstone. Archstone's checks flag a payment action declared without safeguards; they warn and do not block."
         },
@@ -491,7 +507,7 @@
       "issueUrl": null,
       "copy": {
         "en": {
-          "ask": "Check availability for every weekend in June.",
+          "ask": "Check whether Casa Alfama is free on every weekend in June 2027.",
           "happens": "The first few checks answer, then a polite refusal.",
           "refused": "Too many requests too fast are refused. On the live demo the limit is approximate."
         },
@@ -534,7 +550,7 @@
       "issueUrl": null,
       "copy": {
         "en": {
-          "ask": "Search Lisbon with the older search.",
+          "ask": "Search Lisbon for two, 12-15 May 2027, using the older, original search rather than the current one.",
           "happens": "It works, with a note that it is being phased out. The note is in the tool's description, which your AI reads before it calls.",
           "refused": "The oldest search is switched off and is refused."
         },

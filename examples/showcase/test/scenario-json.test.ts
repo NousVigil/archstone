@@ -71,6 +71,22 @@ describe("AC-1.10: the scenario table", () => {
     }
   });
 
+  it("makes every live prompt stand alone: it names the stay or booking it is about", () => {
+    for (const r of rows.filter((x) => x.mode === "live" && !["S-14", "S-23"].includes(x.id))) {
+      expect(r.copy.en.ask, r.id).toMatch(/Casa Alfama|Pensão Azul|Lisbon|B-0000cafe/);
+      expect(r.copy.en.ask, r.id).not.toMatch(/\bwith the public demo key\b/i);
+    }
+  });
+
+  it("explains the keyless own-AI case on every row that needs a key", () => {
+    for (const r of rows.filter((x) => x.mode === "live" && x.key !== "none")) {
+      expect(r.ownAi?.en, r.id).toMatch(/without a key|for lack of a key/);
+      expect(r.ownAi?.en, r.id).toMatch(/Run it live/);
+      expect(r.ownAi?.en, r.id).not.toMatch(/[`{}<>[\]_]/);
+    }
+    for (const r of rows.filter((x) => x.key === "none")) expect(r.ownAi, r.id).toBeUndefined();
+  });
+
   it("keeps the card copy plain: no tool names, field names, code or reason codes", () => {
     for (const r of rows) {
       for (const text of Object.values(r.copy.en)) {
