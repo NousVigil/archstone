@@ -6,7 +6,7 @@ capability:
   input:
     stayId:
       type: identifier
-      description: "A stay id from wanderlust.search."
+      description: "The stay's id: the `id` field of a row returned by wanderlust_search (it looks like `ws-1001`), never the stay's name. To find a stay the user names, first call wanderlust_search with that name as `destination`."
 
   output:
     pages:
