@@ -35,3 +35,12 @@ seconds, below the hosted demo's per-IP edge limit. A full run takes several min
 Raw streams are kept in `runs/<timestamp>/` next to `report.md` (git-ignored). It is not part of CI or
 of `pnpm test`: a model's phrasing varies from run to run. The deterministic counterpart that CI runs
 is [`../test/conversations.test.ts`](../test/conversations.test.ts).
+
+**Input refusals.** The runtime validates a tool's arguments against its declared input contract
+before any backend call and refuses a mismatch (`_meta["dev.archstone/input_invalid"]`). The report
+counts these per prompt in their own column and section, with each refused path and what was
+expected, and they are always flagged: a visitor's natural phrasing was refused, which is a reason to
+widen the showcase's declared inputs or sharpen their descriptions (never to loosen the runtime).
+The `claude` CLI's stream keeps only a tool result's text, so unless a stream carries the `_meta`,
+the script recognises a refusal from the runtime's fixed refusal text; if that wording changes the
+refusals still show up as ordinary tool-error flags until `inputProblems` in `run.mjs` is updated.

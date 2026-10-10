@@ -185,6 +185,7 @@ function readStream(raw) {
         if (c) {
           c.result = textOfContent(b.content);
           c.isError = b.is_error === true;
+          c.meta = b._meta ?? ev.tool_use_result?._meta;
         }
       }
     }
@@ -206,11 +207,32 @@ function staysIn(resultText) {
   }
 }
 
+// An input-contract refusal (#195). The runtime carries it as _meta["dev.archstone/input_invalid"]
+// = { problems: [{ path, expected }] } next to a text refusal, but the claude CLI's stream-json
+// keeps only the text of a tool result, so the _meta normally does not reach this script. We use
+// the _meta when a stream does carry it, and otherwise recognise the fixed refusal text
+// ("input for capability '<id>' does not match its declared contract: <path> (expected <x>); ...").
+// Limitation: detection by text depends on the runtime's wording; if that wording changes, these
+// refusals fall back to being counted as ordinary tool errors (still flagged) until updated here.
+const INPUT_INVALID_KEY = "dev.archstone/input_invalid";
+const REFUSAL_TEXT = /^input for capability '[^']*' does not match its declared contract: (.*?)(?:; further problems omitted)?\.?$/s;
+
+/** @returns {{ path: string, expected: string }[] | undefined} the refused paths, or undefined if not a refusal */
+function inputProblems(call) {
+  const fromMeta = call.meta?.[INPUT_INVALID_KEY]?.problems;
+  if (Array.isArray(fromMeta)) return fromMeta.map((p) => ({ path: String(p.path), expected: String(p.expected) }));
+  if (!call.isError || typeof call.result !== "string") return undefined;
+  const m = REFUSAL_TEXT.exec(call.result.trim());
+  if (!m) return undefined;
+  return [...m[1].matchAll(/(\S+) \(expected (.+?)\)(?=; |$)/g)].map((x) => ({ path: x[1], expected: x[2] }));
+}
+
 const catalogueNames = new Set(CATALOGUE.map((s) => s.name));
 const catalogueIds = new Set(CATALOGUE.map((s) => s.id));
 
 function analyse(prompt, parsed, run) {
   const flags = [];
+  const one = (t) => String(t).replace(/\s+/g, " ").trim().slice(0, 160);
   if (run.timedOut) flags.push(`the claude run timed out after ${PROMPT_TIMEOUT_MS / 1000}s`);
   else if (run.code !== 0) flags.push(`claude exited with code ${run.code}: ${(parsed.answer || run.stderr || "no output").trim().slice(0, 200)}`);
   if (parsed.mcpStatus !== undefined && parsed.mcpStatus !== "connected") flags.push(`the MCP server was "${parsed.mcpStatus}", not connected`);
@@ -219,6 +241,12 @@ function analyse(prompt, parsed, run) {
   for (const c of parsed.calls) {
     if (c.result === undefined) {
       flags.push(`${c.name}: no result came back`);
+      continue;
+    }
+    const refused = inputProblems(c);
+    if (refused) {
+      // Its own category: never tolerated, because a visitor's natural phrasing was refused.
+      flags.push(`${c.name}: input refused by the declared contract: ${refused.map((p) => `${p.path} (expected ${p.expected})`).join("; ") || one(c.result ?? "")}`);
       continue;
     }
     if (c.isError && !prompt.tolerateErrors) flags.push(`${c.name}: tool error not intended by this prompt: ${c.result.replace(/\s+/g, " ").slice(0, 160)}`);
@@ -286,25 +314,43 @@ try {
 
 const one = (s, n = 140) => String(s).replace(/\s+/g, " ").trim().slice(0, n).replace(/\|/g, "\\|");
 const flagged = results.filter((r) => r.flags.length > 0);
+const refusedPrompts = results.filter((r) => r.parsed.calls.some((c) => inputProblems(c)));
 const lines = [
   "# Showcase conversation check",
   "",
   `- Endpoint: ${opts.url}`,
   `- Model: ${opts.model}`,
   `- Run: ${stamp}`,
-  `- Prompts: ${results.length}, flagged: ${flagged.length}`,
+  `- Prompts: ${results.length}, flagged: ${flagged.length}, with an input refusal: ${refusedPrompts.length}`,
   `- Raw streams: ${runDir}`,
   "",
   "A smoke check, not a gate: a model's phrasing varies. A flag is a reason to look, not proof of a bug.",
   "",
-  "| Prompt | Tool calls | Stays returned | Flags |",
-  "|---|---|---|---|",
+  "| Prompt | Tool calls | Stays returned | Input refused | Other flags |",
+  "|---|---|---|---|---|",
   ...results.map((r) => {
     const stays = r.parsed.calls.reduce((n, c) => n + staysIn(c.result ?? "").length, 0);
-    return `| ${r.prompt.id} | ${r.parsed.calls.map((c) => c.name).join(", ") || "none"} | ${stays} | ${r.flags.length} |`;
+    const refused = r.parsed.calls.filter((c) => inputProblems(c)).length;
+    return `| ${r.prompt.id} | ${r.parsed.calls.map((c) => c.name).join(", ") || "none"} | ${stays} | ${refused} | ${r.flags.length - refused} |`;
   }),
   "",
 ];
+if (refusedPrompts.length > 0) {
+  lines.push(
+    "## Input refusals",
+    "",
+    "A prompt's natural phrasing was refused by the declared input contract before reaching the backend. Decide whether to widen the contract (optional declared fields) or steer the model with descriptions; the runtime stays strict.",
+    "",
+  );
+  for (const r of refusedPrompts) {
+    lines.push(`### ${r.prompt.id}`, "", `> ${r.prompt.text}`, "");
+    for (const c of r.parsed.calls) {
+      const problems = inputProblems(c);
+      if (problems) lines.push(`- \`${c.name}\` sent ${one(JSON.stringify(c.input), 200)}`, ...problems.map((p) => `  - \`${p.path}\`: expected ${p.expected}`));
+    }
+    lines.push("");
+  }
+}
 if (flagged.length > 0) {
   lines.push("## Flags", "");
   for (const r of flagged) {

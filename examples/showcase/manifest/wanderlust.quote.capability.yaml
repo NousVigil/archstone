@@ -9,6 +9,7 @@ capability:
       description: "A stay id from wanderlust.search."
     dates:
       type: date-range
+      description: "Check-in and check-out as ISO dates (YYYY-MM-DD), 1 to 30 nights. Work out calendar dates yourself; prose such as 'next weekend' is refused."
     travelers:
       type: party
 

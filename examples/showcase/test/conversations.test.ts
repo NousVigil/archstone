@@ -7,6 +7,15 @@ import { describe, it, expect } from "vitest";
 import { CATALOGUE } from "../api/wanderlust-api.mjs";
 import { call, newContext, type RunContext } from "./harness";
 
+const INPUT_INVALID = "dev.archstone/input_invalid";
+/** The input contract refused this call before any backend work: the _meta is there, the backend saw nothing. */
+function expectRefusedBeforeBackend(ctx: RunContext, r: { isError?: boolean; _meta?: Record<string, unknown> }, callsBefore: number) {
+  expect(r.isError).toBe(true);
+  const meta = r._meta?.[INPUT_INVALID] as { problems?: { path: string; expected: string }[] } | undefined;
+  expect(meta?.problems?.length, "input_invalid problems").toBeGreaterThan(0);
+  expect(ctx.spy.calls.length, "backend calls").toBe(callsBefore);
+}
+
 const DATES = { from: "2027-05-14", to: "2027-05-16" }; // "next weekend", as ISO
 const PARTY = { adults: 2 };
 const NAMES = new Set(CATALOGUE.map((s) => s.name));
@@ -65,9 +74,10 @@ describe.each(SEARCHES)("%s: dates", (tool) => {
     expect(r.isError).toBeFalsy();
     expect(stays.length).toBe(4);
   });
-  it("a literal 'next weekend' is an error, not an ignored field", async () => {
+  it("a literal 'next weekend' is refused by the input contract, not an ignored field", async () => {
+    const before = ctx.spy.calls.length;
     const r = await call(ctx, tool, { destination: "Lisbon", dates: "next weekend", travelers: PARTY });
-    expect(r.isError).toBe(true);
+    expectRefusedBeforeBackend(ctx, r, before);
   });
 });
 
@@ -90,9 +100,25 @@ describe.each(SEARCHES)("%s: budget", (tool) => {
     const r = await call(ctx, tool, { destination: "Lisbon", dates: DATES, travelers: PARTY, budget: { amount: 150, currency: "USD" } });
     expect(r.isError).toBe(true);
   });
-  it.each([150, "150 EUR"])("a budget sent as %j is an error, not ignored", async (budget) => {
+  it.each([150, "150 EUR"])("a budget sent as %j is refused before the backend, not ignored", async (budget) => {
+    const before = ctx.spy.calls.length;
     const r = await call(ctx, tool, { destination: "Lisbon", dates: DATES, travelers: PARTY, budget });
-    expect(r.isError).toBe(true);
+    expectRefusedBeforeBackend(ctx, r, before);
+  });
+  it.each([
+    ["city", { city: "Lisbon" }],
+    ["checkIn/checkOut", { checkIn: "2027-05-12", checkOut: "2027-05-15" }],
+    ["guests", { guests: 2 }],
+    ["maxPrice", { maxPrice: 150 }],
+  ])("an undeclared key (%s) is refused before the backend, not dropped", async (_label, extra) => {
+    const before = ctx.spy.calls.length;
+    const r = await call(ctx, tool, { destination: "Lisbon", dates: DATES, travelers: PARTY, ...extra });
+    expectRefusedBeforeBackend(ctx, r, before);
+  });
+  it("negative travellers are refused before the backend", async () => {
+    const before = ctx.spy.calls.length;
+    const r = await call(ctx, tool, { destination: "Lisbon", dates: DATES, travelers: { adults: -1 } });
+    expectRefusedBeforeBackend(ctx, r, before);
   });
 });
 
@@ -106,6 +132,14 @@ describe.each(SEARCHES)("%s: preferences", (tool) => {
     expect(stays.map((s) => s.name).sort()).toEqual(petFriendly);
     expect(petFriendly.length).toBeGreaterThan(0);
     expect(petFriendly.length).toBeLessThan(4);
+  });
+
+  it("preferences is a declared input, so it is never refused", async () => {
+    const before = ctx.spy.calls.length;
+    const { r } = await search(ctx, tool, { destination: "Lisbon", preferences: ["pets", "sea view"] });
+    expect(r.isError).toBeFalsy();
+    expect(r._meta?.[INPUT_INVALID]).toBeUndefined();
+    expect(ctx.spy.calls.length).toBe(before + 1);
   });
 
   it("an unknown tag is ignored", async () => {
