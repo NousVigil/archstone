@@ -3,7 +3,7 @@
 // published scenario (`POST /run/{scenarioId}`), and the synthetic agency API and its images on the
 // same origin. It holds no storage and no per-visitor state beyond an in-memory rate-limit counter
 // that lives and dies with the isolate. See README.md.
-import { Registry, createMcpServer, callTool, type CallResult } from "@archstone/runtime";
+import { Registry, createMcpServer, callTool, toolDefinitions, type CallResult } from "@archstone/runtime";
 import { InMemoryRateLimitCounter, type RateLimitCounter } from "@archstone/emitter-support";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import type { IR } from "@archstone/compiler";
@@ -29,10 +29,21 @@ interface ScenarioRow {
   arguments: Record<string, unknown> | null;
   key: KeyLabel;
   setup?: { tool: string; key: KeyLabel; arguments: Record<string, unknown>; capture?: Record<string, string> }[];
+  /** More fixed calls made after the main one, each reported on its own (S-13's wrong-format price). */
+  alsoRun?: { label: string; tool: string; key: KeyLabel; arguments: Record<string, unknown> }[];
+  /** A fact the card relies on that lives in the tool list, not in a result (S-12's deprecation note). */
+  evidence?: { kind: "tool-description"; tool: string; where: string; phrase: string };
 }
 const scenarios = (scenarioDoc as unknown as { scenarios: ScenarioRow[] }).scenarios;
 
 const registry = new Registry(ir as IR);
+const descriptions = new Map(toolDefinitions(registry).map((d) => [d.name, d.description ?? ""]));
+
+/** The sentences of a tool description that contain `phrase` (case-insensitive): the excerpt a card relies on. */
+function excerptOf(description: string, phrase: string): string {
+  const hits = description.split(/(?<=[.!?])\s+/).filter((sentence) => sentence.toLowerCase().includes(phrase.toLowerCase()));
+  return hits.length > 0 ? hits.join(" ") : description;
+}
 
 // One counter per isolate (module scope). Approximate by construction; see RATE_LIMIT_NOTE.
 // It never prunes keys: per-visitor S-11 keys accumulate until the isolate is recycled (bounded by
@@ -195,6 +206,23 @@ export function createWorker(options: WorkerOptions = {}) {
     }
     const args = fill(row.arguments, captured) as Record<string, unknown>;
     const result: CallResult = await callTool(registry, row.tool, args, invoke);
+    // Extra fixed calls of the same scenario. Each is reported on its own and never changes `result`.
+    const alsoRun = [];
+    for (const extra of row.alsoRun ?? []) {
+      const extraResult = await callTool(registry, extra.tool, extra.arguments, { ...invoke, caller: scenarioCaller(extra.key) });
+      alsoRun.push({
+        label: extra.label,
+        tool: extra.tool,
+        arguments: extra.arguments,
+        caller: callerName(extra.key),
+        result: {
+          content: extraResult.content,
+          ...(extraResult.structuredContent !== undefined ? { structuredContent: extraResult.structuredContent } : {}),
+          ...(extraResult._meta !== undefined ? { _meta: extraResult._meta } : {}),
+          isError: extraResult.isError,
+        },
+      });
+    }
 
     const body = {
       scenario: row.id,
@@ -209,6 +237,20 @@ export function createWorker(options: WorkerOptions = {}) {
         ...(result._meta !== undefined ? { _meta: result._meta } : {}),
         isError: result.isError,
       },
+      ...(alsoRun.length > 0 ? { alsoRun } : {}),
+      // Requests that reached the synthetic agency during this run, setup steps included. The same
+      // number as the `x-showcase-backend-calls` header, in the body for a page that cannot read headers.
+      backendCalls: state.calls,
+      ...(row.evidence
+        ? {
+            evidence: {
+              kind: row.evidence.kind,
+              tool: row.evidence.tool,
+              where: row.evidence.where,
+              excerpt: excerptOf(descriptions.get(row.evidence.tool) ?? "", row.evidence.phrase),
+            },
+          }
+        : {}),
     };
     const res = Response.json(body);
     res.headers.set("x-showcase-backend-calls", String(state.calls));

@@ -220,7 +220,7 @@ describe("N-05 / AC-2.7: a quote books nothing", () => {
     const second = await s.run(row("S-05"));
     expect(first.result.isError).toBe(false);
     const quote = (first.result.structuredContent as { quote: Record<string, unknown> }).quote;
-    expect(Object.keys(quote).sort()).toEqual(["dates", "expiresAt", "nights", "quoteId", "stayId", "total"]);
+    expect(Object.keys(quote).sort()).toEqual(["dates", "expiresAt", "nights", "petFee", "pets", "quoteId", "stayId", "total"]);
     expect(JSON.stringify(first.result)).not.toMatch(/bookingId|"status"|paymentQuote/);
     // Stateless agency: there is no booking read to ask. What can be shown is that two quotes
     // are the same quote (nothing was consumed or created) and that no booking request was made.
@@ -287,6 +287,40 @@ describe("N-07 / AC-2.9: principal rules deny before the agency is asked", () =>
     const { result } = await s.run(row("S-06"));
     expect(result.isError).toBe(false);
     expect(s.spy.apiCalls()).toEqual(["POST /v1/quotes", "POST /v1/bookings"]);
+  });
+
+  // #201: the blocked key is not "blocked from booking only". Its principal is denied on the other
+  // two keyed actions too, by Archstone's policy, before the agency is asked.
+  const payArgs = { bookingId: "B-0000cafe", amount: { amount: 354, currency: "EUR" }, paymentQuote: "PQ-0-00000000" };
+  it.each([
+    ["wanderlust_pay", payArgs],
+    ["wanderlust_cancel", { bookingId: "B-0000cafe" }],
+  ])("N-07 the blocked key is denied principal_denied on %s, and the agency receives nothing", async (tool, args) => {
+    const s = session();
+    const result = await s.call(tool, args, "B");
+    expect(result.isError).toBe(true);
+    expect(reasonOf(result._meta)).toBe("principal_denied");
+    expect(s.spy.apiCalls()).toEqual([]);
+    const embedded = await s.execute(tool.replace("wanderlust_", "wanderlust."), args, "B");
+    expect(embedded.denial?.reason).toBe("principal_denied");
+    expect(s.spy.apiCalls()).toEqual([]);
+  });
+
+  it.each([
+    ["wanderlust_pay", payArgs],
+    ["wanderlust_cancel", { bookingId: "B-0000cafe" }],
+  ])("N-07 a principal on no list is denied principal_not_allowed on %s", async (tool, args) => {
+    const s = session();
+    const result = await s.call(tool, args, "other");
+    expect(reasonOf(result._meta)).toBe("principal_not_allowed");
+    expect(s.spy.apiCalls()).toEqual([]);
+  });
+
+  it("N-07 the allowed principal still cancels and its refund is the booking's total", async () => {
+    const s = session();
+    const result = await s.call("wanderlust_cancel", { bookingId: "B-0000cafe" }, "A");
+    expect(result.isError).toBe(false);
+    expect((result.structuredContent as { cancellation: { refund: { amount: number } } }).cancellation.refund.amount).toBe(354);
   });
 });
 
@@ -439,6 +473,14 @@ describe("N-12 / AC-2.13: deprecated still works with a note; retired is refused
     expect(definitions.get("tourism_search")!.description).toMatch(/deprecated: it is being phased out/i);
   });
 
+  it("N-12 the card says where the note lives, and the description contains the phrase it points at", () => {
+    const evidence = row("S-12").evidence!;
+    expect(evidence.tool).toBe(row("S-12").tool);
+    expect(evidence.where).toMatch(/tools\/list/);
+    expect(definitions.get(evidence.tool)!.description!.toLowerCase()).toContain(evidence.phrase);
+    expect(row("S-12").copy.en.happens).toMatch(/tool's description/);
+  });
+
   it("N-12 the retired search is denied lifecycle_blocked and the agency receives nothing", async () => {
     const s = session();
     const retired = row("S-12").negative!;
@@ -523,6 +565,15 @@ describe("N-13 / AC-2.14, AC-2.15: a failing backend is an error, a wrong-typed 
     expect(await s.execute("wanderlust.room-status", bad)).toEqual({ status: "violation", missing: [], invalid: [{ field: "pricePerNight", expected: "quantity" }] });
   });
 
+  it("N-13 the live scenario makes the wrong-format call too, and it is the declared negative's arguments", async () => {
+    const also = row("S-13").alsoRun!;
+    expect(also).toHaveLength(1);
+    expect(also[0].arguments).toEqual(row("S-13").negative!.arguments);
+    const s = session();
+    const result = await s.call(also[0].tool, also[0].arguments);
+    expect(result._meta?.[CONTRACT]).toMatchObject({ missing: [], invalid: [{ field: "pricePerNight", expected: "quantity" }] });
+  });
+
   it("N-13 (#176) a price sent as a bare string for a money field is a violation too, and the string is not passed on", async () => {
     // The string-price trigger: `wanderlust.quote` declares `total` as money, so "129.00" has no
     // currency and is not a money value. (`room-status.pricePerNight` is a quantity, not money.)
@@ -530,7 +581,7 @@ describe("N-13 / AC-2.14, AC-2.15: a failing backend is an error, a wrong-typed 
       intercept: (request) =>
         request.method === "POST" && new URL(request.url).pathname === "/v1/quotes"
           ? new Response(
-              JSON.stringify({ quoteId: "Q-1", stayId: "ws-1001", dates: { from: "2027-05-12", to: "2027-05-15" }, nights: 3, total: "129.00", expiresAt: "2027-05-12T10:00:00Z" }),
+              JSON.stringify({ quoteId: "Q-1", stayId: "ws-1001", dates: { from: "2027-05-12", to: "2027-05-15" }, nights: 3, total: "129.00", pets: 0, petFee: { amount: 0, currency: "EUR" }, expiresAt: "2027-05-12T10:00:00Z" }),
               { status: 200, headers: { "content-type": "application/json" } },
             )
           : undefined,
@@ -573,6 +624,32 @@ describe("N-14 / AC-2.16: deletion is not a tool", () => {
   });
 });
 
+describe("N-23 (#195): a wrong-shaped argument is refused before the agency is asked", () => {
+  const INPUT_INVALID = "dev.archstone/input_invalid";
+  it("N-23 the fixed malformed argument set is refused with its three problems and the agency receives nothing", async () => {
+    const s = session();
+    const { result } = await s.run(row("S-23"));
+    expect(result.isError).toBe(true);
+    const meta = result._meta?.[INPUT_INVALID] as { error: string; capability: string; problems: { path: string; expected: string }[] };
+    expect(meta).toMatchObject({ error: "input_invalid", capability: "wanderlust.search" });
+    expect(meta.problems.map((p) => p.path).sort()).toEqual(["dates", "destination", "travelers"]);
+    expect(s.spy.requests).toEqual([]);
+  });
+
+  it("N-23 the refusal never echoes a value that was sent", async () => {
+    const s = session();
+    const { result } = await s.run(row("S-23"));
+    expect(JSON.stringify(result)).not.toMatch(/\$ne|tomorrow|-1/);
+  });
+
+  it("N-23 the same arguments, made well-formed, reach the agency (the control)", async () => {
+    const s = session();
+    const ok = await s.call("wanderlust_search", { destination: "Lisbon", dates: { from: "2027-05-12", to: "2027-05-15" }, travelers: { adults: 2 } });
+    expect(ok.isError).toBe(false);
+    expect(s.spy.apiCalls()).toEqual(["POST /v1/stays/search"]);
+  });
+});
+
 describe("AC-2.17: the list of negative ids covered is complete", () => {
   const source = readFileSync(resolve(SHOWCASE_DIR, "test/negatives.test.ts"), "utf8");
   const covered = new Set([...source.matchAll(/\bit\("(N-\d\d)\b/g)].map((m) => m[1]));
@@ -580,8 +657,9 @@ describe("AC-2.17: the list of negative ids covered is complete", () => {
 
   it("every live scenario's negative is asserted in this file", () => {
     const live = rows.filter((r) => r.mode === "live").map((r) => r.negative!.id);
-    expect(live).toEqual(Array.from({ length: 14 }, (_, i) => `N-${String(i + 1).padStart(2, "0")}`).filter((id) => id !== "N-10"));
-    // N-10 does not exist (S-10 is the locked approval row); the other thirteen are covered here.
+    const upToFourteen = Array.from({ length: 14 }, (_, i) => `N-${String(i + 1).padStart(2, "0")}`).filter((id) => id !== "N-10");
+    expect(live).toEqual([...upToFourteen, "N-23"]);
+    // N-10 does not exist (S-10 is the locked approval row); the other fourteen are covered here.
     expect([...covered].sort()).toEqual(live.slice().sort());
   });
 

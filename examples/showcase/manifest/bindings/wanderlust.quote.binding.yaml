@@ -16,4 +16,6 @@ binding:
       dates: "$.dates"
       nights: "$.nights"
       total: "$.total"
+      pets: "$.pets"
+      petFee: "$.petFee"
       expiresAt: "$.expiresAt"

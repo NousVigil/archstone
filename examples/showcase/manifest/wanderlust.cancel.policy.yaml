@@ -1,0 +1,14 @@
+# Who may cancel. The same principals as booking: a caller the manifest denies or does not list is
+# refused by Archstone before the agency is asked. deny wins over allow.
+apiVersion: archstone/v1
+kind: Policy
+metadata:
+  id: wanderlust-cancel-principals
+  name: Who may cancel
+  scope: capability
+  capabilityId: wanderlust.cancel
+spec:
+  allow:
+    - "demo:visitor"
+  deny:
+    - "demo:blocked"

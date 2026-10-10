@@ -11,7 +11,7 @@ resource:
       description: "Always cancelled when the call succeeds."
     refund:
       type: money
-      description: "What is refunded."
+      description: "What is refunded: the booking's own total."
     cancelledAt:
       type: datetime
       description: "When the agency recorded the cancellation."

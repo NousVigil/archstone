@@ -86,7 +86,8 @@ function usage(problem) {
 function scenarioPrompts() {
   const doc = JSON.parse(readFileSync(resolve(here, "../scenarios.json"), "utf8"));
   return doc.scenarios
-    .filter((s) => s.mode === "live" && s.copy?.en?.ask)
+    // S-23 is a fixed malformed argument set on purpose; a model asked to send one would just fix it.
+    .filter((s) => s.mode === "live" && s.copy?.en?.ask && s.refusal !== "input_invalid")
     .map((s) => {
       /** @type {Prompt} */
       const p = { id: s.id, text: s.copy.en.ask };
@@ -114,6 +115,8 @@ const VARIANTS = [
   { id: "V-cat", text: "Find me a stay in Lisbon for two, 12-15 May 2027, under 150 EUR a night. We travel with my cat.", maxNightly: 150 },
   { id: "V-next-weekend", text: "Find me a stay in Lisbon for two next weekend." },
   { id: "V-romanian", text: "Caut un loc de cazare în Lisabona pentru doi, 12-15 mai 2027, sub 150 de euro pe noapte.", maxNightly: 150 },
+  { id: "V-by-name", text: "Is Pensão Azul free for two, 12-15 May 2027? What does it cost per night?" },
+  { id: "V-cat-quote", text: "We travel with our cat. Quote Casa Alfama for two adults, 12-15 May 2027, with the pet fee included." },
   { id: "V-unknown-city", text: "Find me a stay in Atlantis for two, 12-15 May 2027." },
   { id: "V-total-budget", text: "Find me a stay in Lisbon for two, 12-15 May 2027. My total budget for the whole stay is 400 EUR." },
 ];
@@ -255,6 +258,15 @@ function analyse(prompt, parsed, run) {
       if (typeof s.id === "string" && !catalogueIds.has(s.id)) flags.push(`${c.name}: stay id not in the catalogue: ${s.id}`);
       if (prompt.maxNightly !== undefined && typeof s.pricePerNight === "number" && s.pricePerNight > prompt.maxNightly) {
         flags.push(`${c.name}: ${s.name} is ${s.pricePerNight} EUR a night, over the stated ${prompt.maxNightly}`);
+      }
+    }
+    // A quote must expire after the moment it was issued (#201): flag one already in the past.
+    if (c.name === "wanderlust_quote" && !c.isError) {
+      try {
+        const expiresAt = Date.parse(JSON.parse(c.result)?.quote?.expiresAt);
+        if (Number.isFinite(expiresAt) && expiresAt < Date.now()) flags.push(`${c.name}: the quote was issued already expired (${new Date(expiresAt).toISOString()})`);
+      } catch {
+        /* not JSON: nothing to check */
       }
     }
     const usedId = c.input.stayId ?? c.input.propertyId;

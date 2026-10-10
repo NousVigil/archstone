@@ -16,8 +16,10 @@ empty temporary directory, with no built-in tools: the only tools the model can 
 Your user-level Claude settings still apply.
 
 **Prompts.** Every suggested prompt of a live scenario in [`../scenarios.json`](../scenarios.json),
-plus variants: "Lisbon, Portugal", "with my cat", "next weekend", a Romanian phrasing, a city that is
-not in the catalogue, and a total-stay budget.
+except S-23 (its malformed arguments are fixed on purpose; a model would only correct them), plus
+variants: "Lisbon, Portugal", "with my cat", a stay searched by its name, a quote with the cat's
+fee, "next weekend", a Romanian phrasing, a city that is not in the catalogue, and a total-stay
+budget.
 
 **Serial and paced.** One prompt at a time, spaced so the estimated POSTs stay under 15 per 10
 seconds, below the hosted demo's per-IP edge limit. A full run takes several minutes.
@@ -30,6 +32,7 @@ seconds, below the hosted demo's per-IP edge limit. A full run takes several min
   is no second list),
 - a price per night above a budget the prompt states,
 - an id the model used that the endpoint could not resolve,
+- a quote that comes back already expired,
 - a run that timed out, failed, or could not connect to the MCP server.
 
 Raw streams are kept in `runs/<timestamp>/` next to `report.md` (git-ignored). It is not part of CI or

@@ -32,9 +32,12 @@ Read the example for what it is:
   [#165](https://github.com/NousVigil/archstone/issues/165). HTML output is tracked in
   [#166](https://github.com/NousVigil/archstone/issues/166); until then the raw description is not
   sent at all.
-- **The agency checks the credential and the quote.** Archstone forwards the caller's token and cannot
-  judge it; the synthetic agency answers 401. A payment needs a quote the agency issued a moment ago;
-  the agency checks that, not Archstone. `archstone apply` warns about a payment declared without
+- **Who enforces what.** For `book`, `pay` and `cancel`, Archstone's *policy* runs first: a missing
+  credential, a caller the manifest denies (key B's principal) and a caller nobody listed (an unknown
+  key carries no principal) are refused before the agency is asked. Archstone never verifies a key
+  itself; it matches the principal the host asserted. Only a call the policy lets through reaches
+  the synthetic agency, which then judges the credential (401) and the quote. A payment needs a
+  quote the agency issued within the last 15 minutes; the agency checks that, not Archstone. `archstone apply` warns about a payment declared without
   safeguards, it does not block one (see [`manifest-variants/`](manifest-variants/)).
 
 ## The two demo keys are public
@@ -44,8 +47,8 @@ and published here on purpose:
 
 | Key | Principal (asserted by whoever hosts the server) | Meaning |
 |---|---|---|
-| `demo-public-key-visitor-0000` | `demo:visitor` | accepted by the agency, allowed to book |
-| `demo-public-key-blocked-0000` | `demo:blocked` | accepted by the agency, denied by the booking policy |
+| `demo-public-key-visitor-0000` | `demo:visitor` | accepted by the agency, allowed to book, pay and cancel |
+| `demo-public-key-blocked-0000` | `demo:blocked` | accepted by the agency, denied by Archstone's policy on book, pay and cancel alike |
 
 Anyone may use them. They unlock nothing but invented data. Never copy this pattern for a real
 credential.
@@ -81,9 +84,9 @@ reads `capabilities.yaml` from the directory it is given, and the other folders 
 | [`api/serve.mjs`](api/serve.mjs) | A Node `http` wrapper serving that same handler. |
 | [`api/wanderlust.openapi.yaml`](api/wanderlust.openapi.yaml) | A synthetic OpenAPI document describing every route, over-exposed fields included. |
 | [`credentials.mjs`](credentials.mjs) | The two public demo keys and their principals. |
-| [`manifest/`](manifest/) | The live manifest: 13 capabilities, resources, two policies, bindings, golden fixtures for `verify`. |
+| [`manifest/`](manifest/) | The live manifest: 13 capabilities, resources, four policies (principals for book, pay and cancel; the availability rate limit), bindings, golden fixtures for `verify`. |
 | [`manifest-variants/`](manifest-variants/) | Authoring fixtures that are never deployed. Today: the mis-declared payment. |
-| [`scenarios.json`](scenarios.json) | The scenario table, S-01 to S-22. |
+| [`scenarios.json`](scenarios.json) | The scenario table, S-01 to S-23. |
 | [`test/`](test/) | `api.test.ts`, `manifests.test.ts`, `scenario-json.test.ts`, the negative-scenario suite (`negatives.test.ts`, `denial-reasons.test.ts`, `tool-list.test.ts`), the shared `harness.ts` and `negatives-support.ts`, and for the recorded scenarios `recorded-s15.test.ts` to `recorded-s21.test.ts`, `recorded-determinism.test.ts` and `recorded.ts`. |
 | [`record/`](record/) | The recorder for S-15 to S-21 (`record.mjs`), one module per scenario, and the person's answers for S-20. |
 | [`conversations/`](conversations/) | The local conversation check (`pnpm showcase:conversations`): a real model drives the MCP endpoint. Not part of CI. |
@@ -99,12 +102,12 @@ reads `capabilities.yaml` from the directory it is given, and the other folders 
 | `wanderlust.stay-details` | read | stable | nested projection: stay, rooms, amenities |
 | `wanderlust.stay-photos` | read | stable | `image` list checked against `origins.images` |
 | `wanderlust.stay-page` | read | stable | `web-page` checked against `origins.pages` |
-| `wanderlust.quote` | write | stable | a price that expires; books nothing |
-| `wanderlust.book` | write | stable | `authenticated`, forwards `${caller.accessToken}`; policy allows `demo:visitor`, denies `demo:blocked` |
-| `wanderlust.cancel` | irreversible | stable | `authenticated`, `human-approval` declared, failures declared |
-| `wanderlust.pay` | irreversible | stable | as cancel, plus a payment quote the agency checks |
+| `wanderlust.quote` | write | stable | valid 15 minutes from when it is issued; optional `pets` (a count) itemises the stay's pet fee in the total; a stay with no pets refuses it; books nothing |
+| `wanderlust.book` | write | stable | `authenticated`, forwards `${caller.accessToken}`; policy allows `demo:visitor`, denies `demo:blocked`; books at the quoted total |
+| `wanderlust.cancel` | irreversible | stable | `authenticated`, the same principal policy as book, `human-approval` declared, failures declared; the refund is the booking's total |
+| `wanderlust.pay` | irreversible | stable | as cancel (the same principal policy), plus a payment quote the agency checks |
 | `wanderlust.availability` | read | beta | the only `rateLimit`: 3 calls per 60 seconds |
-| `wanderlust.room-status` | read | stable | `onError` rows; a wrong-typed price is a contract violation |
+| `wanderlust.room-status` | read | stable | `onError` rows; a wrong-typed price is a contract violation (reported as `invalid`) |
 | `wanderlust.neighbourhood` | read | experimental | unlisted, still callable by name |
 | `tourism.search` | read | deprecated | the original `tourism_search` tool; same input and filters as `wanderlust.search`, the old output shape (no ids) |
 | `tourism.search-classic` | read | retired | listed nowhere, refused when called |
@@ -126,8 +129,9 @@ Tool names are the capability ids with dots replaced by underscores (`wanderlust
 - `DELETE /v1/guests/{name}/bookings`, which works (with either key) and is bound by no capability.
 - A token check in the API itself (the two keys are accepted, anything else gets 401), and a quote or
   payment-quote check in the API (missing, expired or foreign quotes get 422).
-- One property whose room status contains an error row (`ws-1002`) and one whose price is the wrong
-  type (`ws-1003`).
+- Room status that is unwell on **one property and date each**, so it is usable everywhere else: an
+  error row for `ws-1002` on 2027-05-12 (`agency-busy`), and a wrong-typed price for `ws-1003` on
+  the same date. Pensão Azul's June weekends, for example, answer normally.
 
   Follow-up (#176): a `money` output value that is not `{amount: number, currency: "EUR"-shaped}`
   is now a shape mismatch, so a bare string such as `"129.00"` is rejected like any other wrong type
@@ -152,15 +156,28 @@ stays. So every id a search returns resolves on every follow-up tool (`test/api.
 - `petPolicy` is a declared field on the search rows and on stay details: e.g. "Cats welcome, EUR 10
   per night", or "No pets".
 - `dates` that are not an ISO range are a `400`, not silently ignored.
+- A destination may also be **a stay's exact name** ("Pensão Azul", "pensao azul", "Pensão Azul,
+  Lisbon"): the search then returns that stay only (the budget and preferences still apply). It is
+  exact after folding case and diacritics, never fuzzy: a wrong city or a near miss is an empty list.
+- A **quote** takes an optional `pets` count (0 to 4). The stay's `petPolicy` is where the fee comes
+  from ("EUR 10 per night" is per pet per night; "free of charge" is a fee of 0); the quote shows
+  `pets`, `petFee` and a `total` that includes it, and a booking from that quote is at that total. A
+  stay with "No pets" refuses a quote that declares pets (the agency's `422 pets_not_allowed`).
+- The agency's own page (`stay-page`) is the first link and sits on the origin the binding declares,
+  so it is returned; the "partner listing" is on an origin nothing declares, so it is withheld.
 
 `test/conversations.test.ts` runs the arguments a model sends for these phrasings, deterministically.
 `conversations/run.mjs` does the same with a real model against a live endpoint.
 
 ## Stateless and deterministic
 
-Nothing is stored. Quote ids, booking ids and payment quotes are hashes of their inputs plus the
-current 15-minute window; cancel and pay validate the *shape* of an id, not a record. "Time" is
-injected (`now`), so a fixed clock gives byte-identical output, and image URLs are built from a
+Nothing is stored. A quote id, and the payment quote returned with a booking, carry the instant they
+were issued (base 36) and a hash of their inputs: each is valid for 15 minutes **from that instant**,
+so it expires relative to the request, not on a fixed boundary, and `book` and `pay` refuse it once
+expired. A booking id carries its own total and a check over it, so `cancel` and `pay` recognise an id
+this agency issued without a record: an id it never issued is `404 booking_not_found`, and a
+cancellation refunds the booking's total (the seeded booking `B-0000cafe`, always known, is Casa
+Alfama for 12-15 May, EUR 354). "Time" is injected (`now`), so a fixed clock gives byte-identical output, and image URLs are built from a
 constant origin (`https://demo.archstone.dev`, the public demo Worker, which serves `/img/...`)
 rather than the request's address. The
 binding for `wanderlust.stay-photos` declares that origin; a host that serves the pictures elsewhere
@@ -168,11 +185,14 @@ changes the constant and the declaration together.
 
 ## The scenario table
 
-`scenarios.json` has one row per scenario, `S-01` to `S-22`, each exactly once. Fields: `id`, `negative`
+`scenarios.json` has one row per scenario, `S-01` to `S-23`, each exactly once. Fields: `id`, `negative`
 (the `N-xx` id and any overrides the negative call needs), `group`, `mode` (`live`, `recorded`, `locked`),
 `tool`, `capability`, `arguments`, `key` (`none`, `A`, `B`), optional `setup` steps (a call whose
-result a later argument needs, referenced as `"{{name}}"`), `outcome`, `anchor`, `test`, `issue` and
-`issueUrl` (only the two locked rows), and `copy` with English and Romanian slots (`ask`, `happens`,
+result a later argument needs, referenced as `"{{name}}"`), `outcome`, optional `refusal` (`input_invalid` on S-23: refused by the input contract, not by a
+policy), optional `alsoRun` (more fixed calls the live run makes and reports separately: S-13's
+wrong-format price), optional `evidence` (a fact the card relies on that lives in the tool list:
+S-12's deprecation note, with where it lives), `anchor`, `test`, `issue` and `issueUrl` (only the two
+locked rows), and `copy` with English and Romanian slots (`ask`, `happens`,
 `refused`). The Romanian slots exist and are empty. Live rows are run by `test/manifests.test.ts`;
 recorded rows get their tests with the recorder; the two locked rows run nothing.
 

@@ -1,6 +1,6 @@
 capability:
   id: wanderlust.book
-  description: "Book a quoted stay for a guest. Needs the agency key and a principal the manifest's policy allows."
+  description: "Book a quoted stay for a guest at the quoted total. Needs the agency key and a principal the manifest's policy allows: Archstone's policy refuses a missing key or a caller who is not allowed before the agency is asked; the agency then checks the key and the quote."
   effect: write
 
   input:

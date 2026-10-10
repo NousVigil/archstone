@@ -43,8 +43,8 @@
       "issueUrl": null,
       "copy": {
         "en": {
-          "ask": "Find me a stay in Lisbon for two, 12-15 May, under 150 EUR a night.",
-          "happens": "A list of stays with price and rating.",
+          "ask": "Find me a stay in Lisbon for two, 12-15 May, under 150 EUR a night. We travel with our cat.",
+          "happens": "A list of stays with price, rating and each stay's pet policy.",
           "refused": "The agency's private profit margin on each stay is never shown. The order is the agency's own; Archstone ranks nothing."
         },
         "ro": {
@@ -146,8 +146,8 @@
       "copy": {
         "en": {
           "ask": "Give me the official page for Casa Alfama.",
-          "happens": "A link to the hotel's page on the agency's own site.",
-          "refused": "A second link points somewhere the agency never declared: it is left out, and never opened."
+          "happens": "A link to the hotel's own page on the agency's own site.",
+          "refused": "A second link, to a partner site the agency never declared, is left out and never opened. You still get the official page."
         },
         "ro": {
           "ask": "",
@@ -187,7 +187,7 @@
       "copy": {
         "en": {
           "ask": "Quote Casa Alfama for 12-15 May, two adults.",
-          "happens": "A price, and a quote that expires.",
+          "happens": "A price, and a quote that is valid for 15 minutes.",
           "refused": "A quote books nothing. Whether the AI asks you first is up to the AI."
         },
         "ro": {
@@ -250,8 +250,8 @@
       "copy": {
         "en": {
           "ask": "Book that quote for Ana Pop (with the public demo key).",
-          "happens": "A booking number.",
-          "refused": "Without the key the call is refused. Archstone does not check who you are; the agency's own system does."
+          "happens": "A booking number, at the price that was quoted.",
+          "refused": "Without the key, or with one nobody listed, Archstone's rules refuse the call before the agency is asked. Archstone does not check keys itself; once its rules let a call through, the agency checks the key and the quote."
         },
         "ro": {
           "ask": "",
@@ -314,8 +314,8 @@
       "copy": {
         "en": {
           "ask": "Book that quote, using the second public key (the blocked one).",
-          "happens": "Refused: this caller is not allowed to book.",
-          "refused": "A caller nobody listed is refused too, and a rule that cannot be checked refuses rather than guesses."
+          "happens": "Refused by Archstone's rules before the agency is asked: this caller is not allowed to book.",
+          "refused": "The blocked key is refused for paying and cancelling too. A caller nobody listed is refused the same way, and a rule that cannot be checked refuses rather than guesses."
         },
         "ro": {
           "ask": "",
@@ -348,7 +348,7 @@
       "copy": {
         "en": {
           "ask": "Cancel booking B-0000cafe.",
-          "happens": "The cancellation goes through.",
+          "happens": "The cancellation goes through, and the refund is the booking's own total.",
           "refused": "Archstone does not pause it. The manifest says a person should approve it, but this version does not enforce that; any confirmation comes from your AI app, not from Archstone."
         },
         "ro": {
@@ -535,7 +535,7 @@
       "copy": {
         "en": {
           "ask": "Search Lisbon with the older search.",
-          "happens": "It works, with a note that it is being phased out.",
+          "happens": "It works, with a note that it is being phased out. The note is in the tool's description, which your AI reads before it calls.",
           "refused": "The oldest search is switched off and is refused."
         },
         "ro": {
@@ -543,6 +543,12 @@
           "happens": "",
           "refused": ""
         }
+      },
+      "evidence": {
+        "kind": "tool-description",
+        "tool": "tourism_search",
+        "where": "the tool description in tools/list",
+        "phrase": "deprecated"
       }
     },
     {
@@ -575,14 +581,25 @@
         "en": {
           "ask": "Is Pensão Azul free on 12 May?",
           "happens": "The rooms the agency could answer, and a clear marker for the one it could not because its system was busy.",
-          "refused": "A price in the wrong format is flagged as broken, not passed on as fine."
+          "refused": "A price in the wrong format is flagged as broken, not passed on as fine: the same question about another stay, whose price arrives in the wrong format, is reported as an invalid field."
         },
         "ro": {
           "ask": "",
           "happens": "",
           "refused": ""
         }
-      }
+      },
+      "alsoRun": [
+        {
+          "label": "wrong-format-price",
+          "tool": "wanderlust_room-status",
+          "key": "none",
+          "arguments": {
+            "propertyId": "ws-1003",
+            "date": "2027-05-12"
+          }
+        }
+      ]
     },
     {
       "id": "S-14",
@@ -848,6 +865,45 @@
           "ask": "HTML response: hotel descriptions with formatting.",
           "happens": "Planned: not available yet.",
           "refused": "Today the raw description is not sent at all."
+        },
+        "ro": {
+          "ask": "",
+          "happens": "",
+          "refused": ""
+        }
+      }
+    },
+    {
+      "id": "S-23",
+      "negative": {
+        "id": "N-23"
+      },
+      "group": "input",
+      "mode": "live",
+      "tool": "wanderlust_search",
+      "capability": "wanderlust.search",
+      "arguments": {
+        "destination": {
+          "$ne": 1
+        },
+        "dates": "tomorrow",
+        "travelers": -1
+      },
+      "key": "none",
+      "outcome": "refused",
+      "refusal": "input_invalid",
+      "anchor": "/demo/how-it-works#s-23",
+      "test": {
+        "file": "examples/showcase/test/manifests.test.ts",
+        "name": "S-23"
+      },
+      "issue": null,
+      "issueUrl": null,
+      "copy": {
+        "en": {
+          "ask": "Search with a place that is not a place, the dates as the word 'tomorrow' and a negative number of travellers.",
+          "happens": "Refused before the agency is asked: the three arguments that do not fit are named, and the agency gets no request at all.",
+          "refused": "Archstone checks every argument against the shape the manifest declares before it calls the agency. The values that were sent are not echoed back."
         },
         "ro": {
           "ask": "",
