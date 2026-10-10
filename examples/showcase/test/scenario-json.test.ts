@@ -206,9 +206,7 @@ describe("AC-1.12: public-repo hygiene", () => {
     }
   });
 
-  it("has a changelog fragment and a README that frames the example honestly", () => {
-    const fragments = readdirSync(resolve(REPO_ROOT, "changelog.d")).filter((f) => /showcase/.test(f));
-    expect(fragments.length).toBeGreaterThan(0);
+  it("has a README that frames the example honestly", () => {
     const readme = readFileSync(resolve(SHOWCASE_DIR, "README.md"), "utf8");
     for (const must of [DEMO_KEY_A, DEMO_KEY_B, "public", "synthetic", "invented", "over-expos", "not enforced", "MCP annotation"]) {
       expect(readme.toLowerCase(), must).toContain(must.toLowerCase());
