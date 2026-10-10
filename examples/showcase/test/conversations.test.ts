@@ -221,7 +221,20 @@ describe("a traveller with a cat: search, quote, book (#201)", () => {
     expect(q.petFee.amount).toBe(30);
     expect(q.total.amount).toBe(3 * 118 + 30);
     const booked = await call(ctx, "wanderlust_book", { quoteId: q.quoteId, stayId: casa.id!, dates: { from: "2027-05-12", to: "2027-05-15" }, travelers: PARTY, guestName: "Ana Pop" }, "A");
-    expect((booked.structuredContent as { booking: { total: { amount: number } } }).booking.total.amount).toBe(q.total.amount);
+    const booking = (booked.structuredContent as { booking: { total: { amount: number }; pets: number; petFee: { amount: number; currency: string } } }).booking;
+    expect(booking.total.amount).toBe(q.total.amount);
+    // The booking records the pet and the fee its total includes (recovered from the quote id).
+    expect(booking.pets).toBe(1);
+    expect(booking.petFee).toEqual({ amount: 30, currency: "EUR" });
+  });
+  it("a booking without pets says so: pets 0 and a fee of 0, always present", async () => {
+    const dates = { from: "2027-05-12", to: "2027-05-15" };
+    const quote = await call(ctx, "wanderlust_quote", { stayId: "ws-1001", dates, travelers: PARTY });
+    const q = (quote.structuredContent as { quote: { quoteId: string } }).quote;
+    const booked = await call(ctx, "wanderlust_book", { quoteId: q.quoteId, stayId: "ws-1001", dates, travelers: PARTY, guestName: "Ana Pop" }, "A");
+    const booking = (booked.structuredContent as { booking: { pets: number; petFee: { amount: number } } }).booking;
+    expect(booking.pets).toBe(0);
+    expect(booking.petFee.amount).toBe(0);
   });
   it("a stay with no pets says so in the search, and refuses a quote for a party with pets", async () => {
     const { stays } = await search(ctx, "wanderlust_search", { destination: "Lisbon" });

@@ -10,7 +10,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import http from "node:http";
 import https from "node:https";
 import { ORIGIN_BOUND_TYPES, type IRField, type IRResourceRegistry, type IRTool, type SemanticType } from "@archstone/compiler";
-import { applyResponseMapping, contractViolationMessage } from "../src/mapping";
+import { applyResponseMapping, contractViolationMessage, withheldNote } from "../src/mapping";
 import { objectJsonSchema, extractionJsonSchema, ExtractionSchemaError } from "../src/lowering";
 import { checkOrigin, allowedOrigins } from "../src/origins";
 
@@ -135,6 +135,30 @@ describe("S-B9 / S-B15: nesting", () => {
     expect(r.status).toBe("degraded");
     expect(r.withheld).toEqual(["cover"]);
     expect(r.data).toEqual({ rooms: [{ name: "A", photos: [ok(0)] }, { name: "B", cover: ok(2), photos: [ok(1)] }] });
+  });
+
+  it("the note names the ORIGINAL index and says the list was shortened, so it cannot be read as a returned position", () => {
+    const r = mapPhotos([ok(1), ok(2), ok(3), EVIL, ok(5)]);
+    expect(r.data).toEqual({ photos: [ok(1), ok(2), ok(3), ok(5)] });
+    expect(r.withheldAt).toEqual([{ path: "photos[3]", list: "photos", kept: 4 }]);
+    expect(withheldNote(r.withheldAt ?? [])).toBe(
+      "note: withheld — value(s) outside the declared origins, at these places in this result (a number is the item's position in the provider's list, before any removal): photos[3] (removed; the list now has 4 items). Every other link and image returned passed the origin check.",
+    );
+  });
+
+  it("several removed items of one list share one clause; a list inside a collection row carries the row index", () => {
+    expect(withheldNote([{ path: "photos[0]", list: "photos", kept: 1 }, { path: "photos[2]", list: "photos", kept: 1 }])).toContain(
+      "photos[0], photos[2] (removed; the list now has 1 item)",
+    );
+    const body = { results: [{ name: "A", photos: [ok(0), ok(1)] }, { name: "B", photos: [ok(0), EVIL] }] };
+    const r = applyResponseMapping(tool("Room", "rooms", "collection", "$.results[*]"), body, resources);
+    expect(r.withheldAt).toEqual([{ path: "rooms[1].photos[1]", list: "rooms[1].photos", kept: 1 }]);
+  });
+
+  it("a list inside a nested collection is located with the nested row's index too", () => {
+    const body = { name: "S", rooms: [{ name: "R0", photos: [ok(0)] }, { name: "R1", photos: [EVIL, ok(1)] }] };
+    const r = applyResponseMapping(tool("Stay", "stay", "resource"), body, resources);
+    expect(r.withheldAt).toEqual([{ path: "stay.rooms[1].photos[0]", list: "stay.rooms[1].photos", kept: 1 }]);
   });
 
   it("S-B9: an image in a nested object is withheld at that level (optional → the field only)", () => {

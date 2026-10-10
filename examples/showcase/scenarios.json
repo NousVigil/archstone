@@ -113,7 +113,7 @@
         "en": {
           "ask": "Show me photos of Casa Alfama.",
           "happens": "Photos from the agency's own image host.",
-          "refused": "One photo from an unknown website is left out and the rest still show. Archstone never downloads any photo."
+          "refused": "One photo from an unknown website is left out and the rest still show; a note says which one it was in the agency's own list and that the list is now shorter. Archstone never downloads any photo."
         },
         "ro": {
           "ask": "",
@@ -147,7 +147,7 @@
         "en": {
           "ask": "Give me the official page for Casa Alfama.",
           "happens": "A link to the hotel's own page on the agency's own site.",
-          "refused": "A second link, to a partner site the agency never declared, is left out and never opened. You still get the official page."
+          "refused": "A second link, to a partner site the agency never declared, is left out and never opened; a note says exactly which link, and that the official page is fine. You still get the official page."
         },
         "ro": {
           "ask": "",
@@ -349,7 +349,7 @@
         "en": {
           "ask": "Cancel booking B-0000cafe.",
           "happens": "The cancellation goes through, and the refund is the booking's own total.",
-          "refused": "Archstone does not pause it. The manifest says a person should approve it, but this version does not enforce that; any confirmation comes from your AI app, not from Archstone."
+          "refused": "It needs the agency key and an allowed caller, like booking: Archstone's rules refuse a missing key before the agency is asked. Archstone does not pause it. The manifest says a person should approve it, but this version does not enforce that; any confirmation comes from your AI app, not from Archstone."
         },
         "ro": {
           "ask": "",
@@ -427,7 +427,7 @@
         "en": {
           "ask": "Pay for the booking with the demo card.",
           "happens": "The payment goes through for a booking the agency quoted a moment ago.",
-          "refused": "A payment needs a price the agency quoted a moment ago, and the agency checks that, not Archstone. Archstone's checks flag a payment action declared without safeguards; they warn and do not block."
+          "refused": "A payment needs the agency key and an allowed caller (Archstone's rules refuse otherwise), and a price the agency quoted a moment ago, and the agency checks that, not Archstone. Archstone's checks flag a payment action declared without safeguards; they warn and do not block."
         },
         "ro": {
           "ask": "",

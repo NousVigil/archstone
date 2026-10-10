@@ -1,6 +1,6 @@
 capability:
   id: wanderlust.stay-page
-  description: "The page where a person can see a stay on the agency's own site."
+  description: "The pages where a person can see a stay. The agency's own page is returned with its link; a partner listing on another site is still listed by name, but its link is withheld, because Archstone only passes on links on the origins the manifest declares."
   effect: read
 
   input:

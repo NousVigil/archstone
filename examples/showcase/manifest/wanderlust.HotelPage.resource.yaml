@@ -8,4 +8,4 @@ resource:
     url:
       type: web-page
       required: false
-      description: "The page, when it lives on the agency's own site."
+      description: "The page, when it lives on the agency's own site. Absent for a partner listing on another site: the property is still listed, only its link is withheld."

@@ -521,6 +521,8 @@ async function postBooking(request, nowMs) {
       stayId: stay.id,
       dates: { from: dates.from, to: dates.to },
       total,
+      pets, // recovered from the quote id, as the total was
+      petFee: money((petFeePerNight(stay) ?? 0) * dates.nights * pets),
       paymentQuote: paymentQuoteId(nowMs, bookingId, total.amount, total.currency),
       payBy: expiryOf(nowMs),
       guests: [guestRecord(bookingId, body.guestName.trim())], // OVER-EXPOSED: passport and phone
@@ -586,7 +588,7 @@ function availability(propertyId, date) {
     propertyId,
     date,
     roomsFree: h % 6,
-    pricePerNight: stay.pricePerNight + (h % 9),
+    pricePerNight: stay.pricePerNight, // the stay's nightly rate, as search, quote and room-status say it
     ...rateSheet(stay.pricePerNight), // OVER-EXPOSED
   });
 }

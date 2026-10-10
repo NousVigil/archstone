@@ -400,7 +400,7 @@ describe("#145 interaction: the origin check runs inside the same walk", () => {
     };
     const tool = { ...stayTool(["name", "host"]), origins: { pages: ["https://www.example.com"] } };
     const r = applyResponseMapping(tool, { name: "Casa", host: { name: "Ana", profileUrl: "https://evil.example.net/x", phone: "1" } }, resources);
-    expect(r).toEqual({ status: "degraded", data: { stay: { name: "Casa", host: { name: "Ana" } } }, withheld: ["host.profileUrl"] });
+    expect(r).toEqual({ status: "degraded", data: { stay: { name: "Casa", host: { name: "Ana" } } }, withheld: ["host.profileUrl"], withheldAt: [{ path: "stay.host.profileUrl" }] });
     const on = applyResponseMapping(tool, { name: "Casa", host: { name: "Ana", profileUrl: "https://WWW.example.com/u", phone: "1" } }, resources);
     expect(on).toEqual({ status: "ok", data: { stay: { name: "Casa", host: { name: "Ana", profileUrl: "https://www.example.com/u" } } } });
   });

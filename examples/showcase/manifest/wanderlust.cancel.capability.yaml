@@ -1,6 +1,6 @@
 capability:
   id: wanderlust.cancel
-  description: "Cancel a booking. This cannot be undone. The manifest declares that a person should approve it; this version of Archstone does not enforce that."
+  description: "Cancel a booking. This cannot be undone. Needs the agency key and a principal the manifest's policy allows: Archstone's policy refuses a missing key or a caller who is not allowed before the agency is asked. The manifest declares that a person should approve it; this version of Archstone does not enforce that."
   effect: irreversible
 
   input:

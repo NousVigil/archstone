@@ -88,6 +88,22 @@ export interface RowViolation {
   withheld?: string[];
 }
 
+/**
+ * Where one withheld value sat in the RESULT, for the model-facing note. `path` uses the OUTPUT
+ * field names the model sees (not the provider's own keys), and each number is the item's position
+ * in the PROVIDER's list before any removal (`stays[1].listingUrl`, `gallery.photos[3]`) — never a
+ * value. An item removed from an origin-bound list also carries the list's path and how many items
+ * it kept, because the list the model receives is shorter than the one the provider sent and the
+ * original index would otherwise read as a position in it.
+ */
+export interface WithheldAt {
+  path: string;
+  /** Set when an ITEM of an origin-bound list was removed: the list's path (`photos`). */
+  list?: string;
+  /** With `list`: how many items the returned list kept. */
+  kept?: number;
+}
+
 export interface MappingResult {
   status: MappingStatus;
   data?: Record<string, unknown>; // { [outputField]: mappedArray | mappedObject } — matches outputSchema
@@ -118,6 +134,9 @@ export interface MappingResult {
    * makes it a `violation`.
    */
   withheld?: string[];
+  /** The same withheld values located in the result (output field names; each array index is the
+   *  item's position in the provider's list before any removal) — what `withheldNote` is written from. Present iff `withheld` is. */
+  withheldAt?: WithheldAt[];
   /**
    * Only when the caller passed `collectUndeclared` (`verify` does; serving never does): the
    * dotted names of undeclared keys dropped from nested values (`host.phone`; collection rows
@@ -145,6 +164,7 @@ interface Walk {
  *  the value it sat in — the provider sent it), and the optional slots dropped below the top. */
 interface WalkAcc {
   withheld: string[];
+  at: WithheldAt[]; // the same values, located by output field names (path relative to the row)
   invalid: InvalidField[]; // optional slots dropped because the value was the wrong shape
 }
 
@@ -153,6 +173,7 @@ interface WalkAcc {
 interface WithheldAcc {
   withheld: string[];
   required: string[];
+  at: WithheldAt[];
 }
 
 /**
@@ -237,6 +258,12 @@ function typeReaches(w: Pick<Walk, "reaches">, type: IRType): boolean {
   return w.reaches.get(type.kind === "collection" ? type.of : type.name) === true;
 }
 
+/** `withheld` is a set; `withheldAt` is de-duplicated the same way (by path). */
+function uniqAt(at: readonly WithheldAt[]): WithheldAt[] {
+  const seen = new Set<string>();
+  return at.filter((a) => (seen.has(a.path) ? false : (seen.add(a.path), true)));
+}
+
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
@@ -288,6 +315,7 @@ const dedupInvalid = (xs: InvalidField[]): InvalidField[] => {
 function misfit(w: Walk, type: IRType, path: string, acc: WalkAcc): Projected {
   if (typeReaches(w, type)) {
     acc.withheld.push(path);
+    acc.at.push({ path });
     return { ok: false, reason: "withheld", missing: [], invalid: [], withheld: [path] };
   }
   return { ok: false, reason: "invalid", missing: [], invalid: [{ field: path, expected: describeType(type) }], withheld: [] };
@@ -303,6 +331,7 @@ function projectSemantic(w: Walk, semantic: SemanticType, value: unknown, path: 
     const r = checkOrigin(value, allowedFor(w, list));
     if (r.ok) return ok(r.href);
     acc.withheld.push(path);
+    acc.at.push({ path });
     return { ok: false, reason: "withheld", missing: [], invalid: [], withheld: [path] };
   }
   const shape = COMPOSITE_SHAPES[semantic];
@@ -364,18 +393,24 @@ function projectValue(w: Walk, type: IRType, value: unknown, path: string, acc: 
       const kept: unknown[] = [];
       let named = 0;
       let overflowed = false;
+      const removed: WithheldAt[] = [];
       value.forEach((item, i) => {
         const r = checkOrigin(item, allowed);
         if (r.ok) {
           kept.push(r.href);
         } else if (named < MAX_WITHHELD_ITEM_NAMES) {
           acc.withheld.push(`${path}[${i}]`);
+          removed.push({ path: `${path}[${i}]`, list: path });
           named += 1;
         } else if (!overflowed) {
           acc.withheld.push(`${path}[…]`);
+          removed.push({ path: `${path}[…]`, list: path });
           overflowed = true;
         }
       });
+      // The returned list is shorter than the provider's: say by how much, so an original index is
+      // never read as a position in it.
+      for (const r of removed) acc.at.push({ ...r, kept: kept.length });
       return ok(kept);
     }
     // All or nothing: a list is never silently shortened. The first failing item names the list.
@@ -404,8 +439,17 @@ function projectValue(w: Walk, type: IRType, value: unknown, path: string, acc: 
   const invalid: InvalidField[] = [];
   const withheld = new Set<string>();
   let failed: Absent | undefined;
-  for (const row of value) {
+  for (const [i, row] of value.entries()) {
+    const firstAt = acc.at.length;
     const r = projectResource(w, type, type.of, row, path, acc, depth + 1);
+    // Names carry no row index (rows share a path); locations do: re-root what this row located
+    // under `path[i]`, so the note can point at the exact element of the provider's array.
+    for (let k = firstAt; k < acc.at.length; k++) {
+      const a = acc.at[k];
+      if (!a) continue;
+      const reroot = (p: string): string => `${path}[${i}]${p.slice(path.length)}`;
+      acc.at[k] = { ...a, path: reroot(a.path), ...(a.list !== undefined ? { list: reroot(a.list) } : {}) };
+    }
     if (r.ok) {
       rows.push(r.value);
     } else {
@@ -441,7 +485,7 @@ function projectResource(w: Walk, slotType: IRType, name: string, value: unknown
   const missing: string[] = [];
   const invalid: InvalidField[] = [];
   const withheld: string[] = [];
-  const childAcc: WalkAcc = { withheld: acc.withheld, invalid: [] };
+  const childAcc: WalkAcc = { withheld: acc.withheld, at: acc.at, invalid: [] };
   for (const f of fields) {
     const childPath = `${path}.${f.name}`;
     const v = hasOwn(value, f.name) ? value[f.name] : undefined;
@@ -502,7 +546,7 @@ function mapRow(
   const missing: string[] = [];
   const invalid: InvalidField[] = [];
   const degraded: string[] = [];
-  const acc: WalkAcc = { withheld: [], invalid: [] };
+  const acc: WalkAcc = { withheld: [], at: [], invalid: [] };
   const required: string[] = [];
   for (const f of fields) {
     const path = byPath?.get(f.name) ?? `$.${f.name}`;
@@ -528,7 +572,7 @@ function mapRow(
     }
   }
   const uniq = (xs: string[]): string[] => [...new Set(xs)];
-  return { obj, missing: uniq(missing), invalid: dedupInvalid(invalid), degraded: uniq(degraded), invalidOptional: dedupInvalid(acc.invalid), withheld: { withheld: uniq(acc.withheld), required: uniq(required) } };
+  return { obj, missing: uniq(missing), invalid: dedupInvalid(invalid), degraded: uniq(degraded), invalidOptional: dedupInvalid(acc.invalid), withheld: { withheld: uniq(acc.withheld), required: uniq(required), at: acc.at } };
 }
 
 /**
@@ -562,13 +606,20 @@ export function applyResponseMapping(
   const degraded = new Set<string>();
   const withheld = new Set<string>();
   const requiredWithheld = new Set<string>();
+  const withheldAt: WithheldAt[] = []; // located by output field names; see WithheldAt
   const rowViolations: RowViolation[] = [];
   const data: Record<string, unknown> = {};
   let wholeResponseViolation = false;
   const walk = newWalk(tool, resources, options?.collectUndeclared === true);
-  const absorb = (acc: WithheldAcc): void => {
+  // `prefix` turns a row-relative path into a path in the result: the output field plus, for a
+  // collection, the row's index in the provider's array (`stays[1].`).
+  const place = (acc: WithheldAcc, prefix: string): void => {
+    for (const a of acc.at) withheldAt.push({ ...a, path: prefix + a.path, ...(a.list !== undefined ? { list: prefix + a.list } : {}) });
+  };
+  const absorb = (acc: WithheldAcc, prefix: string): void => {
     acc.withheld.forEach((w) => withheld.add(w));
     acc.required.forEach((w) => requiredWithheld.add(w));
+    place(acc, prefix);
   };
 
   if (mapping) {
@@ -589,6 +640,7 @@ export function applyResponseMapping(
     }));
     const items: unknown[] = mapping.collection ? evalPath(body, mapping.collection) : [body];
     const onError = mapping.onError;
+    const rowPrefix = (index: number): string => (mapping.collection ? `${mapping.field}[${index}].` : `${mapping.field}.`);
     // errorResource's OWN `map:` (optional — a delta ratified after §8.1's initial shipment):
     // same field-mapping shape as the success `map:`. A field with no entry here falls back to
     // `mapRow`'s same-named-key default (`$.<fieldName>`) — the pre-existing behaviour.
@@ -605,13 +657,13 @@ export function applyResponseMapping(
       // field anywhere is a whole-response VIOLATION (no per-row distinction to make). A required
       // field withheld by the origin check counts the same way, as it does for a missing one.
       const mapped: Record<string, unknown>[] = [];
-      for (const item of items) {
+      for (const [index, item] of items.entries()) {
         const { obj, missing: rowMissing, invalid: rowInvalid, degraded: rowDegraded, invalidOptional: rowInvalidOptional, withheld: rowWithheld } = mapRow(item, successFields, pathByName, undefined, walk);
         rowMissing.forEach((m) => missing.add(m));
         invalid.push(...rowInvalid);
         rowDegraded.forEach((d) => degraded.add(d));
         invalidOptional.push(...rowInvalidOptional);
-        absorb(rowWithheld);
+        absorb(rowWithheld, rowPrefix(index));
         mapped.push(obj);
       }
       data[mapping.field] = mapping.collection ? mapped : mapped[0];
@@ -635,6 +687,7 @@ export function applyResponseMapping(
         if (matchesDiscriminator(item, onError.when)) {
           const { obj, missing: rowMissing, invalid: rowInvalid, withheld: rowWithheld } = mapRow(item, errorFields, errorPathByName, "error", walk);
           rowWithheld.withheld.forEach((w) => withheld.add(w));
+          place(rowWithheld, rowPrefix(index));
           if (rowMissing.length > 0 || rowInvalid.length > 0 || rowWithheld.required.length > 0) {
             rowViolation(index, rowMissing, rowInvalid, rowWithheld);
           } else {
@@ -645,6 +698,7 @@ export function applyResponseMapping(
         }
         const { obj, missing: rowMissing, invalid: rowInvalid, degraded: rowDegraded, invalidOptional: rowInvalidOptional, withheld: rowWithheld } = mapRow(item, successFields, pathByName, "ok", walk);
         rowWithheld.withheld.forEach((w) => withheld.add(w));
+        place(rowWithheld, rowPrefix(index));
         if (rowMissing.length > 0 || rowInvalid.length > 0 || rowWithheld.required.length > 0) {
           rowViolation(index, rowMissing, rowInvalid, rowWithheld);
         } else {
@@ -672,9 +726,10 @@ export function applyResponseMapping(
       // text: a primitive passes, anything else is absent (fail closed).
       const type: IRType = field?.type ?? { kind: "scalar", semantic: "text" };
       const check = (value: unknown): void => {
-        const acc: WalkAcc = { withheld: [], invalid: [] };
+        const acc: WalkAcc = { withheld: [], at: [], invalid: [] };
         const r = projectValue(walk, type, value, fm.name, acc, 0);
         acc.withheld.forEach((w) => withheld.add(w));
+        withheldAt.push(...acc.at);
         if (r.ok) {
           invalidOptional.push(...acc.invalid);
           data[fm.name] = r.value;
@@ -719,6 +774,7 @@ export function applyResponseMapping(
     const result: MappingResult = { status: "violation", missing: [...missing] };
     if (invalid.length > 0) result.invalid = dedupInvalid(invalid);
     if (withheld.size > 0) result.withheld = [...withheld];
+    if (withheld.size > 0) result.withheldAt = uniqAt(withheldAt);
     if (rowViolations.length > 0) result.rowViolations = rowViolations;
     if (walk.undeclared && walk.undeclared.size > 0) result.undeclaredNested = [...walk.undeclared];
     return result;
@@ -731,6 +787,7 @@ export function applyResponseMapping(
   if (degraded.size > 0) result.degraded = [...degraded];
   if (invalidOptional.length > 0) result.invalid = dedupInvalid(invalidOptional);
   if (withheld.size > 0) result.withheld = [...withheld];
+  if (withheld.size > 0) result.withheldAt = uniqAt(withheldAt);
   if (rowViolations.length > 0) result.rowViolations = rowViolations;
   if (walk.undeclared && walk.undeclared.size > 0) result.undeclaredNested = [...walk.undeclared];
   return result;
@@ -785,9 +842,33 @@ export function degradedNotes(degraded: readonly string[], invalid: readonly Inv
   return notes;
 }
 
-/** The model-facing note for a mapping that withheld an optional field's value. Names fields only. */
-export function withheldNote(withheld: readonly string[]): string {
-  return `note: field(s) withheld — value outside the declared origins: ${withheld.join(", ")}`;
+/**
+ * The model-facing note for a mapping that withheld a value. It names each location in the
+ * result by the output field names the model sees (`stays[1].listingUrl`; the number is the item's
+ * position in the provider's list) — never a value — and says what
+ * became of it: a field is omitted from its item, a list item is removed and the list is now
+ * shorter (so `photos[3]` cannot be mistaken for the fourth entry of the returned list). The last
+ * sentence is the other half of the guarantee, scoped to what is origin-checked (links and
+ * images; text, numbers and money never are): every other link and image returned passed.
+ */
+export function withheldNote(withheld: readonly WithheldAt[]): string {
+  const parts: string[] = [];
+  const grouped = new Map<string, WithheldAt[]>();
+  for (const w of withheld) {
+    if (w.list === undefined) {
+      parts.push(`${w.path} (field omitted)`);
+      continue;
+    }
+    const key = `${w.list}\u0000${w.kept ?? 0}`;
+    const g = grouped.get(key);
+    if (g) g.push(w);
+    else grouped.set(key, [w]);
+  }
+  for (const g of grouped.values()) {
+    const kept = g[0]?.kept ?? 0;
+    parts.push(`${g.map((w) => w.path).join(", ")} (removed; the list now has ${kept} ${kept === 1 ? "item" : "items"})`);
+  }
+  return `note: withheld — value(s) outside the declared origins, at these places in this result (a number is the item's position in the provider's list, before any removal): ${parts.join("; ")}. Every other link and image returned passed the origin check.`;
 }
 
 /**

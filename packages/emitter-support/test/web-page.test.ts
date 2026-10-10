@@ -130,8 +130,61 @@ describe("S-B.9: the violation message names the field, says why, and never echo
     expect(contractViolationMessage("shop.get", ["name"], [])).toBe(contractViolationMessage("shop.get", ["name"]));
   });
 
-  it("the model-facing note for an optional withheld field names fields only", () => {
-    expect(withheldNote(["listingUrl"])).toBe("note: field(s) withheld — value outside the declared origins: listingUrl");
+  it("the model-facing note locates the place in this result (every other link and image passed) and says what was returned", () => {
+    expect(withheldNote([{ path: "stay.listingUrl" }])).toBe(
+      "note: withheld — value(s) outside the declared origins, at these places in this result (a number is the item's position in the provider's list, before any removal): stay.listingUrl (field omitted). Every other link and image returned passed the origin check.",
+    );
+  });
+
+  it("a withheld field in a collection row is located by its row index in the provider's array", () => {
+    const body = { results: [{ name: "A", url: "https://www.example.com/a" }, { name: "B (partner)", url: EVIL }] };
+    const r = applyResponseMapping(collectionTool(), body, stayResources(false));
+    expect(r.withheld).toEqual(["listingUrl"]);
+    expect(r.withheldAt).toEqual([{ path: "stays[1].listingUrl" }]);
+    const note = withheldNote(r.withheldAt ?? []);
+    expect(note).toContain("stays[1].listingUrl (field omitted)");
+    expect(note).not.toContain("stays[0]");
+    expect(note).not.toContain("evil.example.net");
+  });
+
+  it("paths use the OUTPUT names (renamed field, renamed collection, nested collection) with the provider's list position as the index", () => {
+    // Provider body `results[1].url` is mapped to output `stays[1].listingUrl`; the nested
+    // `rooms` collection keeps its own provider positions.
+    const resources: IRResourceRegistry = {
+      ...stayResources(false),
+      Stay: [...stayResources(false).Stay!, { name: "rooms", required: false, type: { kind: "collection", of: "Room" } }],
+      Room: [
+        { name: "label", required: true, type: { kind: "scalar", semantic: "text" } },
+        { name: "bookingUrl", required: false, type: { kind: "scalar", semantic: "web-page" } },
+      ],
+    };
+    const t = collectionTool();
+    t.response = { ...t.response!, fields: [...t.response!.fields!, { name: "rooms", path: "$.rooms" }] };
+    const room = (n: number, url: string) => ({ label: `R${n}`, bookingUrl: url });
+    const good = "https://www.example.com/r";
+    const body = {
+      results: [
+        { name: "A", url: "https://www.example.com/a", rooms: [room(0, good)] },
+        { name: "B", url: EVIL, rooms: [room(0, good), room(1, EVIL)] },
+      ],
+    };
+    const r = applyResponseMapping(t, body, resources);
+    expect(r.withheldAt).toEqual([{ path: "stays[1].listingUrl" }, { path: "stays[1].rooms[1].bookingUrl" }]);
+    const note = withheldNote(r.withheldAt ?? []);
+    expect(note).toBe(
+      "note: withheld — value(s) outside the declared origins, at these places in this result (a number is the item's position in the provider's list, before any removal): stays[1].listingUrl (field omitted); stays[1].rooms[1].bookingUrl (field omitted). Every other link and image returned passed the origin check.",
+    );
+    expect(note).not.toContain("results");
+    expect(note).not.toContain(".url");
+    expect(note).not.toContain("original response");
+    expect(note).not.toContain("Every other value");
+  });
+
+  it("the same holds with a declared onError (row index is the provider's index)", () => {
+    const body = { results: [{ error: "gone" }, { name: "B", url: EVIL }] };
+    const t = collectionTool(true);
+    const r = applyResponseMapping(t, body, { ...stayResources(false), RowError: [{ name: "error", required: true, type: { kind: "scalar", semantic: "text" } }] });
+    expect(r.withheldAt).toEqual([{ path: "stays[1].listingUrl" }]);
   });
 });
 

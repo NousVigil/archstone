@@ -115,6 +115,8 @@ export async function runBattery(send: Send): Promise<Check[]> {
   check("book with no Authorization: authenticated_no_credential", policyReason(none.result) === "authenticated_no_credential", policyReason(none.result));
   check("book with no Authorization: the backend is never called", none.res.headers.get("x-showcase-backend-calls") === "0");
   const keyA = await callMcp("wanderlust_book", bookArgs, "Bearer demo-public-key-visitor-0000");
+  const bookedPets = (keyA.result?.structuredContent as { booking?: { pets?: number; petFee?: { amount?: number } } } | undefined)?.booking;
+  check("book: the booking records pets and the pet fee (0 when none)", bookedPets?.pets === 0 && bookedPets?.petFee?.amount === 0, JSON.stringify(bookedPets));
   check("book with the visitor key: allowed", keyA.result?.isError !== true && !!keyA.result?.structuredContent, JSON.stringify(keyA.result).slice(0, 200));
   const keyB = await callMcp("wanderlust_book", bookArgs, "Bearer demo-public-key-blocked-0000");
   check("book with the blocked key: principal_denied", policyReason(keyB.result) === "principal_denied", policyReason(keyB.result));
@@ -158,6 +160,18 @@ export async function runBattery(send: Send): Promise<Check[]> {
   check("search by a stay's name returns that stay", named.length === 1 && named[0].name === "Pensão Azul", JSON.stringify(named.map((x) => x.name)));
   const june = await callMcp("wanderlust_room-status", { propertyId: "ws-1002", date: "2027-06-05" });
   check("room-status for Pensão Azul on a June weekend is a usable answer", june.result?.isError !== true && !/agency-busy/.test(JSON.stringify(june.result)), JSON.stringify(june.result).slice(0, 160));
+
+  // The withheld-value note locates the value in this result by output field names; it cannot be read as "the official link is withheld" (#201).
+  const notes = (r: unknown): string => ((r as { content?: { text?: string }[] } | undefined)?.content ?? []).map((c) => c.text ?? "").join("\n");
+  const pageCall = await callMcp("wanderlust_stay-page", { stayId: "ws-1001" });
+  check("stay-page: the note names pages[1].url, not the agency's own page", /pages\[1\]\.url \(field omitted\)/.test(notes(pageCall.result)) && !/pages\[0\]/.test(notes(pageCall.result)) && /Every other link and image returned passed the origin check/.test(notes(pageCall.result)) && !/original response/.test(notes(pageCall.result)), notes(pageCall.result).slice(-260));
+  const photoCall = await callMcp("wanderlust_stay-photos", { stayId: "ws-1001" });
+  check("stay-photos: the note says the removed item and that the list is now shorter", /gallery\.photos\[3\] \(removed; the list now has 4 items\)/.test(notes(photoCall.result)), notes(photoCall.result).slice(-260));
+  // One nightly rate per stay across search, availability and room-status.
+  const rateOf = async (tool: string, args: Record<string, unknown>, pick: (s: unknown) => unknown) => pick((await callMcp(tool, args)).result?.structuredContent);
+  const searchRate = (await callMcp("wanderlust_search", { ...searchArgs, destination: "Pensão Azul" })).result?.structuredContent as { stays?: { pricePerNight?: number }[] } | undefined;
+  const availRate = await rateOf("wanderlust_availability", { propertyId: "ws-1002", date: "2027-05-12" }, (s) => (s as { availability?: { pricePerNight?: number } } | undefined)?.availability?.pricePerNight);
+  check("price: availability for Pensão Azul equals the search rate", availRate !== undefined && availRate === searchRate?.stays?.[0]?.pricePerNight, `${String(availRate)} vs ${String(searchRate?.stays?.[0]?.pricePerNight)}`);
 
   const retired = await callMcp("tourism_search-classic", { destination: "Lisbon" });
   check("retired capability called by name: lifecycle_blocked", retired.result?.isError === true && retired.result?._meta?.[LIFECYCLE_META]?.error === "lifecycle_blocked");
