@@ -92,6 +92,8 @@ logged or returned.
 The real abuse control is **Cloudflare's rate limiting on this Worker's route**, a dashboard setting,
 not code in this folder. It must be configured before pointing real traffic at the Worker.
 
+The hosted demo is rate-limited per IP at the edge (POST requests, answered with a 429 before the Worker runs); the live battery paces its own POSTs to stay under that limit, and waits and retries once on an edge 429.
+
 ## No per-visitor state
 
 `wrangler.jsonc` declares no storage, queue or object binding. Nothing a visitor does is kept, apart
