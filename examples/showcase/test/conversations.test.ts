@@ -194,3 +194,39 @@ describe("wanderlust_search: what the model is shown", () => {
     expect(seen).toBeGreaterThan(20);
   });
 });
+
+describe.each(SEARCHES)("%s: a stay's name as the destination (#201)", (tool) => {
+  const ctx = newContext();
+  it.each(["Pensão Azul", "pensao azul", "Pensão Azul, Lisbon"])("%j returns that stay alone", async (destination) => {
+    const { r, stays } = await search(ctx, tool, { destination });
+    expect(r.isError).toBeFalsy();
+    expect(stays.map((s) => s.name)).toEqual(["Pensão Azul"]);
+    assertSane(stays);
+  });
+  it("a name that is not in the catalogue is an honest empty result", async () => {
+    const { r, stays } = await search(ctx, tool, { destination: "Hotel Atlantis" });
+    expect(r.isError).toBeFalsy();
+    expect(stays).toEqual([]);
+  });
+});
+
+describe("a traveller with a cat: search, quote, book (#201)", () => {
+  const ctx = newContext();
+  it("the pet policy is answerable, the quote itemises the fee, and the booking is at the quoted total", async () => {
+    const { stays } = await search(ctx, "wanderlust_search", { destination: "Lisbon", preferences: ["cat"] });
+    const casa = stays.find((s) => s.name === "Casa Alfama")!;
+    expect(casa.petPolicy).toMatch(/EUR 10 per night/);
+    const quote = await call(ctx, "wanderlust_quote", { stayId: casa.id!, dates: { from: "2027-05-12", to: "2027-05-15" }, travelers: PARTY, pets: 1 });
+    const q = (quote.structuredContent as { quote: { quoteId: string; total: { amount: number }; petFee: { amount: number } } }).quote;
+    expect(q.petFee.amount).toBe(30);
+    expect(q.total.amount).toBe(3 * 118 + 30);
+    const booked = await call(ctx, "wanderlust_book", { quoteId: q.quoteId, stayId: casa.id!, dates: { from: "2027-05-12", to: "2027-05-15" }, travelers: PARTY, guestName: "Ana Pop" }, "A");
+    expect((booked.structuredContent as { booking: { total: { amount: number } } }).booking.total.amount).toBe(q.total.amount);
+  });
+  it("a stay with no pets says so in the search, and refuses a quote for a party with pets", async () => {
+    const { stays } = await search(ctx, "wanderlust_search", { destination: "Lisbon" });
+    const noPets = stays.find((s) => s.petPolicy === "No pets")!;
+    const refused = await call(ctx, "wanderlust_quote", { stayId: noPets.id!, dates: { from: "2027-05-12", to: "2027-05-15" }, travelers: PARTY, pets: 1 });
+    expect(refused.isError).toBe(true);
+  });
+});

@@ -39,6 +39,12 @@ export interface ScenarioRow {
   key: KeyLabel;
   setup?: Step[];
   outcome: "success" | "refused" | "unknown-tool" | "recorded" | "locked";
+  /** Only on a `refused` row the input contract refuses (S-23); every other refused row is a policy denial. */
+  refusal?: "input_invalid";
+  /** More fixed calls the live run makes after the main one (S-13). */
+  alsoRun?: { label: string; tool: string; key: KeyLabel; arguments: Record<string, unknown> }[];
+  /** A fact the card relies on that lives in the tool list (S-12). */
+  evidence?: { kind: "tool-description"; tool: string; where: string; phrase: string };
   absent?: true;
   command?: string;
   parent?: string;

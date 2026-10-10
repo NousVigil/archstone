@@ -5,8 +5,8 @@
 // serves from a Node `http` wrapper (./serve.mjs), from Vitest through a `fetch` stand-in, and
 // from a Workers runtime. It is deterministic and stateless: every id, every price and every
 // "time" is a pure function of the request and of the injected clock. There is no storage of any
-// kind; a booking "exists" only in the sense that its id has the right shape and was derived from
-// a quote the agency would have issued.
+// kind; a booking "exists" only in the sense that its id verifies (it carries its own total and a
+// check) and was derived from a quote the agency would have issued, still inside its 15-minute window.
 //
 // IT OVER-EXPOSES ON PURPOSE. Everything marked OVER-EXPOSED below is a field, a link, a host or
 // an endpoint that a well-run contract must keep away from a model, and each one is pinned by
@@ -33,7 +33,7 @@ export const UNDECLARED_IMAGE_HOST = "https://cdn.partner-photos.example";
 export const UNDECLARED_PAGE_HOST = "https://book.partner-hotels.example";
 export const UNDECLARED_MARKUP_HOST = "https://deals.unknown-host.example";
 
-/** A quote is valid until the end of its 15-minute window. */
+/** A quote (and a payment quote) is valid for 15 minutes from the moment it is issued. */
 export const QUOTE_WINDOW_MS = 15 * 60 * 1000;
 
 /**
@@ -147,7 +147,7 @@ const byStayId = (id) => CATALOGUE.find((s) => s.id === id);
 
 // -- Destination resolver ---------------------------------------------------------------------
 // One pure function shared by both searches. Case-, diacritics- and punctuation-insensitive; a
-// "City, Country" or "City Country" form is accepted; a country that contradicts the city
+// "City, Country" or "City Country" form is accepted, and so is a stay's exact name (that stay only); a country that contradicts the city
 // ("Lisbon, Spain") matches nothing. No fuzzy matching: an unknown place is an honest empty result.
 
 /** city -> accepted spellings, already folded (lower case, no diacritics). */
@@ -172,16 +172,38 @@ const fold = (text) =>
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase();
 
-/** @param {unknown} text @returns {string | undefined} the catalogue city, or undefined */
-export function resolveDestination(text) {
+const squash = (text) => fold(text).replace(/[^a-z0-9]+/g, " ").trim();
+/** stay -> its folded display name, e.g. "Pensão Azul" -> "pensao azul". */
+const STAY_NAMES = CATALOGUE.map((s) => ({ stay: s, name: squash(s.name), slug: s.slug }));
+
+/**
+ * What a destination text names: a catalogue city, or one stay (by its exact name, any case or
+ * diacritics, optionally followed by its city and country: "Pensão Azul", "Pensao Azul, Lisbon", or
+ * its slug "pensao-azul"). Exact after folding, never fuzzy: a name that is not in the catalogue is
+ * an honest empty result, and a stay named with the wrong city ("Pensão Azul, Porto") matches nothing.
+ * @param {unknown} text
+ * @returns {{ city: string, stay?: typeof CATALOGUE[number] } | undefined}
+ */
+export function resolvePlace(text) {
   if (typeof text !== "string") return undefined;
-  const segments = fold(text)
+  // A slug ("pensao-azul") is a stay name written with hyphens, which the segment split below would cut.
+  const spelled = fold(text)
+    .split(",")
+    .map((part) => STAY_NAMES.find((n) => n.slug === part.trim())?.name ?? part)
+    .join(",");
+  const segments = spelled
     .split(/[,;\-\u2013\u2014/()]+/)
     .map((seg) => seg.replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim())
     .filter(Boolean);
   const cities = [];
   const countries = [];
+  const stays = [];
   for (const segment of segments) {
+    const named = STAY_NAMES.find((n) => n.name === segment);
+    if (named) {
+      if (!stays.includes(named.stay)) stays.push(named.stay);
+      continue;
+    }
     let rest = segment;
     for (const [country, names] of Object.entries(COUNTRY_ALIASES)) {
       for (const name of names) {
@@ -197,10 +219,19 @@ export function resolveDestination(text) {
     if (!city) return undefined;
     if (!cities.includes(city)) cities.push(city);
   }
-  if (cities.length !== 1) return undefined;
-  const [city] = cities;
+  if (stays.length > 1) return undefined;
+  const stay = stays[0];
+  if (stay) cities.push(stay.city);
+  const distinct = cities.filter((c, i) => cities.indexOf(c) === i);
+  if (distinct.length !== 1) return undefined;
+  const [city] = distinct;
   for (const country of countries) if (country !== CITY_COUNTRY[city]) return undefined;
-  return city;
+  return stay ? { city, stay } : { city };
+}
+
+/** @param {unknown} text @returns {string | undefined} the catalogue city, or undefined */
+export function resolveDestination(text) {
+  return resolvePlace(text)?.city;
 }
 
 // -- Preferences ------------------------------------------------------------------------------
@@ -276,11 +307,11 @@ function findStays(body) {
     }
     ceiling = b.amount;
   }
-  const city = resolveDestination(body.destination);
-  if (!city) return { stays: [] };
+  const place = resolvePlace(body.destination);
+  if (!place) return { stays: [] };
   const tags = normalizePreferences(body.preferences);
   const stays = CATALOGUE.filter(
-    (s) => s.city === city && (ceiling === undefined || s.pricePerNight <= ceiling) && tags.every((t) => hasTag(s, t)),
+    (s) => s.city === place.city && (place.stay === undefined || s.id === place.stay.id) && (ceiling === undefined || s.pricePerNight <= ceiling) && tags.every((t) => hasTag(s, t)),
   );
   return { stays };
 }
@@ -365,22 +396,32 @@ function svg(stayId, n) {
 // Quotes, bookings, payments: derived from inputs, never stored
 // ---------------------------------------------------------------------------------------------
 
-const windowOf = (nowMs) => Math.floor(nowMs / QUOTE_WINDOW_MS);
-const windowEnd = (win) => new Date((win + 1) * QUOTE_WINDOW_MS).toISOString();
+// A quote is valid for QUOTE_WINDOW_MS from the moment it is issued, so its id carries the issue
+// time (base 36). Two quotes asked for in different milliseconds therefore differ; the same
+// request at the same injected instant gives the same id. The payment quote works the same way.
+const expiryOf = (issuedMs) => new Date(issuedMs + QUOTE_WINDOW_MS).toISOString();
 
-const quoteId = (win, stayId, from, to, adults) =>
-  `Q-${win.toString(36)}-${hex8(`${stayId}|${from}|${to}|${adults}|${win}`)}`;
-const paymentQuoteId = (win, bookingId, amount, currency) =>
-  `PQ-${win.toString(36)}-${hex8(`${bookingId}|${amount}|${currency}|${win}`)}`;
+const MAX_PETS = 4;
+
+const quoteId = (issuedMs, stayId, from, to, adults, pets) =>
+  `Q-${issuedMs.toString(36)}-${hex8(`${stayId}|${from}|${to}|${adults}|${pets}|${issuedMs}`)}`;
+const paymentQuoteId = (issuedMs, bookingId, amount, currency) =>
+  `PQ-${issuedMs.toString(36)}-${hex8(`${bookingId}|${amount}|${currency}|${issuedMs}`)}`;
 
 const QUOTE_RE = /^Q-([0-9a-z]+)-([0-9a-f]{8})$/;
 const PAYMENT_QUOTE_RE = /^PQ-([0-9a-z]+)-([0-9a-f]{8})$/;
-export const BOOKING_ID_RE = /^B-[0-9a-f]{8}$/;
 
 const adultsOf = (party) => (party && Number.isInteger(party.adults) && party.adults >= 1 ? party.adults : 1);
 
-function totalFor(stay, nights) {
-  return money(stay.pricePerNight * nights);
+/** The pet fee for a stay: a number of euro per pet per night, 0 when free, undefined when no pets. */
+function petFeePerNight(stay) {
+  if (stay.petPolicy === NO_PETS) return undefined;
+  const m = /EUR (\d+) per night/.exec(stay.petPolicy);
+  return m ? Number(m[1]) : 0;
+}
+
+function totalFor(stay, nights, pets = 0) {
+  return money(stay.pricePerNight * nights + (petFeePerNight(stay) ?? 0) * nights * pets);
 }
 
 async function postQuote(request, nowMs) {
@@ -389,28 +430,65 @@ async function postQuote(request, nowMs) {
   const dates = parseDates(body?.dates);
   if (!stay) return problem(404, "stay_not_found", "No such stay.");
   if (!dates) return problem(400, "bad_dates", "dates must be { from, to } as YYYY-MM-DD, 1 to 30 nights.");
-  const win = windowOf(nowMs);
+  let pets = 0;
+  if (body.pets !== undefined && body.pets !== null) {
+    if (!Number.isInteger(body.pets) || body.pets < 0 || body.pets > MAX_PETS) {
+      return problem(400, "bad_pets", `pets must be a whole number from 0 to ${MAX_PETS}.`);
+    }
+    pets = body.pets;
+  }
+  const fee = petFeePerNight(stay);
+  if (pets > 0 && fee === undefined) {
+    return problem(422, "pets_not_allowed", `${stay.name} does not accept pets (${stay.petPolicy}). Quote without pets, or choose a stay that welcomes them.`);
+  }
   const adults = adultsOf(body.travelers);
   return json({
-    quoteId: quoteId(win, stay.id, dates.from, dates.to, adults),
+    quoteId: quoteId(nowMs, stay.id, dates.from, dates.to, adults, pets),
     stayId: stay.id,
     dates: { from: dates.from, to: dates.to },
     nights: dates.nights,
-    total: totalFor(stay, dates.nights),
-    expiresAt: windowEnd(win),
+    total: totalFor(stay, dates.nights, pets),
+    pets,
+    petFee: money((fee ?? 0) * dates.nights * pets),
+    expiresAt: expiryOf(nowMs),
     ...rateSheet(stay.pricePerNight * dates.nights), // OVER-EXPOSED
   });
 }
 
-function checkWindowToken(raw, re, nowMs, label) {
+/** Parse a quote token and judge it against the clock: issued at or before now, not yet expired. */
+function checkToken(raw, re, nowMs, label) {
   if (typeof raw !== "string" || raw === "") return { error: problem(422, `${label}_required`, `A ${label.replace("_", " ")} is required.`) };
   const m = re.exec(raw);
-  if (!m) return { error: problem(422, `${label}_invalid`, `That ${label.replace("_", " ")} is not one this agency issued.`) };
-  const win = parseInt(m[1], 36);
-  const now = windowOf(nowMs);
-  if (win < now) return { error: problem(422, `${label}_expired`, `That ${label.replace("_", " ")} has expired.`) };
-  if (win > now) return { error: problem(422, `${label}_invalid`, `That ${label.replace("_", " ")} is not one this agency issued.`) };
-  return { win, tail: m[2] };
+  const issued = m ? parseInt(m[1], 36) : NaN;
+  if (!m || !Number.isSafeInteger(issued) || issued > nowMs) {
+    return { error: problem(422, `${label}_invalid`, `That ${label.replace("_", " ")} is not one this agency issued.`) };
+  }
+  if (nowMs >= issued + QUOTE_WINDOW_MS) {
+    return { error: problem(422, `${label}_expired`, `That ${label.replace("_", " ")} has expired; ask for a new one.`) };
+  }
+  return { issued, tail: m[2] };
+}
+
+// A booking id is self-verifying, because the agency stores nothing: 12 hex digits = the total in
+// whole euro (4), a per-booking nonce (4) and a check over both (4). An id with a bad check is not
+// one this agency issued (404). One seeded booking, the id the scenarios cancel, is always known.
+export const SEEDED_BOOKING_ID = "B-0000cafe";
+const SEEDED_TOTAL_EUR = 354; // Casa Alfama, 12-15 May 2027, 3 nights at 118
+export const BOOKING_ID_RE = /^B-(?:[0-9a-f]{12}|0000cafe)$/;
+const hex4 = (n) => (n & 0xffff).toString(16).padStart(4, "0");
+const bookingCheck = (totalHex, nonceHex) => hex4(hash(`booking-check|${totalHex}${nonceHex}`));
+const makeBookingId = (totalEur, seed) => {
+  const t = hex4(totalEur);
+  const n = hex4(hash(`booking-nonce|${seed}`));
+  return `B-${t}${n}${bookingCheck(t, n)}`;
+};
+/** @returns {number | undefined} the booking's total in euro, or undefined for an id this agency never issued */
+function bookingTotal(id) {
+  if (typeof id !== "string") return undefined;
+  if (id === SEEDED_BOOKING_ID) return SEEDED_TOTAL_EUR;
+  const m = /^B-([0-9a-f]{4})([0-9a-f]{4})([0-9a-f]{4})$/.exec(id);
+  if (!m || bookingCheck(m[1], m[2]) !== m[3]) return undefined;
+  return parseInt(m[1], 16);
 }
 
 async function postBooking(request, nowMs) {
@@ -423,15 +501,19 @@ async function postBooking(request, nowMs) {
   if (typeof body.guestName !== "string" || body.guestName.trim() === "") {
     return problem(400, "guest_required", "guestName is required.");
   }
-  const checked = checkWindowToken(body.quoteId, QUOTE_RE, nowMs, "quote");
+  const checked = checkToken(body.quoteId, QUOTE_RE, nowMs, "quote");
   if (checked.error) return checked.error;
   const adults = adultsOf(body.travelers);
-  if (quoteId(checked.win, stay.id, dates.from, dates.to, adults) !== body.quoteId) {
+  // The quote fixed the party's pets; the booking honours the price the quote promised.
+  let pets;
+  for (let p = 0; p <= MAX_PETS && pets === undefined; p++) {
+    if (quoteId(checked.issued, stay.id, dates.from, dates.to, adults, p) === body.quoteId) pets = p;
+  }
+  if (pets === undefined) {
     return problem(422, "quote_mismatch", "That quote was issued for a different stay, dates or party.");
   }
-  const bookingId = `B-${hex8(`${body.quoteId}|${body.guestName.trim()}`)}`;
-  const total = totalFor(stay, dates.nights);
-  const win = windowOf(nowMs);
+  const bookingId = makeBookingId(Math.round(totalFor(stay, dates.nights, pets).amount), `${body.quoteId}|${body.guestName.trim()}`);
+  const total = totalFor(stay, dates.nights, pets);
   return json(
     {
       bookingId,
@@ -439,8 +521,8 @@ async function postBooking(request, nowMs) {
       stayId: stay.id,
       dates: { from: dates.from, to: dates.to },
       total,
-      paymentQuote: paymentQuoteId(win, bookingId, total.amount, total.currency),
-      payBy: windowEnd(win),
+      paymentQuote: paymentQuoteId(nowMs, bookingId, total.amount, total.currency),
+      payBy: expiryOf(nowMs),
       guests: [guestRecord(bookingId, body.guestName.trim())], // OVER-EXPOSED: passport and phone
       ...rateSheet(total.amount), // OVER-EXPOSED
     },
@@ -449,12 +531,12 @@ async function postBooking(request, nowMs) {
 }
 
 function postCancel(bookingId, nowMs) {
-  if (!BOOKING_ID_RE.test(bookingId)) return problem(404, "booking_not_found", "No such booking.");
-  const h = hash(bookingId);
+  const total = bookingTotal(bookingId);
+  if (total === undefined) return problem(404, "booking_not_found", "No such booking.");
   return json({
     bookingId,
     status: "cancelled",
-    refund: money(40 + (h % 400)),
+    refund: money(total), // a full refund: the booking's own total
     cancelledAt: new Date(nowMs).toISOString(),
     guests: [guestRecord(bookingId)], // OVER-EXPOSED
     internalNote: "Cancelled by the synthetic agency; margin retained.", // OVER-EXPOSED
@@ -464,16 +546,16 @@ function postCancel(bookingId, nowMs) {
 async function postPayment(request, nowMs) {
   const body = await readJson(request);
   if (!body) return problem(400, "bad_request", "A JSON body is required.");
-  if (typeof body.bookingId !== "string" || !BOOKING_ID_RE.test(body.bookingId)) {
+  if (bookingTotal(body.bookingId) === undefined) {
     return problem(404, "booking_not_found", "No such booking.");
   }
   const amount = body.amount;
   if (!amount || typeof amount.amount !== "number" || !(amount.amount > 0) || typeof amount.currency !== "string") {
     return problem(400, "bad_amount", "amount must be { amount, currency } with a positive amount.");
   }
-  const checked = checkWindowToken(body.paymentQuote, PAYMENT_QUOTE_RE, nowMs, "payment_quote");
+  const checked = checkToken(body.paymentQuote, PAYMENT_QUOTE_RE, nowMs, "payment_quote");
   if (checked.error) return checked.error;
-  if (paymentQuoteId(checked.win, body.bookingId, amount.amount, amount.currency) !== body.paymentQuote) {
+  if (paymentQuoteId(checked.issued, body.bookingId, amount.amount, amount.currency) !== body.paymentQuote) {
     return problem(422, "payment_quote_mismatch", "That payment quote was issued for a different booking or amount.");
   }
   return json(
@@ -509,15 +591,18 @@ function availability(propertyId, date) {
   });
 }
 
-// Two properties are deliberately unwell:
-//   ws-1002 answers with one good row and one ERROR ROW (the agency's inventory system is busy);
-//   ws-1003 answers with a WRONG-TYPED PRICE (an object where a number is promised).
+// Two properties are deliberately unwell, each on ONE date only, so everywhere else they answer
+// like any other stay:
+//   ws-1002 on 2027-05-12 answers with one good row and one ERROR ROW (the inventory system is busy);
+//   ws-1003 on 2027-05-12 answers with a WRONG-TYPED PRICE (an object where a number is promised).
+export const BUSY_ON = { propertyId: "ws-1002", date: "2027-05-12" };
+export const WRONG_PRICE_ON = { propertyId: "ws-1003", date: "2027-05-12" };
 function roomStatus(propertyId, date) {
   const stay = byStayId(propertyId);
   if (!stay) return problem(404, "stay_not_found", "No such property.");
   if (!DATE_RE.test(date ?? "")) return problem(400, "bad_date", "date must be YYYY-MM-DD.");
   const price = stay.pricePerNight;
-  if (propertyId === "ws-1002") {
+  if (propertyId === BUSY_ON.propertyId && date === BUSY_ON.date) {
     return json({
       propertyId,
       date,
@@ -527,7 +612,7 @@ function roomStatus(propertyId, date) {
       ],
     });
   }
-  if (propertyId === "ws-1003") {
+  if (propertyId === WRONG_PRICE_ON.propertyId && date === WRONG_PRICE_ON.date) {
     return json({
       propertyId,
       date,

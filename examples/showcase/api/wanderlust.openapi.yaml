@@ -117,7 +117,7 @@ paths:
         "200": { description: "{ pages: [{ name, url }, ...] }" }
   /v1/quotes:
     post:
-      summary: Quote a stay. Valid until the end of the current 15-minute window; books nothing.
+      summary: Quote a stay. Valid for 15 minutes from when it is issued; books nothing.
       requestBody:
         content:
           application/json:
@@ -128,12 +128,15 @@ paths:
                 stayId: { type: string }
                 dates: { $ref: "#/components/schemas/Dates" }
                 travelers: { $ref: "#/components/schemas/Party" }
+                pets: { type: integer, minimum: 0, maximum: 4, description: "Pets travelling; the stay's pet fee for them is itemised in the total." }
       responses:
-        "200": { description: A quote }
+        "200": { description: A quote, with petFee and a total that includes it }
+        "400": { description: Bad dates or a bad pets count }
+        "422": { description: The stay does not accept pets }
   /v1/bookings:
     post:
       summary: Book a quoted stay (agency key required)
-      description: The quote must be one this agency issued in the current window for the same stay, dates and party. The response carries OVER-EXPOSED guests (passport, phone) and the rate sheet.
+      description: The quote must be one this agency issued, less than 15 minutes ago, for the same stay, dates and party; the booking is at the quoted total. The response carries OVER-EXPOSED guests (passport, phone) and the rate sheet.
       security: [{ agencyKey: [] }]
       requestBody:
         content:
@@ -156,15 +159,15 @@ paths:
       summary: Cancel a booking (agency key required; cannot be undone)
       security: [{ agencyKey: [] }]
       parameters:
-        - { name: bookingId, in: path, required: true, schema: { type: string, examples: ["B-0123abcd"] } }
+        - { name: bookingId, in: path, required: true, schema: { type: string, examples: ["B-0000cafe"] } }
       responses:
-        "200": { description: The cancellation }
+        "200": { description: The cancellation; the refund is the booking's own total }
         "401": { description: Not an agency key }
-        "404": { description: Not a booking id }
+        "404": { description: Not a booking this agency issued (booking_not_found) }
   /v1/payments:
     post:
       summary: Pay for a booking with the demo card (agency key required; cannot be undone)
-      description: Needs a payment quote derived from booking, amount and window. The agency, not any gateway in front of it, refuses a missing, expired or foreign one.
+      description: Needs a payment quote derived from booking and amount, less than 15 minutes old. The agency, not any gateway in front of it, refuses a missing, expired or foreign one.
       security: [{ agencyKey: [] }]
       requestBody:
         content:
@@ -190,7 +193,7 @@ paths:
         "200": { description: Availability }
   /v1/room-status:
     get:
-      summary: Per-room status on a date. ws-1002 answers with an error row; ws-1003 with a wrong-typed price.
+      summary: Per-room status on a date. ws-1002 on 2027-05-12 answers with an error row; ws-1003 on 2027-05-12 with a wrong-typed price; every other property and date answers normally.
       parameters:
         - { name: propertyId, in: query, required: true, schema: { type: string, examples: ["ws-1001"] } }
         - { name: date, in: query, required: true, schema: { type: string, format: date } }

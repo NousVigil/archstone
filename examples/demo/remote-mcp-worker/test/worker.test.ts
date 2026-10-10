@@ -115,6 +115,17 @@ describe("AC-3.3 / AC-3.4 the published keys and the policy", () => {
     expect(w.apiCalls).not.toContain("POST /v1/bookings");
   });
 
+  it("the blocked key is denied on pay and cancel too, and the backend is not asked", async () => {
+    const w = newWorker();
+    const pay = await w.call("wanderlust_pay", { bookingId: "B-0000cafe", amount: { amount: 354, currency: "EUR" }, paymentQuote: "PQ-0-00000000" }, `Bearer ${KEY_B}`);
+    const cancel = await w.call("wanderlust_cancel", { bookingId: "B-0000cafe" }, `Bearer ${KEY_B}`);
+    expect([reason(pay), reason(cancel)]).toEqual(["principal_denied", "principal_denied"]);
+    expect(w.apiCalls).toEqual([]);
+    const ok = await w.call("wanderlust_cancel", { bookingId: "B-0000cafe" }, `Bearer ${KEY_A}`);
+    expect(ok.result?.isError).not.toBe(true);
+    expect(w.apiCalls).toEqual(["POST /v1/bookings/B-0000cafe/cancel"]);
+  });
+
   it("no Authorization header: authenticated_no_credential, backend never called", async () => {
     const w = newWorker();
     const args = await bookArgs(w);
@@ -221,7 +232,8 @@ describe("POST /run/{scenarioId}", () => {
     const res = await w.fetch("/run/S-07", { method: "POST", body: JSON.stringify({ tool: "wanderlust_cancel", arguments: { bookingId: "x" } }) });
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown> & { arguments: Record<string, unknown>; result: Record<string, unknown> };
-    expect(Object.keys(body).sort()).toEqual(["arguments", "caller", "result", "scenario", "tool"]);
+    expect(Object.keys(body).sort()).toEqual(["arguments", "backendCalls", "caller", "result", "scenario", "tool"]);
+    expect(body.backendCalls).toBe(1); // the setup quote; the booking itself was refused by policy
     expect(body.scenario).toBe("S-07");
     expect(body.tool).toBe("wanderlust_book");
     expect(body.caller).toBe("demo key B");
@@ -239,6 +251,65 @@ describe("POST /run/{scenarioId}", () => {
     expect(s6.result.isError).toBe(false);
     const s1 = (await (await w.fetch("/run/S-01", { method: "POST" })).json()) as { caller: string };
     expect(s1.caller).toBe("none");
+  });
+
+  it("S-12 returns the deprecation note it relies on, and where it lives", async () => {
+    const w = newWorker();
+    const body = (await (await w.fetch("/run/S-12", { method: "POST" })).json()) as {
+      result: { isError: boolean };
+      evidence: { kind: string; tool: string; where: string; excerpt: string };
+    };
+    expect(body.result.isError).toBe(false);
+    expect(body.evidence).toMatchObject({ kind: "tool-description", tool: "tourism_search" });
+    expect(body.evidence.where).toContain("tools/list");
+    expect(body.evidence.excerpt).toMatch(/deprecated: it is being phased out/i);
+    // It is the very text tools/list advertises.
+    const listed = (await w.rpc("tools/list", {})).result?.tools?.find((t) => t.name === "tourism_search");
+    expect(listed?.description).toContain(body.evidence.excerpt);
+    // Scenarios without evidence do not carry the field.
+    const s1 = (await (await w.fetch("/run/S-01", { method: "POST" })).json()) as Record<string, unknown>;
+    expect(s1.evidence).toBeUndefined();
+  });
+
+  it("S-13 also runs the wrong-format price call, reported as an invalid field, beside the busy-row answer", async () => {
+    const w = newWorker();
+    const res = await w.fetch("/run/S-13", { method: "POST" });
+    const body = (await res.json()) as {
+      result: { isError: boolean; content: { text: string }[] };
+      alsoRun: { label: string; arguments: Record<string, unknown>; result: { isError: boolean; _meta: Record<string, { missing: unknown[]; invalid: { field: string }[] }> } }[];
+      backendCalls: number;
+    };
+    expect(body.result.isError).toBe(false);
+    expect(JSON.stringify(body.result)).toContain("agency-busy");
+    expect(body.alsoRun).toHaveLength(1);
+    expect(body.alsoRun[0].label).toBe("wrong-format-price");
+    expect(body.alsoRun[0].arguments).toEqual({ propertyId: "ws-1003", date: "2027-05-12" });
+    expect(body.alsoRun[0].result.isError).toBe(true);
+    expect(body.alsoRun[0].result._meta["dev.archstone/contract_violation"]).toMatchObject({ missing: [], invalid: [{ field: "pricePerNight" }] });
+    expect(JSON.stringify(body.alsoRun[0].result)).not.toContain("139,00");
+    expect(body.backendCalls).toBe(2);
+    expect(res.headers.get("x-showcase-backend-calls")).toBe("2");
+  });
+
+  it("S-23 refuses a wrong-shaped argument set before the agency is called: input_invalid, zero backend calls", async () => {
+    const w = newWorker();
+    const res = await w.fetch("/run/S-23", { method: "POST", body: JSON.stringify({ arguments: { destination: "Lisbon" } }) });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      caller: string;
+      arguments: Record<string, unknown>;
+      backendCalls: number;
+      result: { isError: boolean; _meta: Record<string, { error: string; problems: { path: string }[] }> };
+    };
+    expect(body.caller).toBe("none");
+    expect(body.arguments).toEqual({ destination: { $ne: 1 }, dates: "tomorrow", travelers: -1 }); // the body is ignored
+    expect(body.result.isError).toBe(true);
+    const meta = body.result._meta["dev.archstone/input_invalid"];
+    expect(meta.error).toBe("input_invalid");
+    expect(meta.problems.map((p) => p.path).sort()).toEqual(["dates", "destination", "travelers"]);
+    expect(body.backendCalls).toBe(0);
+    expect(res.headers.get("x-showcase-backend-calls")).toBe("0");
+    expect(w.apiCalls).toEqual([]);
   });
 
   it("S-14 reports an unknown tool: there is no tool for the DELETE route", async () => {

@@ -66,6 +66,7 @@ const rows = loadScenarios().scenarios;
 const row = (id: string): ScenarioRow => rows.find((r) => r.id === id)!;
 const liveRows = rows.filter((r) => r.mode === "live");
 const listed = new Set(toolDefinitions(registry).map((d) => d.name));
+const definitionsOf = (name: string): string => toolDefinitions(registry).find((d) => d.name === name)?.description ?? "";
 
 describe("AC-1.3: `archstone apply` on the manifest", () => {
   it("exits 0, reports 13 capabilities, and warns only about the two unenforced approval tokens", async () => {
@@ -275,7 +276,7 @@ describe("AC-1.9: stateless by construction", () => {
     // The row's own call (a bad payment quote) is refused by the agency ...
     expect(booked.isError).toBe(true);
     expect(textOf(booked)).toContain("422");
-    expect(captured.bookingId).toMatch(/^B-[0-9a-f]{8}$/);
+    expect(captured.bookingId).toMatch(/^B-[0-9a-f]{12}$/);
     // ... and a fresh context (no shared memory at all) accepts the genuine one.
     const fresh = newContext();
     const paid = await call(fresh, "wanderlust_pay", { bookingId: captured.bookingId, amount: captured.total, paymentQuote: captured.paymentQuote }, "A");
@@ -293,6 +294,10 @@ describe("every live scenario runs end to end against the synthetic API", () => 
       if (r.outcome === "success") {
         expect(result.isError, JSON.stringify(result)).toBe(false);
         expect(result.structuredContent).toBeDefined();
+      } else if (r.outcome === "refused" && r.refusal === "input_invalid") {
+        expect(result.isError).toBe(true);
+        expect(result._meta?.["dev.archstone/input_invalid"]).toMatchObject({ error: "input_invalid" });
+        expect(ctx.spy.calls).toEqual([]);
       } else if (r.outcome === "refused") {
         expect(result.isError).toBe(true);
         expect(result._meta?.[POLICY_DENIED_META_KEY]).toBeDefined();
@@ -508,6 +513,104 @@ describe("`verify` replays the recorded contracts against the synthetic API", ()
     const original = readFileSync(resolve(REPO_ROOT, "examples/manifests/tourism/bindings/tourism.search.binding.yaml"), "utf8");
     const fingerprint = /fingerprint: "(sha256:[0-9a-f]{64})"/.exec(original)![1];
     expect(tool("tourism.search").contract!.fingerprint).toBe(fingerprint);
+  });
+});
+
+describe("#201: a believable agency, through the real runtime", () => {
+  const DATES = { from: "2027-05-12", to: "2027-05-15" };
+  const quoteArgs = { stayId: "ws-1001", dates: DATES, travelers: { adults: 2 } };
+  const bookArgs = (quoteId: string) => ({ ...quoteArgs, quoteId, guestName: "Ana Pop" });
+  const quoteOf = (r: { structuredContent?: unknown }) => (r.structuredContent as { quote: { quoteId: string; total: { amount: number }; petFee?: { amount: number }; expiresAt: string } }).quote;
+
+  it("R1: a quote booked after its 15 minutes is refused by the agency; Archstone only reports it", async () => {
+    let now = CLOCK_MS;
+    const ctx = newContext({ now: () => now });
+    const q = quoteOf(await call(ctx, "wanderlust_quote", quoteArgs));
+    expect(Date.parse(q.expiresAt) - now).toBe(15 * 60_000);
+    now += 14 * 60_000;
+    expect((await call(ctx, "wanderlust_book", bookArgs(q.quoteId), "A")).isError).toBe(false);
+    now += 60_000; // exactly at expiry
+    const late = await call(ctx, "wanderlust_book", bookArgs(q.quoteId), "A");
+    expect(late.isError).toBe(true);
+    expect(textOf(late)).toContain("backend returned 422");
+    expect(late._meta?.[POLICY_DENIED_META_KEY]).toBeUndefined();
+  });
+
+  it("R1: pay refuses an expired payment quote the same way", async () => {
+    let now = CLOCK_MS;
+    const ctx = newContext({ now: () => now });
+    const q = quoteOf(await call(ctx, "wanderlust_quote", quoteArgs));
+    const booking = ((await call(ctx, "wanderlust_book", bookArgs(q.quoteId), "A")).structuredContent as { booking: { bookingId: string; total: unknown; paymentQuote: string } }).booking;
+    const payArgs = { bookingId: booking.bookingId, amount: booking.total, paymentQuote: booking.paymentQuote };
+    now += 15 * 60_000;
+    const late = await call(ctx, "wanderlust_pay", payArgs, "A");
+    expect(late.isError).toBe(true);
+    expect(textOf(late)).toContain("backend returned 422");
+    now = CLOCK_MS + 60_000;
+    expect((await call(ctx, "wanderlust_pay", payArgs, "A")).isError).toBe(false);
+  });
+
+  it("R2: pets is a declared optional input; the quote itemises the fee, and a bad count never reaches the agency", async () => {
+    const ctx = newContext();
+    const q = quoteOf(await call(ctx, "wanderlust_quote", { ...quoteArgs, pets: 1 }));
+    expect(q.petFee?.amount).toBe(30);
+    expect(q.total.amount).toBe(384);
+    const callsBefore = ctx.spy.calls.length;
+    const bad = await call(ctx, "wanderlust_quote", { ...quoteArgs, pets: "one cat" });
+    expect(bad._meta?.["dev.archstone/input_invalid"]).toMatchObject({ problems: [{ path: "pets", expected: "number" }] });
+    expect(ctx.spy.calls.length).toBe(callsBefore);
+    const refused = await call(ctx, "wanderlust_quote", { ...quoteArgs, stayId: "ws-1003", pets: 1 });
+    expect(refused.isError).toBe(true);
+    expect(textOf(refused)).toContain("backend returned 422");
+    expect(tool("wanderlust.quote").input.map((f) => f.name)).toContain("pets");
+    expect(definitionsOf("wanderlust_quote")).toMatch(/refuses a quote for a party with pets/);
+  });
+
+  it("R4: a stay's name is a destination, on both searches", async () => {
+    const ctx = newContext();
+    for (const name of ["wanderlust_search", "tourism_search"]) {
+      const r = await call(ctx, name, { destination: "Pensão Azul", dates: DATES, travelers: { adults: 2 } });
+      expect((r.structuredContent as { stays: { name: string }[] }).stays.map((x) => x.name), name).toEqual(["Pensão Azul"]);
+    }
+    expect(JSON.stringify(toolDefinitions(registry).find((d) => d.name === "wanderlust_search")!.inputSchema)).toContain("exact name of one stay");
+  });
+
+  it("R5: Pensão Azul answers for June weekends; the busy row is only on the scenario's date", async () => {
+    const ctx = newContext();
+    for (const date of ["2027-06-05", "2027-06-06", "2027-06-12", "2027-06-13"]) {
+      const r = await call(ctx, "wanderlust_room-status", { propertyId: "ws-1002", date });
+      expect(r.isError, date).toBe(false);
+      expect(JSON.stringify(r), date).not.toContain("agency-busy");
+    }
+  });
+
+  it("R6: cancelling an id the agency never issued is its 404; the seeded booking refunds its total", async () => {
+    const ctx = newContext();
+    const unknown = await call(ctx, "wanderlust_cancel", { bookingId: "B-ffffffffffff" }, "A");
+    expect(unknown.isError).toBe(true);
+    expect(textOf(unknown)).toContain("backend returned 404");
+    const seeded = await call(ctx, "wanderlust_cancel", { bookingId: "B-0000cafe" }, "A");
+    const refund = (seeded.structuredContent as { cancellation: { refund: { amount: number } } }).cancellation.refund.amount;
+    expect(refund).toBe(quoteOf(await call(ctx, "wanderlust_quote", quoteArgs)).total.amount);
+  });
+
+  it("R3: the official page is on the declared origin and returned; the partner link is withheld", async () => {
+    const { result } = await runRow(newContext(), row("S-04"));
+    const pages = (result.structuredContent as { pages: { name: string; url?: string }[] }).pages;
+    expect(pages[0].url).toMatch(/^https:\/\/www\.wanderlust-agency\.example\/hotels\//);
+    expect(pages[1].url).toBeUndefined();
+    expect(JSON.stringify(result)).not.toContain("partner-hotels");
+  });
+
+  it("S-06 / S-07: the copy says who enforces what, and the two cards agree", () => {
+    const s6 = row("S-06").copy.en;
+    const s7 = row("S-07").copy.en;
+    expect(s6.refused).toMatch(/before the agency is asked/);
+    expect(s6.refused).toMatch(/Archstone does not check keys itself/);
+    expect(s6.refused).toMatch(/the agency checks the key and the quote/);
+    expect(s6.refused).not.toMatch(/Archstone does not check who you are/);
+    expect(s7.happens).toMatch(/Archstone's rules before the agency is asked/);
+    expect(s7.refused).toMatch(/paying and cancelling too/);
   });
 });
 

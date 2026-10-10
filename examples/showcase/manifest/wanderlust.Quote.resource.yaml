@@ -16,7 +16,13 @@ resource:
       description: "Number of nights."
     total:
       type: money
-      description: "Total price for the stay."
+      description: "Total price for the stay, including the pet fee when pets were declared."
+    pets:
+      type: quantity
+      description: "How many pets the quote was priced for (0 when none were declared)."
+    petFee:
+      type: money
+      description: "The pet fee already included in the total: 0 when no pets were declared or the stay takes pets free of charge."
     expiresAt:
       type: datetime
-      description: "When the quote stops being valid."
+      description: "When the quote stops being valid: 15 minutes after it was issued."

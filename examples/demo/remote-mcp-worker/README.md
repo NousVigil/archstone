@@ -38,9 +38,22 @@ makes that call itself. Unknown ids, and scenarios that are not `live`, are `404
   "tool": "wanderlust_book",
   "arguments": { "...": "the fixed arguments, quote id filled in" },
   "caller": "none | demo key A | demo key B",
-  "result": { "content": [], "structuredContent": {}, "_meta": {}, "isError": true }
+  "result": { "content": [], "structuredContent": {}, "_meta": {}, "isError": true },
+  "backendCalls": 1
 }
 ```
+
+`backendCalls` is the number of requests the run made to the synthetic agency, setup steps included
+(the same number as the `x-showcase-backend-calls` header, for a page that cannot read headers). Three
+scenarios add one field each:
+
+- S-12 (`evidence`): `{ kind, tool, where, excerpt }`, the sentence of the deprecated tool's
+  description that the card relies on, read from the same tool list `tools/list` serves. The note lives
+  in that description, not in the search result.
+- S-13 (`alsoRun`): the second fixed call, the wrong-format price on another property, with its own
+  `result` (a contract violation that names the field as `invalid`). The main `result` is unchanged.
+- S-23: a fixed malformed argument set. `result` carries the `input_invalid` refusal and its problems,
+  and `backendCalls` is `0`: the agency was never called.
 
 For the rate-limited capability (S-11) the body also has a top-level `rateLimit` string saying the
 limit is approximate; no other scenario has it.
@@ -63,8 +76,8 @@ a model's answer**; it shows the call an AI would make and what came back.
 
 | Key | Principal | Effect |
 |---|---|---|
-| `demo-public-key-visitor-0000` | `demo:visitor` | accepted by the agency, allowed to book |
-| `demo-public-key-blocked-0000` | `demo:blocked` | accepted by the agency, denied by the booking policy (`principal_denied`) |
+| `demo-public-key-visitor-0000` | `demo:visitor` | accepted by the agency, allowed to book, pay and cancel |
+| `demo-public-key-blocked-0000` | `demo:blocked` | accepted by the agency, denied by Archstone's policy on book, pay and cancel (`principal_denied`), before the agency is asked |
 
 They are published here, in [`credentials.mjs`](../../showcase/credentials.mjs) and on the site, on
 purpose. Anyone may use them. They unlock invented data and nothing else.

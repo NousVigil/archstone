@@ -1,6 +1,6 @@
 capability:
   id: wanderlust.quote
-  description: "Price a stay for given dates and party. The quote expires; it books nothing and charges nothing."
+  description: "Price a stay for given dates and party, including its pet fee when pets travel. The quote is valid for 15 minutes from when it is issued; it books nothing and charges nothing. A stay that does not accept pets refuses a quote for a party with pets."
   effect: write
 
   input:
@@ -12,9 +12,16 @@ capability:
       description: "Check-in and check-out as ISO dates (YYYY-MM-DD), 1 to 30 nights. Work out calendar dates yourself; prose such as 'next weekend' is refused."
     travelers:
       type: party
+    pets:
+      type: quantity
+      required: false
+      description: "How many pets travel (a whole number, 0 to 4). Leave it out for none. The quote then itemises the stay's pet fee in its total; a stay with no pets policy refuses it. See the stay's petPolicy."
 
   output:
     quote:
       type: Quote
+
+  failures:
+    pets-not-allowed: The stay does not accept pets; quote without pets or choose another stay.
 
   provider: wanderlust-api

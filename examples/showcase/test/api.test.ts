@@ -19,7 +19,11 @@ import {
   UNDECLARED_IMAGE_HOST,
   UNDECLARED_MARKUP_HOST,
   UNDECLARED_PAGE_HOST,
+  BUSY_ON,
+  SEEDED_BOOKING_ID,
+  WRONG_PRICE_ON,
   handle,
+  resolvePlace,
   normalizePreferences,
   resolveDestination,
 } from "../api/wanderlust-api.mjs";
@@ -162,8 +166,10 @@ describe("determinism and statelessness (AC-1.9)", () => {
     });
     expect(other.body.bookingId).not.toBe(a.body.bookingId);
 
-    // Shape, not storage: an id nobody ever created is accepted if well-formed, refused if not.
+    // Self-verifying, not stored: the seeded booking and any id this agency issued cancel; an id it
+    // never issued is a 404, whatever its shape.
     expect((await call("POST", "/v1/bookings/B-0000cafe/cancel", { headers: auth(DEMO_KEY_A) })).status).toBe(200);
+    expect((await call("POST", `/v1/bookings/${a.body.bookingId}/cancel`, { headers: auth(DEMO_KEY_A) })).status).toBe(200);
     expect((await call("POST", "/v1/bookings/not-a-booking/cancel", { headers: auth(DEMO_KEY_A) })).status).toBe(404);
     const pay = await call("POST", "/v1/payments", {
       headers: auth(DEMO_KEY_A),
@@ -172,14 +178,20 @@ describe("determinism and statelessness (AC-1.9)", () => {
     expect(pay.status).toBe(404);
   });
 
-  it("takes its clock from the caller: a new 15-minute window is a new quote id", async () => {
+  it("takes its clock from the caller: a quote expires 15 minutes after it is issued, not at a fixed boundary", async () => {
     const q = (now: number) => call("POST", "/v1/quotes", { body: { stayId: "ws-1001", dates: DATES, travelers: PARTY }, now });
     const first = await q(CLOCK_MS);
-    const sameWindow = await q(CLOCK_MS + 60_000);
-    const nextWindow = await q(CLOCK_MS + QUOTE_WINDOW_MS);
-    expect(sameWindow.body.quoteId).toBe(first.body.quoteId);
-    expect(nextWindow.body.quoteId).not.toBe(first.body.quoteId);
-    expect(first.body.expiresAt).toBe("2027-05-01T10:15:00.000Z");
+    const again = await q(CLOCK_MS);
+    const later = await q(CLOCK_MS + 60_000);
+    expect(again.body.quoteId).toBe(first.body.quoteId); // same instant, same request: deterministic
+    expect(later.body.quoteId).not.toBe(first.body.quoteId); // a later request is a new quote
+    expect(first.body.expiresAt).toBe("2027-05-01T10:22:00.000Z");
+    expect(later.body.expiresAt).toBe("2027-05-01T10:23:00.000Z");
+    // The expiry is always in the future of the request, whatever minute of the quarter hour it is.
+    for (const offset of [0, 1, 60_000, 14 * 60_000, QUOTE_WINDOW_MS - 1, QUOTE_WINDOW_MS, 7 * QUOTE_WINDOW_MS + 12_345]) {
+      const r = await q(CLOCK_MS + offset);
+      expect(Date.parse(r.body.expiresAt) - (CLOCK_MS + offset), `offset ${offset}`).toBe(QUOTE_WINDOW_MS);
+    }
   });
 
   it("keeps image URLs on a constant origin whatever address the request came to", async () => {
@@ -323,7 +335,9 @@ describe("AC-1.2: it over-exposes on purpose (each item pinned)", () => {
     expect(openapi.paths["/v1/guests/{name}/bookings"]).toHaveProperty("delete");
   });
 
-  it("the room-status endpoint is unwell on purpose: an error row for one property, a wrong-typed price for another", async () => {
+  it("the room-status endpoint is unwell on purpose, on one property and date each: an error row, and a wrong-typed price", async () => {
+    expect(BUSY_ON).toEqual({ propertyId: "ws-1002", date: "2027-05-12" });
+    expect(WRONG_PRICE_ON).toEqual({ propertyId: "ws-1003", date: "2027-05-12" });
     const busy = (await call("GET", "/v1/room-status?propertyId=ws-1002&date=2027-05-12")).body;
     expect(busy.rows.some((r: { error?: unknown }) => r.error !== undefined)).toBe(true);
     expect(busy.rows.some((r: { error?: unknown }) => r.error === undefined)).toBe(true);
@@ -365,7 +379,9 @@ describe("the agency judges the credential and the quote; Archstone is not in th
     expect((await book({ quoteId: "nonsense" })).body.error).toBe("quote_invalid");
     expect((await book({ quoteId: q.quoteId, stayId: "ws-1002" })).body.error).toBe("quote_mismatch");
     expect((await book({ quoteId: q.quoteId, travelers: { adults: 3 } })).body.error).toBe("quote_mismatch");
+    expect((await book({ quoteId: q.quoteId }, CLOCK_MS + QUOTE_WINDOW_MS - 1)).status).toBe(201); // still inside its 15 minutes
     expect((await book({ quoteId: q.quoteId }, CLOCK_MS + QUOTE_WINDOW_MS)).body.error).toBe("quote_expired");
+    expect((await book({ quoteId: q.quoteId }, CLOCK_MS - 1)).body.error).toBe("quote_invalid"); // not issued yet
   });
 
   it("pays only with a payment quote derived from booking, amount and window", async () => {
@@ -388,8 +404,14 @@ describe("the agency judges the credential and the quote; Archstone is not in th
     expect((await pay({ paymentQuote: undefined })).body.error).toBe("payment_quote_required");
     expect((await pay({ paymentQuote: "garbage" })).body.error).toBe("payment_quote_invalid");
     expect((await pay({ amount: { amount: 1, currency: "EUR" } })).body.error).toBe("payment_quote_mismatch");
-    expect((await pay({ bookingId: "B-ffffffff" })).body.error).toBe("payment_quote_mismatch");
+    // A booking this agency issued, but not the one the payment quote was made for.
+    expect((await pay({ bookingId: "B-0000cafe" })).body.error).toBe("payment_quote_mismatch");
+    // A booking id this agency never issued.
+    const unknown = await pay({ bookingId: "B-ffffffff" });
+    expect([unknown.status, unknown.body.error]).toEqual([404, "booking_not_found"]);
+    expect((await pay({}, CLOCK_MS + QUOTE_WINDOW_MS - 1)).status).toBe(201); // still inside its 15 minutes
     expect((await pay({}, CLOCK_MS + QUOTE_WINDOW_MS)).body.error).toBe("payment_quote_expired");
+    expect((await pay({}, CLOCK_MS - 1)).body.error).toBe("payment_quote_invalid"); // not issued yet
   });
 });
 
@@ -613,5 +635,162 @@ describe("one catalogue, one destination resolver", () => {
     expect(normalizePreferences(["pet-friendly", "Cat", "dogs", "pets", "BREAKFAST", "kids", "sea view"]).sort()).toEqual(["breakfast", "family", "pets"]);
     expect(normalizePreferences(["sea view", 7, null])).toEqual([]);
     expect(normalizePreferences(undefined)).toEqual([]);
+  });
+});
+
+describe("R1-R6: a believable agency (#201)", () => {
+  const quote = (extra: Record<string, unknown> = {}, now = CLOCK_MS, stayId = "ws-1001") =>
+    call("POST", "/v1/quotes", { body: { stayId, dates: DATES, travelers: PARTY, ...extra }, now });
+  const book = (q: { quoteId: string }, extra: Record<string, unknown> = {}, now = CLOCK_MS, stayId = "ws-1001") =>
+    call("POST", "/v1/bookings", {
+      headers: auth(DEMO_KEY_A),
+      body: { quoteId: q.quoteId, stayId, dates: DATES, travelers: PARTY, guestName: "Ana Pop", ...extra },
+      now,
+    });
+
+  describe("R2: the pet fee is itemised in the quote total", () => {
+    it("a stay that charges per night adds pets x nights x fee, shown as petFee, and the booking honours it", async () => {
+      const plain = await quote();
+      expect(plain.body.total).toEqual({ amount: 354, currency: "EUR" }); // 3 nights at 118
+      expect(plain.body.petFee).toEqual({ amount: 0, currency: "EUR" });
+      expect(plain.body.pets).toBe(0);
+      const withCat = await quote({ pets: 1 });
+      expect(withCat.body.petFee).toEqual({ amount: 30, currency: "EUR" }); // EUR 10 x 3 nights
+      expect(withCat.body.total).toEqual({ amount: 384, currency: "EUR" });
+      expect(withCat.body.pets).toBe(1);
+      expect((await quote({ pets: 2 })).body.petFee.amount).toBe(60);
+      const booked = await book(withCat.body);
+      expect(booked.status).toBe(201);
+      expect(booked.body.total).toEqual({ amount: 384, currency: "EUR" });
+      // ... and the party must be the one quoted: a quote for a cat does not book at the no-pet price.
+      expect((await book(plain.body)).body.total).toEqual({ amount: 354, currency: "EUR" });
+    });
+
+    it("a stay that takes pets free of charge itemises a fee of 0", async () => {
+      const free = await quote({ pets: 1 }, CLOCK_MS, "ws-1002");
+      expect(free.status).toBe(200);
+      expect(free.body.petFee).toEqual({ amount: 0, currency: "EUR" });
+      expect(free.body.total.amount).toBe(74 * 3);
+    });
+
+    it("a stay with no pets refuses the quote and says why; a non-count is a 400", async () => {
+      const refused = await quote({ pets: 1 }, CLOCK_MS, "ws-1003");
+      expect([refused.status, refused.body.error]).toEqual([422, "pets_not_allowed"]);
+      expect(refused.body.message).toContain("Miradouro Court");
+      expect(refused.body.message).toContain("No pets");
+      expect((await quote({ pets: 0 }, CLOCK_MS, "ws-1003")).status).toBe(200);
+      for (const pets of [-1, 1.5, "1", 5, true]) expect((await quote({ pets })).body.error, JSON.stringify(pets)).toBe("bad_pets");
+    });
+
+    it("the fee is per pet per night from each stay's own policy", async () => {
+      const per = (id: string) => CATALOGUE.find((s) => s.id === id)!.petPolicy;
+      expect(per("ws-2001")).toContain("EUR 12 per night");
+      const porto = await quote({ pets: 1 }, CLOCK_MS, "ws-2001");
+      expect(porto.body.petFee.amount).toBe(36);
+    });
+  });
+
+  describe("R4: a stay's name is a destination", () => {
+    const search = (destination: string, extra: Record<string, unknown> = {}) =>
+      call("POST", "/v1/stays/search", { body: { destination, dates: DATES, travelers: PARTY, ...extra } });
+    it.each(["Pensão Azul", "Pensao Azul", "pensão azul", "PENSAO AZUL", "Pensão Azul, Lisbon", "Pensao Azul, Lisboa, Portugal", "pensao-azul"])(
+      "%j returns that stay and no other",
+      async (destination) => {
+        const r = await search(destination);
+        expect(r.body.stays.map((s: { id: string }) => s.id)).toEqual(["ws-1002"]);
+        expect(r.body.totalMatches).toBe(1);
+      },
+    );
+    it("the legacy search matches names the same way", async () => {
+      const r = await call("POST", "/v1/search", { body: { destination: "Pensão Azul", dates: DATES, travelers: PARTY } });
+      expect(r.body.stays.map((s: { id: string }) => s.id)).toEqual(["ws-1002"]);
+    });
+    it("the other filters still apply to a named stay", async () => {
+      expect((await search("Pensão Azul", { budget: { amount: 50, currency: "EUR" } })).body.stays).toEqual([]);
+      expect((await search("Miradouro Court", { preferences: ["pets"] })).body.stays).toEqual([]);
+      expect((await search("Miradouro Court")).body.stays.map((s: { id: string }) => s.id)).toEqual(["ws-1003"]);
+    });
+    it("no fuzzy matching: a wrong city, a near miss or two stays is an honest empty result", async () => {
+      for (const destination of ["Pensão Azul, Porto", "Pensao Azu", "Azul", "Pensão Azul, Casa Alfama", "Pensão Azul, Spain"]) {
+        expect((await search(destination)).body.stays, destination).toEqual([]);
+      }
+    });
+    it("a city still returns the whole city", () => {
+      expect(resolvePlace("Lisbon")).toEqual({ city: "Lisbon" });
+      expect(resolveDestination("Pensão Azul")).toBe("Lisbon");
+    });
+  });
+
+  describe("R5: room-status is usable almost everywhere", () => {
+    const status = async (propertyId: string, date: string) => (await call("GET", `/v1/room-status?propertyId=${propertyId}&date=${date}`)).body;
+    it("every weekend of June 2027, for every stay, answers with usable rows", async () => {
+      const weekends = ["2027-06-04", "2027-06-05", "2027-06-06", "2027-06-11", "2027-06-12", "2027-06-13", "2027-06-18", "2027-06-19", "2027-06-20", "2027-06-25", "2027-06-26", "2027-06-27"];
+      for (const stay of CATALOGUE) {
+        for (const date of weekends) {
+          const body = await status(stay.id, date);
+          expect(body.rows.length, `${stay.id} ${date}`).toBeGreaterThan(0);
+          for (const row of body.rows) {
+            expect(row.error, `${stay.id} ${date}`).toBeUndefined();
+            expect(typeof row.pricePerNight, `${stay.id} ${date}`).toBe("number");
+            expect(["free", "taken"]).toContain(row.status);
+          }
+        }
+      }
+    });
+    it("agency-busy appears on exactly one property and date, the wrong-typed price on exactly one", async () => {
+      const dates = ["2027-05-11", "2027-05-12", "2027-05-13", "2027-06-05"];
+      const busy: string[] = [];
+      const wrong: string[] = [];
+      for (const stay of CATALOGUE) {
+        for (const date of dates) {
+          const body = await status(stay.id, date);
+          if (body.rows.some((r: { error?: unknown }) => r.error !== undefined)) busy.push(`${stay.id} ${date}`);
+          if (body.rows.some((r: { pricePerNight?: unknown; error?: unknown }) => r.error === undefined && typeof r.pricePerNight !== "number")) wrong.push(`${stay.id} ${date}`);
+        }
+      }
+      expect(busy).toEqual(["ws-1002 2027-05-12"]);
+      expect(wrong).toEqual(["ws-1003 2027-05-12"]);
+    });
+  });
+
+  describe("R6: cancelling", () => {
+    const cancel = (id: string, now = CLOCK_MS) => call("POST", `/v1/bookings/${id}/cancel`, { headers: auth(DEMO_KEY_A), now });
+    it("an id the agency never issued is a 404 booking_not_found", async () => {
+      for (const id of ["B-12345678", "B-0000cafd", "B-018017877847", "B-ffffffffffff", "nonsense", "B-"]) {
+        const r = await cancel(id);
+        expect([r.status, r.body.error], id).toEqual([404, "booking_not_found"]);
+      }
+    });
+    it("the seeded booking is a real one and its refund equals its total", async () => {
+      const r = await cancel(SEEDED_BOOKING_ID);
+      expect(r.status).toBe(200);
+      expect(r.body.refund).toEqual({ amount: 354, currency: "EUR" });
+      expect(r.body.refund).toEqual((await quote()).body.total); // Casa Alfama, 12-15 May 2027
+    });
+    it("a booking made here cancels for exactly its own total, pet fee included", async () => {
+      for (const pets of [0, 1, 2]) {
+        const q = (await quote(pets ? { pets } : {})).body;
+        const b = (await book(q)).body;
+        const c = await cancel(b.bookingId);
+        expect(c.status).toBe(200);
+        expect(c.body.refund).toEqual(b.total);
+      }
+    });
+    it("a tampered booking id is not one the agency issued", async () => {
+      const b = (await book((await quote()).body)).body;
+      const last = b.bookingId.slice(-1);
+      const tampered = `${b.bookingId.slice(0, -1)}${last === "0" ? "1" : "0"}`;
+      expect((await cancel(tampered)).status).toBe(404);
+    });
+  });
+
+  describe("R3: the agency's own page is on the declared origin, the partner link is not", () => {
+    it("the first page row is the agency's own site; the annex is the undeclared partner listing", async () => {
+      const { body } = await call("GET", "/v1/stays/ws-1002/pages");
+      expect(body.pages[0].url.startsWith(`${PAGES_BASE}/hotels/`)).toBe(true);
+      expect(body.pages[0].name).toBe("Pensão Azul");
+      expect(body.pages[1].url.startsWith(`${UNDECLARED_PAGE_HOST}/`)).toBe(true);
+      expect(body.pages[1].name).toMatch(/partner listing/);
+    });
   });
 });

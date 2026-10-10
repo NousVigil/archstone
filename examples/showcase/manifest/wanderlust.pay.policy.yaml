@@ -1,0 +1,14 @@
+# Who may pay. The same principals as booking: a caller the manifest denies or does not list is
+# refused by Archstone before the agency is asked. deny wins over allow.
+apiVersion: archstone/v1
+kind: Policy
+metadata:
+  id: wanderlust-pay-principals
+  name: Who may pay
+  scope: capability
+  capabilityId: wanderlust.pay
+spec:
+  allow:
+    - "demo:visitor"
+  deny:
+    - "demo:blocked"

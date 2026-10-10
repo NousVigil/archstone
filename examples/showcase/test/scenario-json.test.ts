@@ -11,7 +11,7 @@ import { REPO_ROOT, SHOWCASE_DIR, loadScenarios, openRegistry, type ScenarioRow 
 const doc = loadScenarios();
 const rows = doc.scenarios;
 const byId = (id: string): ScenarioRow => rows.find((r) => r.id === id)!;
-const ids = Array.from({ length: 22 }, (_, i) => `S-${String(i + 1).padStart(2, "0")}`);
+const ids = Array.from({ length: 23 }, (_, i) => `S-${String(i + 1).padStart(2, "0")}`);
 
 function textFiles(dir: string): string[] {
   return readdirSync(dir).flatMap((f) => {
@@ -22,9 +22,9 @@ function textFiles(dir: string): string[] {
 }
 
 describe("AC-1.10: the scenario table", () => {
-  it("has every S-01..S-22 exactly once, in order", () => {
+  it("has every S-01..S-23 exactly once, in order", () => {
     expect(rows.map((r) => r.id)).toEqual(ids);
-    expect(new Set(rows.map((r) => r.id)).size).toBe(22);
+    expect(new Set(rows.map((r) => r.id)).size).toBe(23);
   });
 
   it("gives every row except the two locked ones its N-xx id, numbered like the scenario", () => {
@@ -37,9 +37,9 @@ describe("AC-1.10: the scenario table", () => {
     }
   });
 
-  it("has live rows S-01..S-09 and S-11..S-14, recorded rows S-15..S-21, and exactly two locked ones", () => {
+  it("has live rows S-01..S-09, S-11..S-14 and S-23, recorded rows S-15..S-21, and exactly two locked ones", () => {
     const modes = (m: string) => rows.filter((r) => r.mode === m).map((r) => r.id);
-    expect(modes("live")).toEqual(["S-01", "S-02", "S-03", "S-04", "S-05", "S-06", "S-07", "S-08", "S-09", "S-11", "S-12", "S-13", "S-14"]);
+    expect(modes("live")).toEqual(["S-01", "S-02", "S-03", "S-04", "S-05", "S-06", "S-07", "S-08", "S-09", "S-11", "S-12", "S-13", "S-14", "S-23"]);
     expect(modes("recorded")).toEqual(["S-15", "S-16", "S-17", "S-18", "S-19", "S-20", "S-21"]);
     expect(modes("locked")).toEqual(["S-10", "S-22"]);
   });
