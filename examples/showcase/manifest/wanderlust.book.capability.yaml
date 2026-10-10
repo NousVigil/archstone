@@ -9,6 +9,7 @@ capability:
       description: "The quote id from wanderlust.quote, still valid."
     stayId:
       type: identifier
+      description: "The stay's id: the `id` field of a row returned by wanderlust_search (it looks like `ws-1001`), never the stay's name. To find a stay the user names, first call wanderlust_search with that name as `destination`."
     dates:
       type: date-range
     travelers:

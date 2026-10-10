@@ -243,3 +243,13 @@ describe("a traveller with a cat: search, quote, book (#201)", () => {
     expect(refused.isError).toBe(true);
   });
 });
+
+describe.each(SEARCHES)("%s: every catalogue stay is found by its own name (#197)", (tool) => {
+  const ctx = newContext();
+  it.each(CATALOGUE.map((s) => [s.name, s.id] as const))("%s returns exactly %s", async (name, id) => {
+    const { r, stays } = await search(ctx, tool, { destination: name });
+    expect(r.isError).toBeFalsy();
+    expect(stays.map((s) => s.name)).toEqual([name]);
+    if (tool === "wanderlust_search") expect(stays.map((s) => s.id)).toEqual([id]);
+  });
+});

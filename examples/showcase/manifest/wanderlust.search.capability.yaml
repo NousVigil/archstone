@@ -6,7 +6,7 @@ capability:
   input:
     destination:
       type: location
-      description: "The city name, e.g. Lisbon or Porto, optionally followed by its country after a comma; or the exact name of one stay, e.g. Pensão Azul, to look at that stay only."
+      description: "The city name, e.g. Lisbon or Porto, optionally followed by its country after a comma; or the exact name of one stay, e.g. Casa Alfama or Pensão Azul, to look at that stay only and get its id. Use this whenever the user names a stay; do not ask for a city first."
     dates:
       type: date-range
       description: "Check-in and check-out as ISO dates (YYYY-MM-DD), 1 to 30 nights. Work out calendar dates yourself; prose such as 'next weekend' is refused."
