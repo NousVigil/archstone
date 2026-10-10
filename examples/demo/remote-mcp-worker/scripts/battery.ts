@@ -82,12 +82,19 @@ export async function runBattery(send: Send): Promise<Check[]> {
   check("tools/list: tourism_search is still listed and advertised as deprecated", !!legacy && /deprecated/i.test(legacy.description ?? ""), legacy?.description);
   check("tools/list: the retired capability is omitted", !names.some((n) => n.startsWith("tourism_search-classic")));
 
-  const legacyCall = await callMcp("tourism_search", { destination: "Lisbon" });
+  const legacyCall = await callMcp("tourism_search", { destination: "Lisbon", dates: { from: "2027-05-12", to: "2027-05-15" }, travelers: { adults: 2 } });
   const stays = (legacyCall.result?.structuredContent as { stays?: unknown[] } | undefined)?.stays;
   check("tourism_search: a saved client's call still returns stays", legacyCall.result?.isError !== true && Array.isArray(stays) && stays.length > 0);
   check("tourism_search: the backend's margin fields never reach the model", !/"(net|commission|margin)"/.test(JSON.stringify(legacyCall.result)));
   check("mcp: x-showcase-backend-calls counts the in-process API requests", legacyCall.res.headers.get("x-showcase-backend-calls") === "1", String(legacyCall.res.headers.get("x-showcase-backend-calls")));
   check("mcp: the response states the rate limit is approximate", /approximate/i.test(legacyCall.res.headers.get("x-showcase-rate-limit") ?? ""));
+
+  // --- the declared input contract (#195): a malformed call is refused before the backend ------
+  const injected = await callMcp("wanderlust_search", { destination: { $ne: 1 }, dates: "tomorrow", travelers: -1 });
+  const injectedMeta = injected.result?._meta?.["dev.archstone/input_invalid"] as { error?: string; problems?: unknown[] } | undefined;
+  check("input contract: an operator-injection payload is refused as input_invalid", injected.result?.isError === true && injectedMeta?.error === "input_invalid" && (injectedMeta.problems?.length ?? 0) === 3, JSON.stringify(injectedMeta));
+  check("input contract: the backend is never called", injected.res.headers.get("x-showcase-backend-calls") === "0", String(injected.res.headers.get("x-showcase-backend-calls")));
+  check("input contract: the refusal never echoes the sent value", !/\$ne|tomorrow/.test(JSON.stringify(injected.result)));
 
   // --- policy over MCP: S-06 / S-07 / policy_unevaluatable --------------------------------------
   const quoteArgs = { stayId: "ws-1001", dates: { from: "2027-05-12", to: "2027-05-15" }, travelers: { adults: 2 } };

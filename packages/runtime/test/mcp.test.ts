@@ -11,6 +11,11 @@ import { buildRegistry } from "../src/registry";
 import { toolDefinitions, callTool, createMcpServer } from "../src/mcp";
 import type { FetchLike, InvokeOptions } from "@archstone/provider-rest";
 
+// #195: the declared input contract is enforced, so a tourism.search call must carry every
+// required field (destination, dates, travelers) in its declared shape.
+const NICE_SEARCH = { destination: "Nice", dates: { from: "2027-05-12", to: "2027-05-15" }, travelers: { adults: 2 } };
+
+
 // The pure lowering unit tests (toolName, inputJsonSchema field-kind coverage, the
 // objectJsonSchema resource cycle-guard) moved to @archstone/emitter-support (ADD-0008 #27)
 // along with the code — packages/emitter-support/test/lowering.test.ts. This file keeps the
@@ -76,7 +81,7 @@ describe("callTool — routing to the REST provider", () => {
     const r = await callTool(
       registry,
       "tourism_search",
-      { destination: "Nice" },
+      NICE_SEARCH,
       { env: { BOOKING_API_URL: "https://x.test" }, fetchImpl },
     );
     expect(r.isError).toBe(false);
@@ -115,7 +120,7 @@ describe("callTool — response mapping (ADD-12, tourism binding has a response:
         }),
         { status: 200 },
       );
-    const r = await callTool(tourismReg, "tourism_search", { destination: "Nice" }, { env: { STAYS_API_URL: "https://x.test" }, fetchImpl });
+    const r = await callTool(tourismReg, "tourism_search", NICE_SEARCH, { env: { STAYS_API_URL: "https://x.test" }, fetchImpl });
     expect(r.isError).toBe(false);
     // `id` is not part of Stay → dropped by the mapping; structuredContent is the mapped shape.
     // `totalMatches` is not part of Stay either — it is a capability-level scalar reached by
@@ -131,7 +136,7 @@ describe("callTool — response mapping (ADD-12, tourism binding has a response:
     // pricePerNight (required) absent → VIOLATION; the raw body must NOT leak through.
     const fetchImpl: FetchLike = async () =>
       new Response(JSON.stringify({ stays: [{ name: "Hotel Azur", location: "Nice" }], totalMatches: 1 }), { status: 200 });
-    const r = await callTool(tourismReg, "tourism_search", { destination: "Nice" }, { env: { STAYS_API_URL: "https://x.test" }, fetchImpl });
+    const r = await callTool(tourismReg, "tourism_search", NICE_SEARCH, { env: { STAYS_API_URL: "https://x.test" }, fetchImpl });
     expect(r.isError).toBe(true);
     expect(r.content[0].text).toMatch(/contract violation/i);
     expect(r.content[0].text).toMatch(/pricePerNight/);
@@ -163,7 +168,7 @@ describe("callTool — response mapping (ADD-12, tourism binding has a response:
         }),
         { status: 200 },
       );
-    const r = await callTool(tourismReg, "tourism_search", { destination: "Nice" }, { env: { STAYS_API_URL: "https://x.test" }, fetchImpl });
+    const r = await callTool(tourismReg, "tourism_search", NICE_SEARCH, { env: { STAYS_API_URL: "https://x.test" }, fetchImpl });
     expect(r.isError).toBe(true);
     expect(r.structuredContent).toBeUndefined();
     const structured = r._meta?.["dev.archstone/contract_violation"] as { error: string; capability: string; missing: string[] };
@@ -175,7 +180,7 @@ describe("callTool — response mapping (ADD-12, tourism binding has a response:
   it("degrades on a missing OPTIONAL field — result returned with a note", async () => {
     const fetchImpl: FetchLike = async () =>
       new Response(JSON.stringify({ stays: [{ name: "Hotel Azur", location: "Nice", pricePerNight: 118 }], totalMatches: 1 }), { status: 200 });
-    const r = await callTool(tourismReg, "tourism_search", { destination: "Nice" }, { env: { STAYS_API_URL: "https://x.test" }, fetchImpl });
+    const r = await callTool(tourismReg, "tourism_search", NICE_SEARCH, { env: { STAYS_API_URL: "https://x.test" }, fetchImpl });
     expect(r.isError).toBe(false);
     expect(r.structuredContent).toEqual({ stays: [{ name: "Hotel Azur", location: "Nice", pricePerNight: 118 }], totalMatches: 1 });
     expect(r.content.some((c) => /degraded/i.test(c.text))).toBe(true);
@@ -203,7 +208,7 @@ describe("callTool — response + extract together (extends ADD-12, tourism bind
         }),
         { status: 200 },
       );
-    const r = await callTool(tourismReg, "tourism_search", { destination: "Nice" }, { env: { STAYS_API_URL: "https://x.test" }, fetchImpl });
+    const r = await callTool(tourismReg, "tourism_search", NICE_SEARCH, { env: { STAYS_API_URL: "https://x.test" }, fetchImpl });
     expect(r.isError).toBe(false);
     expect(r.structuredContent).toEqual({
       stays: [
@@ -231,7 +236,7 @@ describe("callTool — response + extract together (extends ADD-12, tourism bind
         JSON.stringify({ stays: [{ name: "Hotel Azur", location: "Nice", pricePerNight: 118, rating: 4.5 }] }),
         { status: 200 },
       );
-    const r = await callTool(tourismReg, "tourism_search", { destination: "Nice" }, { env: { STAYS_API_URL: "https://x.test" }, fetchImpl });
+    const r = await callTool(tourismReg, "tourism_search", NICE_SEARCH, { env: { STAYS_API_URL: "https://x.test" }, fetchImpl });
     expect(r.isError).toBe(true);
     expect(r.content[0].text).toMatch(/contract violation/i);
     expect(r.content[0].text).toMatch(/totalMatches/);
@@ -249,7 +254,7 @@ describe("callTool — response + extract together (extends ADD-12, tourism bind
     // absent — one violation naming both, order-independent.
     const fetchImpl: FetchLike = async () =>
       new Response(JSON.stringify({ stays: [{ name: "Hotel Azur", location: "Nice" }] }), { status: 200 });
-    const r = await callTool(tourismReg, "tourism_search", { destination: "Nice" }, { env: { STAYS_API_URL: "https://x.test" }, fetchImpl });
+    const r = await callTool(tourismReg, "tourism_search", NICE_SEARCH, { env: { STAYS_API_URL: "https://x.test" }, fetchImpl });
     expect(r.isError).toBe(true);
     const structured = r._meta?.["dev.archstone/contract_violation"] as { missing: string[] };
     expect([...structured.missing].sort()).toEqual(["pricePerNight", "totalMatches"]);
@@ -281,7 +286,7 @@ describe("#19 ADD-19 Rev 2 R2.2/R2.7 step 4 — a real SDK Client survives a VIO
       const { tools } = await client.listTools();
       expect(tools.map((t) => t.name)).toContain("tourism_search");
 
-      const result = await client.callTool({ name: "tourism_search", arguments: { destination: "Nice" } });
+      const result = await client.callTool({ name: "tourism_search", arguments: NICE_SEARCH });
 
       expect(result.isError).toBe(true);
       expect(result.structuredContent).toBeUndefined();
@@ -322,7 +327,7 @@ describe("#43 — a real SDK Client survives a policy denial (S-US3.2)", () => {
       const { tools } = await client.listTools(); // caches the outputSchema validator
       expect(tools.map((t) => t.name)).toContain("tourism_search");
 
-      const result = await client.callTool({ name: "tourism_search", arguments: { destination: "Nice" } });
+      const result = await client.callTool({ name: "tourism_search", arguments: NICE_SEARCH });
 
       expect(result.isError).toBe(true);
       expect(result.structuredContent).toBeUndefined();
@@ -357,7 +362,7 @@ describe("callTool — onResponse hook (#39)", () => {
     const r = await callTool(
       tourismReg,
       "tourism_search",
-      { destination: "Nice" },
+      NICE_SEARCH,
       { env: { STAYS_API_URL: "https://x.test" }, fetchImpl, onResponse: (info) => { calls.push(info); } },
     );
     expect(r.isError).toBe(false);
@@ -379,7 +384,7 @@ describe("callTool — onResponse hook (#39)", () => {
     const r = await callTool(
       tourismReg,
       "tourism_search",
-      { destination: "Nice" },
+      NICE_SEARCH,
       { env: { STAYS_API_URL: "https://x.test" }, fetchImpl, onResponse: (info) => { calls.push(info); } },
     );
     expect(r.isError).toBe(true);
@@ -401,7 +406,7 @@ describe("callTool — onResponse hook (#39)", () => {
       await callTool(
         tourismReg,
         "tourism_search",
-        { destination: "Nice" },
+        NICE_SEARCH,
         { env: { STAYS_API_URL: "https://x.test" }, fetchImpl, onResponse: (info) => { calls.push(info); } },
       );
       expect(calls, `classification: ${label}`).toHaveLength(1);
@@ -430,7 +435,7 @@ describe("callTool — onResponse hook (#39)", () => {
       await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
       try {
         await client.listTools();
-        return await client.callTool({ name: "tourism_search", arguments: { destination: "Nice" } });
+        return await client.callTool({ name: "tourism_search", arguments: NICE_SEARCH });
       } finally {
         await client.close();
         await server.close();
@@ -569,7 +574,7 @@ describe("createMcpServer — onResponse fires on a real MCP tool call (#39, S-U
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
     try {
       await client.listTools();
-      const result = await client.callTool({ name: "tourism_search", arguments: { destination: "Nice" } });
+      const result = await client.callTool({ name: "tourism_search", arguments: NICE_SEARCH });
       expect(result.isError).toBeFalsy();
       expect(calls).toHaveLength(1);
       expect(calls[0].capabilityId).toBe("tourism.search");

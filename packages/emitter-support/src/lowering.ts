@@ -10,13 +10,20 @@ import { originListOf, type IRField, type IRResourceRegistry, type SemanticType 
 
 type JsonSchema = Record<string, unknown>;
 
+/** How closed the lowering is. `open` is the output/descriptive lowering. `extraction` is the
+ *  closed, refuse-don't-degrade lowering a model must satisfy (ADR-0011). `input` (#195) is the
+ *  closed lowering advertised as a tool's `inputSchema` and enforced by `validateInput`: objects
+ *  are closed, but an unknown or self-referential resource still degrades to `{type:object}`
+ *  rather than throwing, so listing tools never fails on an odd artifact. */
+type LowerMode = "open" | "input" | "extraction";
+
 /** MCP tool names are stricter than capability ids — sanitize `tourism.search` → `tourism_search`. */
 export function toolName(id: string): string {
   return id.replace(/[^a-zA-Z0-9_-]/g, "_");
 }
 
-function semanticJsonSchema(semantic: SemanticType, values: string[] | undefined, strict: boolean): JsonSchema {
-  const closed = strict ? { additionalProperties: false } : {};
+function semanticJsonSchema(semantic: SemanticType, values: string[] | undefined, mode: LowerMode): JsonSchema {
+  const closed = mode !== "open" ? { additionalProperties: false } : {};
   switch (semantic) {
     case "location":
       return { type: "string", description: "A place — city, region, or address." };
@@ -30,7 +37,10 @@ function semanticJsonSchema(semantic: SemanticType, values: string[] | undefined
     case "party":
       return {
         type: "object",
-        properties: { adults: { type: "integer" }, children: { type: "integer" } },
+        properties:
+          mode === "input"
+            ? { adults: { type: "integer", minimum: 0 }, children: { type: "integer", minimum: 0 } }
+            : { adults: { type: "integer" }, children: { type: "integer" } },
         required: ["adults"],
         ...closed,
       };
@@ -80,14 +90,14 @@ function semanticJsonSchema(semantic: SemanticType, values: string[] | undefined
  *
  * Under `strict` both of those degradations are refused instead — see `extractionJsonSchema`.
  */
-function resourceJsonSchema(name: string, resources: IRResourceRegistry, visited: ReadonlySet<string>, strict: boolean): JsonSchema {
+function resourceJsonSchema(name: string, resources: IRResourceRegistry, visited: ReadonlySet<string>, mode: LowerMode): JsonSchema {
   const fields = resources[name];
   if (!fields || visited.has(name)) {
-    if (strict) throw new ExtractionSchemaError(!fields ? `resource '${name}' is not in the registry` : `resource '${name}' is self-referential through a \`type:\` field`);
+    if (mode === "extraction") throw new ExtractionSchemaError(!fields ? `resource '${name}' is not in the registry` : `resource '${name}' is self-referential through a \`type:\` field`);
     return { type: "object" };
   }
   const next = new Set(visited).add(name);
-  return lowerObject(fields, resources, next, strict);
+  return lowerObject(fields, resources, next, mode);
 }
 
 /** #81 (ADD-12 §8.1): tag a resource's object schema with `$row: "ok" | "error"` (a `const`
@@ -116,11 +126,11 @@ function fieldJsonSchema(
   f: IRField,
   resources: IRResourceRegistry,
   visited: ReadonlySet<string>,
-  strict: boolean,
+  mode: LowerMode,
   onError: OnErrorFieldSchema | undefined,
 ): JsonSchema {
   const base: JsonSchema = f.description ? { description: f.description } : {};
-  if (strict) {
+  if (mode === "extraction") {
     // An origin-bound type is output-only: a link a model produces is exactly what it exists to
     // keep out. Refused here, by name, rather than lowered into a schema a model could satisfy.
     const semantic = f.type.kind === "scalar" ? f.type.semantic : f.type.kind === "list" ? f.type.items : undefined;
@@ -130,22 +140,22 @@ function fieldJsonSchema(
   }
   if (f.type.kind === "list") {
     const fallback = f.type.items === "image" && !f.description ? { description: IMAGE_FALLBACK_DESCRIPTION } : {};
-    return { ...base, ...fallback, type: "array", items: semanticJsonSchema(f.type.items, f.type.values, strict) };
+    return { ...base, ...fallback, type: "array", items: semanticJsonSchema(f.type.items, f.type.values, mode) };
   }
   if (f.type.kind === "collection") {
     if (onError && onError.field === f.name) {
-      const success = taggedRowSchema(resourceJsonSchema(f.type.of, resources, visited, strict), "ok");
-      const error = taggedRowSchema(resourceJsonSchema(onError.errorResource, resources, visited, strict), "error");
+      const success = taggedRowSchema(resourceJsonSchema(f.type.of, resources, visited, mode), "ok");
+      const error = taggedRowSchema(resourceJsonSchema(onError.errorResource, resources, visited, mode), "error");
       return { ...base, type: "array", items: { oneOf: [success, error] } };
     }
-    return { ...base, type: "array", items: resourceJsonSchema(f.type.of, resources, visited, strict) };
+    return { ...base, type: "array", items: resourceJsonSchema(f.type.of, resources, visited, mode) };
   }
   if (f.type.kind === "resource") {
     // `ref:`-originated ("by identity") fields are a bare id — never expand through the
     // resource registry (ADD-25 D-2). `type:`/resource-typed ("by representation") fields
     // keep the existing full-object lowering.
     if (f.type.identity) return { ...base, type: "string" };
-    return { ...base, ...resourceJsonSchema(f.type.name, resources, visited, strict) };
+    return { ...base, ...resourceJsonSchema(f.type.name, resources, visited, mode) };
   }
   // The AUTHORED description wins. A semantic type's generic text ("A place — city, region, or
   // address.") is a fallback for a field that declares none — never a replacement for one that
@@ -157,7 +167,7 @@ function fieldJsonSchema(
   // cannot reintroduce it. Re-asserting the key rather than reversing the spread keeps every OTHER key
   // (type, format, properties, required, enum) semantic-owned, and keeps emitted key order
   // byte-identical for the fields this does not change.
-  const semantic = semanticJsonSchema(f.type.semantic, f.type.values, strict);
+  const semantic = semanticJsonSchema(f.type.semantic, f.type.values, mode);
   if (f.type.semantic === "image" && !f.description) return { ...semantic, description: IMAGE_FALLBACK_DESCRIPTION };
   return f.description ? { ...base, ...semantic, description: f.description } : { ...base, ...semantic };
 }
@@ -167,18 +177,18 @@ function lowerObject(
   fields: IRField[],
   resources: IRResourceRegistry,
   visited: ReadonlySet<string>,
-  strict: boolean,
+  mode: LowerMode,
   onError?: OnErrorFieldSchema,
 ): JsonSchema {
   const properties: JsonSchema = {};
   const required: string[] = [];
   for (const f of fields) {
-    properties[f.name] = fieldJsonSchema(f, resources, visited, strict, onError);
+    properties[f.name] = fieldJsonSchema(f, resources, visited, mode, onError);
     if (f.required) required.push(f.name);
   }
   const schema: JsonSchema = { type: "object", properties };
   if (required.length > 0) schema.required = required;
-  if (strict) schema.additionalProperties = false;
+  if (mode !== "open") schema.additionalProperties = false;
   return schema;
 }
 
@@ -193,12 +203,17 @@ export function objectJsonSchema(
   visited: ReadonlySet<string> = new Set(),
   onError?: OnErrorFieldSchema,
 ): JsonSchema {
-  return lowerObject(fields, resources, visited, false, onError);
+  return lowerObject(fields, resources, visited, "open", onError);
 }
 
-/** Lower IR input fields to a JSON Schema object (the tool's inputSchema). */
+/** Lower IR input fields to a JSON Schema object (the tool's inputSchema).
+ *
+ *  #195: the schema is CLOSED (`additionalProperties: false` at every object level, composites
+ *  included) and `party` counts carry `minimum: 0`, because `validateInput` enforces exactly this
+ *  and an advertised contract the runtime does not hold to is the defect. Both are produced here,
+ *  by the one walker, so what is advertised and what is enforced cannot diverge. */
 export function inputJsonSchema(fields: IRField[], resources: IRResourceRegistry = {}): JsonSchema {
-  return objectJsonSchema(fields, resources);
+  return lowerObject(fields, resources, new Set(), "input");
 }
 
 /**
@@ -238,5 +253,5 @@ export class ExtractionSchemaError extends Error {
  * Throws `ExtractionSchemaError` rather than degrading to an open object — see that class.
  */
 export function extractionJsonSchema(fields: IRField[], resources: IRResourceRegistry = {}): JsonSchema {
-  return lowerObject(fields, resources, new Set(), true);
+  return lowerObject(fields, resources, new Set(), "extraction");
 }

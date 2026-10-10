@@ -5,6 +5,11 @@ import { buildRegistry } from "@archstone/runtime";
 import type { FetchLike } from "@archstone/provider-rest";
 import { fromIR, InvalidArtifactError } from "../src/index";
 
+// #195: the declared input contract is enforced, so a tourism.search call must carry every
+// required field (destination, dates, travelers) in its declared shape.
+const NICE_SEARCH = { destination: "Nice", dates: { from: "2027-05-12", to: "2027-05-15" }, travelers: { adults: 2 } };
+
+
 const here = dirname(fileURLToPath(import.meta.url));
 const tourism = resolve(here, "../../../examples/manifests/tourism");
 
@@ -28,7 +33,7 @@ describe("execute() — 4-state result (ADD-0008 #28, R-8)", () => {
       );
     const r = await archstone.execute(
       "tourism.search",
-      { destination: "Nice" },
+      NICE_SEARCH,
       { env: { STAYS_API_URL: "https://x.test" }, fetchImpl },
     );
     expect(r.status).toBe("ok");
@@ -46,7 +51,7 @@ describe("execute() — 4-state result (ADD-0008 #28, R-8)", () => {
       });
     const r = await archstone.execute(
       "tourism.search",
-      { destination: "Nice" },
+      NICE_SEARCH,
       { env: { STAYS_API_URL: "https://x.test" }, fetchImpl },
     );
     expect(r.status).toBe("degraded");
@@ -60,7 +65,7 @@ describe("execute() — 4-state result (ADD-0008 #28, R-8)", () => {
       new Response(JSON.stringify({ stays: [{ name: "Hotel Azur", location: "Nice" }], totalMatches: 1 }), { status: 200 });
     const r = await archstone.execute(
       "tourism.search",
-      { destination: "Nice" },
+      NICE_SEARCH,
       { env: { STAYS_API_URL: "https://x.test" }, fetchImpl },
     );
     expect(r.status).toBe("violation");
@@ -74,7 +79,7 @@ describe("execute() — 4-state result (ADD-0008 #28, R-8)", () => {
       throw new Error("must not be called — missing env must short-circuit first");
     };
     // env deliberately omitted: STAYS_API_URL is never resolvable.
-    const r = await archstone.execute("tourism.search", { destination: "Nice" }, { fetchImpl });
+    const r = await archstone.execute("tourism.search", NICE_SEARCH, { fetchImpl });
     expect(r.status).toBe("error");
     expect(r.error).toMatch(/STAYS_API_URL/);
     expect(r.data).toBeUndefined();
@@ -88,7 +93,7 @@ describe("execute() — 4-state result (ADD-0008 #28, R-8)", () => {
     };
     const r = await archstone.execute(
       "tourism.search",
-      { destination: "Nice" },
+      NICE_SEARCH,
       { env: { STAYS_API_URL: "https://x.test" }, fetchImpl },
     );
     expect(r.status).toBe("error");
@@ -109,7 +114,7 @@ describe("execute() — 4-state result (ADD-0008 #28, R-8)", () => {
       const fetchImpl: FetchLike = async () => {
         throw new Error("must not be called — process.env must never be consulted");
       };
-      const r = await archstone.execute("tourism.search", { destination: "Nice" }, { fetchImpl });
+      const r = await archstone.execute("tourism.search", NICE_SEARCH, { fetchImpl });
       expect(r.status).toBe("error");
       expect(r.error).toMatch(/STAYS_API_URL/);
     } finally {
@@ -137,7 +142,7 @@ describe("execute() — extract:-only capability is enforced through the SAME ga
       new Response(JSON.stringify({ stays: [{ name: "Hotel Azur", location: "Nice", pricePerNight: 118 }] }), { status: 200 });
     const r = await archstone.execute(
       "tourism.search",
-      { destination: "Nice" },
+      NICE_SEARCH,
       { env: { STAYS_API_URL: "https://x.test" }, fetchImpl },
     );
     expect(r.status).toBe("violation");
@@ -151,7 +156,7 @@ describe("execute() — extract:-only capability is enforced through the SAME ga
       new Response(JSON.stringify({ stays: [{ irrelevant: "field" }], totalMatches: 7 }), { status: 200 });
     const r = await archstone.execute(
       "tourism.search",
-      { destination: "Nice" },
+      NICE_SEARCH,
       { env: { STAYS_API_URL: "https://x.test" }, fetchImpl },
     );
     expect(r.status).toBe("ok");
@@ -180,7 +185,7 @@ describe("execute() — US-3: every lifecycle state other than retired stays inv
       const archstone = fromIR(artifact);
       const r = await archstone.execute(
         "tourism.search",
-        { destination: "Nice" },
+        NICE_SEARCH,
         { env: { STAYS_API_URL: "https://x.test" }, fetchImpl },
       );
       expect(r.status).toBe("ok");
@@ -206,7 +211,7 @@ describe("execute() — US-3: every lifecycle state other than retired stays inv
     const archstone = fromIR(artifact);
     const r = await archstone.execute(
       "tourism.search",
-      { destination: "Nice" },
+      NICE_SEARCH,
       { env: { STAYS_API_URL: "https://x.test" }, fetchImpl },
     );
     expect(r.status).toBe("error");
@@ -232,7 +237,7 @@ describe("execute() — US-4: the five recognized lifecycle states never produce
       const archstone = fromIR(artifact);
       const r = await archstone.execute(
         "tourism.search",
-        { destination: "Nice" },
+        NICE_SEARCH,
         { env: { STAYS_API_URL: "https://x.test" }, fetchImpl },
       );
       expect(r.status).toBe("ok");
@@ -244,7 +249,7 @@ describe("execute() — US-4: the five recognized lifecycle states never produce
     const artifact = loadArtifact() as { tools: { id: string; lifecycle?: string }[] };
     artifact.tools.find((t) => t.id === "tourism.search")!.lifecycle = "retired";
     const archstone = fromIR(artifact);
-    const r = await archstone.execute("tourism.search", { destination: "Nice" }, { fetchImpl });
+    const r = await archstone.execute("tourism.search", NICE_SEARCH, { fetchImpl });
     expect(r.denial?.reason).toBe("lifecycle_blocked");
   });
 
@@ -252,7 +257,7 @@ describe("execute() — US-4: the five recognized lifecycle states never produce
     const artifact = loadArtifact() as { tools: { id: string; lifecycle?: string }[] };
     artifact.tools.find((t) => t.id === "tourism.search")!.lifecycle = "sunset";
     const archstone = fromIR(artifact);
-    const r = await archstone.execute("tourism.search", { destination: "Nice" }, { fetchImpl });
+    const r = await archstone.execute("tourism.search", NICE_SEARCH, { fetchImpl });
     expect(r.status).toBe("error");
     expect(r.denial?.reason).toBe("lifecycle_unevaluatable");
     expect(r.denial?.reason).not.toBe("lifecycle_blocked");
@@ -262,7 +267,7 @@ describe("execute() — US-4: the five recognized lifecycle states never produce
     const artifact = loadArtifact() as { tools: { id: string; lifecycle?: string }[] };
     artifact.tools.find((t) => t.id === "tourism.search")!.lifecycle = "Retired";
     const archstone = fromIR(artifact);
-    const r = await archstone.execute("tourism.search", { destination: "Nice" }, { fetchImpl });
+    const r = await archstone.execute("tourism.search", NICE_SEARCH, { fetchImpl });
     expect(r.denial?.reason).toBe("lifecycle_unevaluatable");
   });
 });
@@ -292,7 +297,7 @@ describe("execute() — caller credential propagation (ADD-32)", () => {
 
     const r = await withHeader.execute(
       "tourism.search",
-      { destination: "Nice" },
+      NICE_SEARCH,
       { env: { STAYS_API_URL: "https://x.test" }, fetchImpl, caller: { accessToken: "user-token-abc" } },
     );
     expect(r.status).toBe("ok");
@@ -308,7 +313,7 @@ describe("execute() — caller credential propagation (ADD-32)", () => {
     const fetchImpl: FetchLike = async () => {
       throw new Error("must not be called — the gate must short-circuit first");
     };
-    const r = await archstone.execute("tourism.search", { destination: "Nice" }, { fetchImpl });
+    const r = await archstone.execute("tourism.search", NICE_SEARCH, { fetchImpl });
     expect(r.status).toBe("error");
     expect(r.error).toMatch(/requires policies:\[authenticated\]/);
   });
@@ -336,11 +341,12 @@ describe("execute() — caller credential propagation (ADD-32)", () => {
 
     const r = await archstone.execute(
       "tourism.search",
-      {},
+      NICE_SEARCH,
       { fetchImpl, caller: { tenantId: "tenant-a.core.example.com" }, allowedHosts: ["*.core.example.com"] },
     );
     expect(r.status).toBe("ok");
-    expect(captured?.url).toBe("https://tenant-a.core.example.com/stays");
+    // #195: the call now carries its (valid) input, which a GET puts on the query string.
+    expect(captured?.url.split("?")[0]).toBe("https://tenant-a.core.example.com/stays");
   });
 
   it("allowedHosts reaches invokeRest — fails closed when the caller-influenced baseUrl host is not allowlisted", async () => {
@@ -357,7 +363,7 @@ describe("execute() — caller credential propagation (ADD-32)", () => {
 
     const r = await archstone.execute(
       "tourism.search",
-      {},
+      NICE_SEARCH,
       { fetchImpl, caller: { tenantId: "evilcore.example.com" }, allowedHosts: ["*.core.example.com"] },
     );
     expect(r.status).toBe("error");
@@ -373,7 +379,7 @@ describe("execute() — caller credential propagation (ADD-32)", () => {
       );
     const r = await archstone.execute(
       "tourism.search",
-      { destination: "Nice" },
+      NICE_SEARCH,
       { env: { STAYS_API_URL: "https://x.test" }, fetchImpl },
     );
     expect(r.status).toBe("ok");
@@ -393,7 +399,7 @@ describe("execute() — onResponse pass-through (#39)", () => {
       );
     const r = await archstone.execute(
       "tourism.search",
-      { destination: "Nice" },
+      NICE_SEARCH,
       { env: { STAYS_API_URL: "https://x.test" }, fetchImpl, onResponse: (info) => { calls.push(info); } },
     );
     expect(r.status).toBe("ok");
@@ -415,12 +421,12 @@ describe("execute() — onResponse pass-through (#39)", () => {
     });
     const withHook = await archstone.execute(
       "tourism.search",
-      { destination: "Nice" },
+      NICE_SEARCH,
       { env: { STAYS_API_URL: "https://x.test" }, fetchImpl: async () => new Response(responseBody, { status: 200 }), onResponse: () => {} },
     );
     const withoutHook = await archstone.execute(
       "tourism.search",
-      { destination: "Nice" },
+      NICE_SEARCH,
       { env: { STAYS_API_URL: "https://x.test" }, fetchImpl: async () => new Response(responseBody, { status: 200 }) },
     );
     expect(withHook).toEqual(withoutHook);
@@ -435,7 +441,7 @@ describe("execute() — onResponse pass-through (#39)", () => {
       );
     const r = await archstone.execute(
       "tourism.search",
-      { destination: "Nice" },
+      NICE_SEARCH,
       {
         env: { STAYS_API_URL: "https://x.test" },
         fetchImpl,
@@ -468,7 +474,7 @@ describe("round trip — tools(format)'s advertised name resolves in execute() (
       );
     const r = await archstone.execute(
       name!,
-      { destination: "Nice" },
+      NICE_SEARCH,
       { env: { STAYS_API_URL: "https://x.test" }, fetchImpl },
     );
     expect(r.status).toBe("ok");
@@ -483,12 +489,12 @@ describe("round trip — tools(format)'s advertised name resolves in execute() (
       });
     const viaSanitized = await archstone.execute(
       "tourism_search",
-      { destination: "Nice" },
+      NICE_SEARCH,
       { env: { STAYS_API_URL: "https://x.test" }, fetchImpl },
     );
     const viaRawId = await archstone.execute(
       "tourism.search",
-      { destination: "Nice" },
+      NICE_SEARCH,
       { env: { STAYS_API_URL: "https://x.test" }, fetchImpl },
     );
     expect(viaSanitized.status).toBe("degraded");

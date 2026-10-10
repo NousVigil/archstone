@@ -23,6 +23,10 @@ import {
   emitExecutionRecord,
   LIFECYCLE_BLOCKED_REASON,
   LIFECYCLE_UNEVALUATABLE_REASON,
+  INPUT_INVALID_DENIAL_REASON,
+  validateInput,
+  inputInvalidMessage,
+  type InputProblem,
   type ExecutionStatus,
   type ExecutionDenialReason,
 } from "@archstone/emitter-support";
@@ -108,6 +112,12 @@ export interface ExecuteOptions {
 export interface ExecuteDenial {
   reason: ExecutionDenialReason;
   capability: string;
+  /** #195: present only when `reason` is `"input_invalid"` — the declared field paths and fixed
+   *  expectation phrases that failed (at most 16), never an argument value or an undeclared key's
+   *  name. The embedded sibling of `_meta["dev.archstone/input_invalid"].problems`. */
+  problems?: InputProblem[];
+  /** #195: `true` when more than 16 problems existed and the list was cut. */
+  truncated?: true;
 }
 
 export interface ExecuteResult {
@@ -233,6 +243,24 @@ export async function executeCapability(
       status: "error",
       error: decision.denial.message,
       denial: { reason: decision.denial.reason, capability: tool.id },
+    };
+  }
+
+  // #195: the SAME input-contract gate `callTool` runs, at the SAME point — after policy, before
+  // the rate limiter and any connector work. One shared `validateInput`, never a second copy.
+  const inputCheck = validateInput(tool.input, input, registry.ir.resources);
+  if (!inputCheck.ok) {
+    const text = inputInvalidMessage(tool.id, inputCheck.problems, inputCheck.truncated);
+    audit({ phase: "denied", message: text, denialReason: INPUT_INVALID_DENIAL_REASON });
+    return {
+      status: "error",
+      error: text,
+      denial: {
+        reason: INPUT_INVALID_DENIAL_REASON,
+        capability: tool.id,
+        problems: inputCheck.problems,
+        ...(inputCheck.truncated ? { truncated: true as const } : {}),
+      },
     };
   }
 

@@ -123,6 +123,18 @@ Normative:
   `required: true` List field unless a future primitive adds a minimum-length
   constraint.
 - A field **MAY** declare `required: false`; absent, it defaults to `required: true`.
+- **The declared `input` is a contract the runtime enforces, not a hint.** Before a capability is
+  invoked, the arguments **MUST** be validated against its `input` fields — the same contract the
+  advertised `inputSchema` states: each value has its field's type (§4.7), every `required` field is
+  present, an `enum` value is one of the declared values, a `date`, `date-range` member or
+  `date-time` is well-formed, and a `party` count is a non-negative integer. A key the capability
+  does not declare — at the top level or inside a `money`, `party` or `date-range` value — is
+  **refused**, never dropped and never forwarded. Values are not coerced. A `null` on an optional
+  field is treated as absent. A call that fails this is refused with `input_invalid` and **MUST NOT**
+  reach the provider; the refusal names declared field paths and a fixed expectation per problem, and
+  **MUST NOT** contain a value or an undeclared key name the caller sent. The check runs after the
+  lifecycle and policy gates and before rate limiting and any connector work. The advertised
+  `inputSchema` is closed accordingly (`additionalProperties: false` at every object level).
 - A **List** `output` field **MAY** be populated from a provider response by a binding's
   `extract:` block (ADD-12 §8.2) — every JSONPath match becomes an array item, not just the
   first, and an empty match set is a valid value (OK, not DEGRADED). That mapping is a

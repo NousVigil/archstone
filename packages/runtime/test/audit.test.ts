@@ -12,6 +12,12 @@ import { createHttpHandler } from "../src/http";
 import { buildRegistry } from "../src/registry";
 import { runVerify, verifyTool } from "../src/verify";
 
+// #195: the declared input contract is enforced, so a tourism.search call must carry every
+// required field (destination, dates, travelers) in its declared shape.
+const STATEMENT_ARGS = { account: "acc-1", period: { from: "2027-01-01", to: "2027-01-31" } };
+const NICE_SEARCH = { destination: "Nice", dates: { from: "2027-05-12", to: "2027-05-15" }, travelers: { adults: 2 } };
+
+
 // #44 (ADD-44) — the MCP consumer emits. The unit under test is the AUDITED CONSUMER, not the
 // builder (emitter-support/test/audit.test.ts): what a record says on each of the fifteen
 // termination points, that there is exactly one of them, that it validates against the shipped
@@ -219,7 +225,7 @@ describe("callTool — one record per attempt, on every termination point (BR-2,
     const fetchSpy = vi.fn(ok200);
     // A credential IS supplied: `banking.generate-statement` declares `policies:[authenticated]`,
     // so without one the attempt would terminate one gate earlier, at TP-3.
-    await callTool(bankRegistry, "banking.generate-statement", {}, { auditSink: s.sink, fetchImpl: fetchSpy, caller: { accessToken: "caller-token-7d1e" } });
+    await callTool(bankRegistry, "banking.generate-statement", STATEMENT_ARGS, { auditSink: s.sink, fetchImpl: fetchSpy, caller: { accessToken: "caller-token-7d1e" } });
     expect(s.records).toHaveLength(1);
     expect(s.records[0].status.phase).toBe("failed");
     expect(s.records[0].status.message).toBe("capability 'banking.generate-statement' has no connector");
@@ -337,21 +343,21 @@ describe("callTool — one record per attempt, on every termination point (BR-2,
     const env = { STAYS_API_URL: "https://x.test" };
 
     const violation = spySink();
-    await callTool(tourismRegistry, "tourism_search", { destination: "Nice" }, {
+    await callTool(tourismRegistry, "tourism_search", NICE_SEARCH, {
       auditSink: violation.sink, env, fetchImpl: body({ name: "Azur" }), // location/pricePerNight missing (required)
     });
     expect(violation.records[0].status.phase).toBe("failed");
     expect(violation.records[0].status.message).toContain("contract violation: capability 'tourism.search'");
 
     const degraded = spySink();
-    await callTool(tourismRegistry, "tourism_search", { destination: "Nice" }, {
+    await callTool(tourismRegistry, "tourism_search", NICE_SEARCH, {
       auditSink: degraded.sink, env, fetchImpl: body({ name: "Azur", location: "Nice", pricePerNight: 118 }), // rating optional
     });
     expect(degraded.records[0].status.phase).toBe("succeeded");
     expect(degraded.records[0].status.message).toBeUndefined();
 
     const okRun = spySink();
-    await callTool(tourismRegistry, "tourism_search", { destination: "Nice" }, {
+    await callTool(tourismRegistry, "tourism_search", NICE_SEARCH, {
       auditSink: okRun.sink, env, fetchImpl: body({ name: "Azur", location: "Nice", pricePerNight: 118, rating: 4.5 }),
     });
     expect(okRun.records[0].status.phase).toBe("succeeded");
@@ -379,7 +385,7 @@ describe("callTool — one record per attempt, on every termination point (BR-2,
     await callTool(bankRegistry, "banking.generate-statement", {}, { auditSink: s.sink, fetchImpl: forbiddenFetch });
     await callTool(bankRegistry, "banking_list-accounts", {}, { auditSink: s.sink, env: {}, fetchImpl: forbiddenFetch, caller: { accessToken: "caller-token-7d1e" } });
     await callTool(bankRegistry, "banking_list-accounts", {}, { auditSink: s.sink, env, fetchImpl: ok200, caller: { accessToken: "caller-token-7d1e" } });
-    await callTool(tourismRegistry, "tourism_search", { destination: "Nice" }, {
+    await callTool(tourismRegistry, "tourism_search", NICE_SEARCH, {
       auditSink: s.sink,
       env: { STAYS_API_URL: "https://x.test" },
       fetchImpl: async () => new Response(JSON.stringify({ stays: [{ name: "Azur" }] }), { status: 200 }),
@@ -396,7 +402,7 @@ describe("callTool — one record per attempt, on every termination point (BR-2,
 describe("callTool — status.reachedConnector (ADD-44 Amendment 2, archstone#34)", () => {
   it("false — unbound capability, no REST connector (TP-4)", async () => {
     const s = spySink();
-    await callTool(bankRegistry, "banking.generate-statement", {}, { auditSink: s.sink, fetchImpl: forbiddenFetch, caller: { accessToken: "caller-token-7d1e" } });
+    await callTool(bankRegistry, "banking.generate-statement", STATEMENT_ARGS, { auditSink: s.sink, fetchImpl: forbiddenFetch, caller: { accessToken: "caller-token-7d1e" } });
     expect(s.records[0].status).toMatchObject({ phase: "failed", reachedConnector: false });
   });
 
@@ -480,7 +486,7 @@ describe("callTool — status.reachedConnector (ADD-44 Amendment 2, archstone#34
 
   it("every reachedConnector case above validates against the compiled schema", async () => {
     const s = spySink();
-    await callTool(bankRegistry, "banking.generate-statement", {}, { auditSink: s.sink, fetchImpl: forbiddenFetch, caller: { accessToken: "caller-token-7d1e" } });
+    await callTool(bankRegistry, "banking.generate-statement", STATEMENT_ARGS, { auditSink: s.sink, fetchImpl: forbiddenFetch, caller: { accessToken: "caller-token-7d1e" } });
     await callTool(registryOf(tool()), "bank.list", {}, { auditSink: s.sink, fetchImpl: async () => new Response("nope", { status: 503 }) });
     await callTool(registryOf(tool({ lifecycle: "retired" })), "bank.list", {}, { auditSink: s.sink, fetchImpl: forbiddenFetch });
     expect(s.records).toHaveLength(3);
@@ -586,14 +592,14 @@ describe("callTool — the audit log cannot leak the credential it audited (US-5
       runs.push(r);
       lines.push(JSON.stringify(r));
     };
-    await callTool(tourismRegistry, "tourism_search", { destination: TOKEN }, {
+    await callTool(tourismRegistry, "tourism_search", { ...NICE_SEARCH, destination: TOKEN }, {
       auditSink: sink, env: env2, fetchImpl: async () => new Response(JSON.stringify({ stays: [{ name: "A", location: "B", pricePerNight: 1 }], totalMatches: 1 }), { status: 200 }),
       caller: { accessToken: TOKEN },
     });
     await callTool(registryOf(tool({ policyRules: [{ id: "p", allow: ["user:alice"] }] })), "bank.list", { q: TOKEN }, {
       auditSink: sink, fetchImpl: forbiddenFetch, caller: { accessToken: TOKEN, principal: "user:mallory" },
     });
-    await callTool(bankRegistry, "banking.generate-statement", { q: TOKEN }, {
+    await callTool(bankRegistry, "banking.generate-statement", { ...STATEMENT_ARGS, account: TOKEN }, {
       auditSink: sink, env, fetchImpl: forbiddenFetch, caller: { accessToken: TOKEN },
     });
     expect(runs.map((r) => r.status.phase)).toEqual(["succeeded", "denied", "failed"]);
@@ -660,7 +666,7 @@ describe("callTool — a broken sink can never break, delay, or be seen by the i
       (r.metadata as Record<string, unknown>).injected = true;
       (r.spec as Record<string, unknown>).principal = "user:attacker";
     };
-    const input = { destination: "Nice" };
+    const input = NICE_SEARCH;
     const env2 = { STAYS_API_URL: "https://x.test" };
     const fetchImpl: FetchLike = async () =>
       new Response(JSON.stringify({ stays: [{ name: "A", location: "B", pricePerNight: 1 }], totalMatches: 1 }), { status: 200 });
@@ -668,7 +674,7 @@ describe("callTool — a broken sink can never break, delay, or be seen by the i
       const r = await callTool(tourismRegistry, "tourism_search", input, { auditSink: vandal, env: env2, fetchImpl });
       expect(r.isError).toBe(false);
     }
-    expect(input).toEqual({ destination: "Nice" }); // the invoked input is untouched
+    expect(input).toEqual(NICE_SEARCH); // the invoked input is untouched
     expect(seen).toHaveLength(2);
     expect(validateExecution(seen[1])).toEqual({ ok: true, errors: "" }); // the second is complete
   });
@@ -681,10 +687,10 @@ describe("callTool — a broken sink can never break, delay, or be seen by the i
     const env2 = { STAYS_API_URL: "https://x.test" };
     const fetchImpl: FetchLike = async () =>
       new Response(JSON.stringify({ stays: [{ name: "A", location: "B", pricePerNight: 1, rating: 4 }] }), { status: 200 });
-    const both = await callTool(tourismRegistry, "tourism_search", { destination: "Nice" }, {
+    const both = await callTool(tourismRegistry, "tourism_search", NICE_SEARCH, {
       auditSink: s.sink, env: env2, fetchImpl, onResponse: (i) => void hook.push(i),
     });
-    const alone = await callTool(tourismRegistry, "tourism_search", { destination: "Nice" }, {
+    const alone = await callTool(tourismRegistry, "tourism_search", NICE_SEARCH, {
       env: env2, fetchImpl, onResponse: (i) => void solo.push(i),
     });
     expect(hook).toHaveLength(1);

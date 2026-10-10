@@ -253,7 +253,34 @@ describe("#7: the open lowering is untouched by the strict one", () => {
       { name: "who", required: false, type: { kind: "scalar", semantic: "party" } },
     ];
     expect(JSON.stringify(objectJsonSchema(fields, resources))).not.toContain("additionalProperties");
-    expect(JSON.stringify(inputJsonSchema(fields, resources))).not.toContain("additionalProperties");
+  });
+
+  // #195: the INPUT lowering is deliberately no longer open — `validateInput` refuses undeclared
+  // keys, so the advertised schema says so. The output lowering above is untouched.
+  it("#195: the input lowering is closed at every object level and bounds party counts at 0", () => {
+    const resources: IRResourceRegistry = {
+      Room: [{ name: "beds", required: true, type: { kind: "scalar", semantic: "quantity" } }],
+    };
+    const fields: IRField[] = [
+      { name: "rooms", required: true, type: { kind: "collection", of: "Room" } },
+      { name: "who", required: false, type: { kind: "scalar", semantic: "party" } },
+    ];
+    const s = inputJsonSchema(fields, resources) as {
+      additionalProperties?: boolean;
+      properties: { rooms: { items: { additionalProperties?: boolean } }; who: { additionalProperties?: boolean; properties: Record<string, { minimum?: number }> } };
+    };
+    expect(s.additionalProperties).toBe(false);
+    expect(s.properties.rooms.items.additionalProperties).toBe(false);
+    expect(s.properties.who.additionalProperties).toBe(false);
+    expect(s.properties.who.properties.adults.minimum).toBe(0);
+    expect(s.properties.who.properties.children.minimum).toBe(0);
+    // ...and the output lowering of the same party carries no minimum.
+    expect(JSON.stringify(objectJsonSchema(fields, resources))).not.toContain("minimum");
+  });
+
+  it("#195: an unknown resource in an input still degrades to a generic object rather than throwing", () => {
+    const fields: IRField[] = [{ name: "x", required: true, type: { kind: "resource", name: "Nope" } }];
+    expect(() => inputJsonSchema(fields, {})).not.toThrow();
   });
 
   it("still degrades an unknown resource to a generic object rather than throwing", () => {

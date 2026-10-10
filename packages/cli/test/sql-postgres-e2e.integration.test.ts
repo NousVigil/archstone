@@ -278,8 +278,8 @@ describePostgres("examples/manifests/sql-reporting against a database built from
         caller: { principal: "acme-analyst" },
         connectionRegistry,
       };
-      const viaSql = await callTool(buildRegistry(example).registry!, "reporting_get-position", { id: 1 }, { ...sqlOptions, connector: invokeConnector });
-      const viaRest = await callTool(buildRegistry(twin).registry!, "reporting_get-position", { id: 1 }, { env: { POSITIONS_API_URL: `http://127.0.0.1:${port}` } });
+      const viaSql = await callTool(buildRegistry(example).registry!, "reporting_get-position", { id: "1" }, { ...sqlOptions, connector: invokeConnector });
+      const viaRest = await callTool(buildRegistry(twin).registry!, "reporting_get-position", { id: "1" }, { env: { POSITIONS_API_URL: `http://127.0.0.1:${port}` } });
 
       expect(viaSql.isError).toBe(false);
       expect(viaSql.structuredContent).toEqual({ positions: [{ id: 1, label: "ACME-BOND-2031", quantity: 120 }] });
