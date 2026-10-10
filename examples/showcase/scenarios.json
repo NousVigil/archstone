@@ -1,5 +1,5 @@
 {
-  "$comment": "One row per scenario: the single table the tests, the documentation and any front end read. Everything is invented; no row names a real business or person. See README.md for the field reference. Each prompt (copy.en.ask) is meant to be pasted alone into a fresh conversation, so it names the stay, dates, guests and ids it needs; none leans on an earlier turn. A row with a key (A or B) may carry an optional ownAi note: what a visitor's own AI app, connected without a key, will see.",
+  "$comment": "One row per scenario: the single table the tests, the documentation and any front end read. Everything is invented; no row names a real business or person. See README.md for the field reference. Each prompt (copy.en.ask) is meant to be pasted alone into a fresh conversation, so it names the stay, dates, guests and ids it needs; none leans on an earlier turn. A row with a key (A or B) may carry an optional ownAi note: what a visitor's own AI app will see, connected without a key or with either demo key.",
   "version": 1,
   "clock": "2027-05-01T10:07:00Z",
   "keys": {
@@ -309,7 +309,7 @@
       ],
       "outcome": "refused",
       "ownAi": {
-        "en": "Your own AI app connects without a key, so it is refused for lack of a key here too, before the agency is asked. \"Run it live\" sends the second published demo key, which the rules name as blocked.",
+        "en": "This scenario is about the second published demo key, which the rules name as blocked. Your own AI app connected without a key is refused for lack of a key, before the agency is asked. Connected with the first key, the booking goes through instead. Connected with the second key, it is refused exactly as here. \"Run it live\" sends the second key.",
         "ro": ""
       },
       "anchor": "/demo/how-it-works#s-07",
