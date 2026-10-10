@@ -1,6 +1,6 @@
 capability:
   id: wanderlust.availability
-  description: "How many rooms a property has free on a date. Rate limited."
+  description: "How many rooms a property has free on a date. Archstone's policy allows 3 calls per minute per caller and refuses the rest."
   effect: read
 
   input:

@@ -590,6 +590,38 @@ describe("#201: a believable agency, through the real runtime", () => {
     }
   });
 
+  it("availability and room-status always agree, for every stay on every day of May and June 2027 (#201 round 3)", async () => {
+    const search = await call(newContext(), "wanderlust_search", { destination: "Lisbon", dates: { from: "2027-05-12", to: "2027-05-15" }, travelers: { adults: 2 } });
+    const ids = new Set((search.structuredContent as { stays: { id: string }[] }).stays.map((s) => s.id));
+    for (const id of ["ws-1001", "ws-1002", "ws-1003", "ws-1004", "ws-1005", "ws-1006"]) ids.add(id);
+    const days: string[] = [];
+    for (const [m, n] of [["05", 31], ["06", 30]] as const) for (let d = 1; d <= n; d++) days.push(`2027-${m}-${String(d).padStart(2, "0")}`);
+    const statusCtx = newContext(); // room-status has no rate limit
+    let checked = 0;
+    for (const id of ids) {
+      for (const date of days) {
+        // A fresh context per availability call: its rate limit is a scenario, not this test's business.
+        const av = await call(newContext(), "wanderlust_availability", { propertyId: id, date });
+        if (av.isError) continue; // an id that is not a stay
+        const free = (av.structuredContent as { availability: { roomsFree: number } }).availability.roomsFree;
+        const rs = await call(statusCtx, "wanderlust_room-status", { propertyId: id, date });
+        if (rs.structuredContent === undefined) {
+          // The deliberate contract violation (wrong-typed price) is the only unusable answer.
+          expect(`${id} ${date}`).toBe("ws-1003 2027-05-12");
+          continue;
+        }
+        const rooms = (rs.structuredContent as { rooms: { status?: string; error?: unknown; pricePerNight?: unknown }[] }).rooms;
+        const rows = rooms.filter((r) => r.error === undefined && (r.status === "free" || r.status === "taken"));
+        const label = `${id} ${date} roomsFree=${free}`;
+        if (free === 0) expect(rows.every((r) => r.status === "taken"), label).toBe(true);
+        // The one busy row (ws-1002, 2027-05-12) hides a room type; there the free room may be the hidden one.
+        else if (rows.length === rooms.length) expect(rows.some((r) => r.status === "free"), label).toBe(true);
+        checked++;
+      }
+    }
+    expect(checked).toBeGreaterThan(61);
+  }, 120_000);
+
   it("cancel and pay say they need the agency key and an allowed principal; stay-page says the partner link is withheld (#201 round 2)", () => {
     for (const name of ["wanderlust_book", "wanderlust_cancel", "wanderlust_pay"]) {
       expect(definitionsOf(name), name).toMatch(/Needs the agency key and a principal the manifest's policy allows: Archstone's policy refuses a missing key or a caller who is not allowed before the agency is asked/);
