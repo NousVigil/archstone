@@ -14,6 +14,7 @@ import {
   Registry,
   applyResponseMapping,
   contractViolationMessage,
+  type InvalidField,
   passThroughRefusal,
   evaluatePolicy,
   evaluateRateLimit,
@@ -113,6 +114,9 @@ export interface ExecuteResult {
   status: "ok" | "degraded" | "violation" | "error";
   data?: Record<string, unknown>; // present on ok/degraded
   missing?: string[]; // present on violation (ADD-12/19 semantics, verbatim)
+  /** Present-but-wrong-shape fields (#196), `{field, expected}`, never the value: required ones on a
+   *  `violation`, optional ones (dropped) on `degraded`. Present only when non-empty. */
+  invalid?: InvalidField[];
   degraded?: string[]; // present on degraded
   /** Origin-checked fields (`web-page`) whose value was outside the declared origins and was
    *  therefore withheld — absent from `data`, never forwarded. Field names only, never values.
@@ -279,13 +283,13 @@ export async function executeCapability(
       // failure in two ways, which is exactly the drift one record builder exists to prevent.
       // ADD-44 Amendment 2: reachable only after `invokeRest` returned `ok: true` — a response
       // was, by construction, received.
-      audit({ phase: "failed", message: contractViolationMessage(tool.id, missing, mapped.withheld), reachedConnector: true });
-      return { status: "violation", missing, ...(mapped.withheld ? { withheld: mapped.withheld } : {}) };
+      audit({ phase: "failed", message: contractViolationMessage(tool.id, missing, mapped.withheld, mapped.invalid), reachedConnector: true });
+      return { status: "violation", missing, ...(mapped.invalid ? { invalid: mapped.invalid } : {}), ...(mapped.withheld ? { withheld: mapped.withheld } : {}) };
     }
     if (mapped.status === "degraded") {
       // `succeeded`: every required field was present; only an optional one was absent (or withheld).
       audit({ phase: "succeeded" });
-      return { status: "degraded", data: mapped.data, degraded: mapped.degraded ?? [], ...(mapped.withheld ? { withheld: mapped.withheld } : {}) };
+      return { status: "degraded", data: mapped.data, degraded: mapped.degraded ?? [], ...(mapped.invalid ? { invalid: mapped.invalid } : {}), ...(mapped.withheld ? { withheld: mapped.withheld } : {}) };
     }
     audit({ phase: "succeeded" });
     return { status: "ok", data: mapped.data };

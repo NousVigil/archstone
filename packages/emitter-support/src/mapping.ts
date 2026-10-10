@@ -65,6 +65,14 @@ import { isMoneyShape } from "./money";
 
 export type MappingStatus = "ok" | "degraded" | "violation";
 
+/** A field whose value was present but not of the declared shape (#196). `expected` is the
+ *  declared type (`quantity`, `money`, `list of text`), taken from the manifest — never derived
+ *  from, and never carrying, the provider's value. */
+export interface InvalidField {
+  field: string;
+  expected: string;
+}
+
 /** One collection row that matched neither the success shape (fully) nor the declared error
  *  shape — #81's "row missing a required field, and not declared as a row-level error, still
  *  violates" scenario. Named so a caller can tell it apart from a declared error row (which
@@ -73,6 +81,8 @@ export type MappingStatus = "ok" | "degraded" | "violation";
 export interface RowViolation {
   index: number; // position in the collection (0-based)
   missing: string[]; // the resource's required field(s) this row did not carry
+  /** Required field(s) this row carried in the wrong shape (#196). Present only when there is one. */
+  invalid?: InvalidField[];
   /** Field(s) of this row whose value was outside the declared origins and therefore withheld —
    *  present only when there is one. Names only, never the value. */
   withheld?: string[];
@@ -83,6 +93,15 @@ export interface MappingResult {
   data?: Record<string, unknown>; // { [outputField]: mappedArray | mappedObject } — matches outputSchema
   missing?: string[]; // required fields absent → VIOLATION (fail-closed, no raw fallback)
   degraded?: string[]; // optional fields absent → DEGRADED (returned, field omitted)
+  /**
+   * Fields that were PRESENT but not of the declared shape (#196), each with the type it was
+   * declared as; never the value. On a `violation` these are required fields (the other half of
+   * `missing`, which lists only the absent ones). On a `degraded` result they are optional fields,
+   * dropped from `data`; they stay in `degraded` too (that list is every optional field left out),
+   * and `invalid` says which of them were sent in the wrong shape rather than not sent. Present
+   * only when non-empty.
+   */
+  invalid?: InvalidField[];
   /** #81: present iff `response.onError` is declared AND at least one row failed to match
    *  either the success or the declared error shape. Never present without `onError` — without
    *  it, a row missing a required field is exactly the whole-response VIOLATION it always was. */
@@ -126,7 +145,7 @@ interface Walk {
  *  the value it sat in — the provider sent it), and the optional slots dropped below the top. */
 interface WalkAcc {
   withheld: string[];
-  degraded: string[];
+  invalid: InvalidField[]; // optional slots dropped because the value was the wrong shape
 }
 
 /** The same shape `mapRow` has always returned for its withheld names: every one, and the
@@ -242,10 +261,26 @@ function noteUndeclared(w: Walk, path: string): void {
  *     mis-shaped value of a type that can carry one (`withheld: [path]`, as #145 names it);
  *   - `nested` — a required field somewhere inside it failed (the deepest names, dotted).
  */
-type Absent = { ok: false; reason: "invalid" | "withheld" | "nested"; missing: string[]; withheld: string[] };
+type Absent = { ok: false; reason: "invalid" | "withheld" | "nested"; missing: string[]; invalid: InvalidField[]; withheld: string[] };
 type Projected = { ok: true; value: unknown } | Absent;
 
 const ok = (value: unknown): Projected => ({ ok: true, value });
+
+/** The declared type, spelled for a model-facing message. From the manifest only. */
+function describeType(type: IRType): string {
+  switch (type.kind) {
+    case "scalar": return type.semantic;
+    case "list": return `list of ${type.items}`;
+    case "collection": return `collection of ${type.of}`;
+    case "resource": return type.identity ? `reference to ${type.name}` : type.name;
+  }
+}
+
+const dedupInvalid = (xs: InvalidField[]): InvalidField[] => {
+  const seen = new Map<string, InvalidField>();
+  for (const x of xs) seen.set(`${x.field}\u0000${x.expected}`, x);
+  return [...seen.values()];
+};
 
 /** The value itself does not fit its declared type. A type that can carry an origin-bound value
  *  names it withheld (it cannot be walked, so it cannot be checked — #145's rule); any other names
@@ -253,9 +288,9 @@ const ok = (value: unknown): Projected => ({ ok: true, value });
 function misfit(w: Walk, type: IRType, path: string, acc: WalkAcc): Projected {
   if (typeReaches(w, type)) {
     acc.withheld.push(path);
-    return { ok: false, reason: "withheld", missing: [], withheld: [path] };
+    return { ok: false, reason: "withheld", missing: [], invalid: [], withheld: [path] };
   }
-  return { ok: false, reason: "invalid", missing: [path], withheld: [] };
+  return { ok: false, reason: "invalid", missing: [], invalid: [{ field: path, expected: describeType(type) }], withheld: [] };
 }
 
 /** One semantic scalar value: an origin-bound one is checked and normalised; a composite one
@@ -268,7 +303,7 @@ function projectSemantic(w: Walk, semantic: SemanticType, value: unknown, path: 
     const r = checkOrigin(value, allowedFor(w, list));
     if (r.ok) return ok(r.href);
     acc.withheld.push(path);
-    return { ok: false, reason: "withheld", missing: [], withheld: [path] };
+    return { ok: false, reason: "withheld", missing: [], invalid: [], withheld: [path] };
   }
   const shape = COMPOSITE_SHAPES[semantic];
   if (semantic === "money") {
@@ -296,7 +331,7 @@ function projectSemantic(w: Walk, semantic: SemanticType, value: unknown, path: 
       // A declared key of the wrong shape is dropped and named as what it is — a mis-shaped
       // optional sub-value (`degraded`), never as an undeclared key.
       if (isPrimitive(value[k])) out[k] = value[k];
-      else acc.degraded.push(`${path}.${k}`);
+      else acc.invalid.push({ field: `${path}.${k}`, expected: "string, number or boolean" });
     }
     const declared = new Set([...shape.required, ...shape.optional]);
     for (const k of Object.keys(value)) if (!declared.has(k)) noteUndeclared(w, `${path}.${k}`);
@@ -347,7 +382,10 @@ function projectValue(w: Walk, type: IRType, value: unknown, path: string, acc: 
     const items: unknown[] = [];
     for (const item of value) {
       const r = projectSemantic(w, type.items, item, path, acc);
-      if (!r.ok) return r;
+      if (!r.ok) {
+        // The list is the slot that is wrong, so it is the list that was expected.
+        return r.reason === "invalid" ? { ...r, invalid: r.invalid.map((i) => ({ ...i, expected: describeType(type) })) } : r;
+      }
       items.push(r.value);
     }
     return ok(items);
@@ -363,6 +401,7 @@ function projectValue(w: Walk, type: IRType, value: unknown, path: string, acc: 
   if (!Array.isArray(value)) return misfit(w, type, path, acc);
   const rows: unknown[] = [];
   const missing = new Set<string>();
+  const invalid: InvalidField[] = [];
   const withheld = new Set<string>();
   let failed: Absent | undefined;
   for (const row of value) {
@@ -372,13 +411,16 @@ function projectValue(w: Walk, type: IRType, value: unknown, path: string, acc: 
     } else {
       failed = r;
       r.missing.forEach((m) => missing.add(m));
+      invalid.push(...r.invalid);
       r.withheld.forEach((m) => withheld.add(m));
     }
   }
   if (!failed) return ok(rows);
   // A row that is itself mis-shaped names the collection slot the way a mis-shaped slot does.
-  if (failed.reason !== "nested" && missing.size + withheld.size <= 1) return failed;
-  return { ok: false, reason: "nested", missing: [...missing], withheld: [...withheld] };
+  if (failed.reason !== "nested" && missing.size + invalid.length + withheld.size <= 1) {
+    return failed.reason === "invalid" ? { ...failed, invalid: [{ field: path, expected: describeType(type) }] } : failed;
+  }
+  return { ok: false, reason: "nested", missing: [...missing], invalid: dedupInvalid(invalid), withheld: [...withheld] };
 }
 
 /**
@@ -397,8 +439,9 @@ function projectResource(w: Walk, slotType: IRType, name: string, value: unknown
   if (!fields || !isPlainObject(value) || depth > MAX_NESTED_DEPTH) return misfit(w, slotType, path, acc);
   const out: Record<string, unknown> = {};
   const missing: string[] = [];
+  const invalid: InvalidField[] = [];
   const withheld: string[] = [];
-  const childAcc: WalkAcc = { withheld: acc.withheld, degraded: [] };
+  const childAcc: WalkAcc = { withheld: acc.withheld, invalid: [] };
   for (const f of fields) {
     const childPath = `${path}.${f.name}`;
     const v = hasOwn(value, f.name) ? value[f.name] : undefined;
@@ -411,17 +454,18 @@ function projectResource(w: Walk, slotType: IRType, name: string, value: unknown
       out[f.name] = r.value;
     } else if (f.required) {
       missing.push(...r.missing);
+      invalid.push(...r.invalid);
       withheld.push(...r.withheld);
     } else if (r.reason !== "withheld") {
-      childAcc.degraded.push(childPath);
+      childAcc.invalid.push({ field: childPath, expected: describeType(f.type) });
     }
   }
   if (w.undeclared) {
     const declared = new Set(fields.map((f) => f.name));
     for (const k of Object.keys(value)) if (!declared.has(k)) noteUndeclared(w, `${path}.${k}`);
   }
-  if (missing.length > 0 || withheld.length > 0) return { ok: false, reason: "nested", missing, withheld };
-  acc.degraded.push(...childAcc.degraded);
+  if (missing.length > 0 || invalid.length > 0 || withheld.length > 0) return { ok: false, reason: "nested", missing, invalid, withheld };
+  acc.invalid.push(...childAcc.invalid);
   return ok(out);
 }
 
@@ -452,18 +496,20 @@ function mapRow(
   byPath: Map<string, string> | undefined,
   tag: "ok" | "error" | undefined,
   walk: Walk,
-): { obj: Record<string, unknown>; missing: string[]; degraded: string[]; withheld: WithheldAcc } {
+): { obj: Record<string, unknown>; missing: string[]; invalid: InvalidField[]; degraded: string[]; invalidOptional: InvalidField[]; withheld: WithheldAcc } {
   const obj: Record<string, unknown> = {};
   if (tag) obj.$row = tag;
   const missing: string[] = [];
-  const acc: WalkAcc = { withheld: [], degraded: [] };
+  const invalid: InvalidField[] = [];
+  const degraded: string[] = [];
+  const acc: WalkAcc = { withheld: [], invalid: [] };
   const required: string[] = [];
   for (const f of fields) {
     const path = byPath?.get(f.name) ?? `$.${f.name}`;
     const value = firstMatch(item, path);
     if (value === undefined || value === null) {
       if (f.required) missing.push(f.name);
-      else acc.degraded.push(f.name);
+      else degraded.push(f.name);
       continue;
     }
     const r = projectValue(walk, f.type, value, f.name, acc, 0);
@@ -473,15 +519,16 @@ function mapRow(
       // Absent, and required: the row fails. A withheld value is named as withheld, never as
       // missing; a failure deeper down carries the deepest names (`host.name`).
       missing.push(...r.missing);
+      invalid.push(...r.invalid);
       required.push(...r.withheld);
     } else if (r.reason !== "withheld") {
       // An optional slot absorbs the failure: omitted, and degraded. A withheld optional value
       // is reported in `withheld` only, as #145 defined it.
-      acc.degraded.push(f.name);
+      acc.invalid.push({ field: f.name, expected: describeType(f.type) });
     }
   }
   const uniq = (xs: string[]): string[] => [...new Set(xs)];
-  return { obj, missing: uniq(missing), degraded: uniq(acc.degraded), withheld: { withheld: uniq(acc.withheld), required: uniq(required) } };
+  return { obj, missing: uniq(missing), invalid: dedupInvalid(invalid), degraded: uniq(degraded), invalidOptional: dedupInvalid(acc.invalid), withheld: { withheld: uniq(acc.withheld), required: uniq(required) } };
 }
 
 /**
@@ -510,6 +557,8 @@ export function applyResponseMapping(
   if (!mapping && !extract) return { status: "ok", data: {} }; // caller guards on tool.response || tool.extract; defensive
 
   const missing = new Set<string>();
+  const invalid: InvalidField[] = []; // required, present, wrong shape
+  const invalidOptional: InvalidField[] = []; // optional, present, wrong shape — dropped
   const degraded = new Set<string>();
   const withheld = new Set<string>();
   const requiredWithheld = new Set<string>();
@@ -557,9 +606,11 @@ export function applyResponseMapping(
       // field withheld by the origin check counts the same way, as it does for a missing one.
       const mapped: Record<string, unknown>[] = [];
       for (const item of items) {
-        const { obj, missing: rowMissing, degraded: rowDegraded, withheld: rowWithheld } = mapRow(item, successFields, pathByName, undefined, walk);
+        const { obj, missing: rowMissing, invalid: rowInvalid, degraded: rowDegraded, invalidOptional: rowInvalidOptional, withheld: rowWithheld } = mapRow(item, successFields, pathByName, undefined, walk);
         rowMissing.forEach((m) => missing.add(m));
+        invalid.push(...rowInvalid);
         rowDegraded.forEach((d) => degraded.add(d));
+        invalidOptional.push(...rowInvalidOptional);
         absorb(rowWithheld);
         mapped.push(obj);
       }
@@ -574,29 +625,31 @@ export function applyResponseMapping(
       // A row's withheld names always reach the response-level `withheld` list — the provider sent
       // an off-origin value whether or not the row survived — but a REQUIRED withheld field fails
       // only its own row, exactly as a missing required field does here.
-      const rowViolation = (index: number, rowMissing: string[], rowWithheld: WithheldAcc): void => {
+      const rowViolation = (index: number, rowMissing: string[], rowInvalid: InvalidField[], rowWithheld: WithheldAcc): void => {
         const rv: RowViolation = { index, missing: rowMissing };
+        if (rowInvalid.length > 0) rv.invalid = rowInvalid;
         if (rowWithheld.withheld.length > 0) rv.withheld = rowWithheld.withheld;
         rowViolations.push(rv);
       };
       items.forEach((item, index) => {
         if (matchesDiscriminator(item, onError.when)) {
-          const { obj, missing: rowMissing, withheld: rowWithheld } = mapRow(item, errorFields, errorPathByName, "error", walk);
+          const { obj, missing: rowMissing, invalid: rowInvalid, withheld: rowWithheld } = mapRow(item, errorFields, errorPathByName, "error", walk);
           rowWithheld.withheld.forEach((w) => withheld.add(w));
-          if (rowMissing.length > 0 || rowWithheld.required.length > 0) {
-            rowViolation(index, rowMissing, rowWithheld);
+          if (rowMissing.length > 0 || rowInvalid.length > 0 || rowWithheld.required.length > 0) {
+            rowViolation(index, rowMissing, rowInvalid, rowWithheld);
           } else {
             mapped.push(obj);
             usable++;
           }
           return;
         }
-        const { obj, missing: rowMissing, degraded: rowDegraded, withheld: rowWithheld } = mapRow(item, successFields, pathByName, "ok", walk);
+        const { obj, missing: rowMissing, invalid: rowInvalid, degraded: rowDegraded, invalidOptional: rowInvalidOptional, withheld: rowWithheld } = mapRow(item, successFields, pathByName, "ok", walk);
         rowWithheld.withheld.forEach((w) => withheld.add(w));
-        if (rowMissing.length > 0 || rowWithheld.required.length > 0) {
-          rowViolation(index, rowMissing, rowWithheld);
+        if (rowMissing.length > 0 || rowInvalid.length > 0 || rowWithheld.required.length > 0) {
+          rowViolation(index, rowMissing, rowInvalid, rowWithheld);
         } else {
           rowDegraded.forEach((d) => degraded.add(d));
+          invalidOptional.push(...rowInvalidOptional);
           mapped.push(obj);
           usable++;
         }
@@ -619,17 +672,18 @@ export function applyResponseMapping(
       // text: a primitive passes, anything else is absent (fail closed).
       const type: IRType = field?.type ?? { kind: "scalar", semantic: "text" };
       const check = (value: unknown): void => {
-        const acc: WalkAcc = { withheld: [], degraded: [] };
+        const acc: WalkAcc = { withheld: [], invalid: [] };
         const r = projectValue(walk, type, value, fm.name, acc, 0);
         acc.withheld.forEach((w) => withheld.add(w));
         if (r.ok) {
-          acc.degraded.forEach((d) => degraded.add(d));
+          invalidOptional.push(...acc.invalid);
           data[fm.name] = r.value;
         } else if (required) {
           r.missing.forEach((m) => missing.add(m));
+          invalid.push(...r.invalid);
           r.withheld.forEach((w) => requiredWithheld.add(w));
         } else if (r.reason !== "withheld") {
-          degraded.add(fm.name);
+          invalidOptional.push({ field: fm.name, expected: describeType(type) });
         }
       };
 
@@ -650,22 +704,32 @@ export function applyResponseMapping(
     }
   }
 
-  if (missing.size > 0 || requiredWithheld.size > 0 || wholeResponseViolation) {
+  if (missing.size > 0 || invalid.length > 0 || requiredWithheld.size > 0 || wholeResponseViolation) {
     // Every row failed (#81's "every row fails" scenario): `missing` never accumulated
     // per-row failures (that would wrongly implicate every OTHER row), so when it is what
     // makes this a whole-response VIOLATION, name the union of what each failing row lacked —
     // `contractViolationMessage` still has something to say. A row that failed only because a
     // required value was withheld is already named in `withheld`.
-    if (missing.size === 0 && requiredWithheld.size === 0) for (const rv of rowViolations) rv.missing.forEach((m) => missing.add(m));
+    if (missing.size === 0 && invalid.length === 0 && requiredWithheld.size === 0) {
+      for (const rv of rowViolations) {
+        rv.missing.forEach((m) => missing.add(m));
+        invalid.push(...(rv.invalid ?? []));
+      }
+    }
     const result: MappingResult = { status: "violation", missing: [...missing] };
+    if (invalid.length > 0) result.invalid = dedupInvalid(invalid);
     if (withheld.size > 0) result.withheld = [...withheld];
     if (rowViolations.length > 0) result.rowViolations = rowViolations;
     if (walk.undeclared && walk.undeclared.size > 0) result.undeclaredNested = [...walk.undeclared];
     return result;
   }
+  // `degraded` stays "every optional field left out of `data`", as it always was; `invalid` says
+  // which of those were sent in the wrong shape rather than not sent at all.
+  for (const i of invalidOptional) degraded.add(i.field);
   const status: MappingStatus = degraded.size > 0 || withheld.size > 0 ? "degraded" : "ok";
   const result: MappingResult = { status, data };
   if (degraded.size > 0) result.degraded = [...degraded];
+  if (invalidOptional.length > 0) result.invalid = dedupInvalid(invalidOptional);
   if (withheld.size > 0) result.withheld = [...withheld];
   if (rowViolations.length > 0) result.rowViolations = rowViolations;
   if (walk.undeclared && walk.undeclared.size > 0) result.undeclaredNested = [...walk.undeclared];
@@ -684,16 +748,41 @@ export function applyResponseMapping(
  * failure would read differently — precisely the drift a single record builder exists to
  * prevent, and invisible until an auditor compares the two.
  */
-export function contractViolationMessage(capabilityId: string, missing: readonly string[], withheld: readonly string[] = []): string {
-  if (withheld.length === 0) {
-    return `contract violation: capability '${capabilityId}' — provider response is missing required field(s): ${missing.join(", ")}. Declared output shape not met; raw body withheld.`;
+export function contractViolationMessage(
+  capabilityId: string,
+  missing: readonly string[],
+  withheld: readonly string[] = [],
+  invalid: readonly InvalidField[] = [],
+): string {
+  const tail = "Declared output shape not met; raw body withheld.";
+  if (withheld.length === 0 && invalid.length === 0) {
+    return `contract violation: capability '${capabilityId}' — provider response is missing required field(s): ${missing.join(", ")}. ${tail}`;
   }
-  // A withheld field was present: it is named as withheld, with the reason, never as missing —
-  // and never with its value, which is provider-controlled text.
+  // An absent field is named missing; a present one of the wrong shape is named invalid, with the
+  // type it was declared as; an off-origin one is named withheld. No value is ever echoed — they
+  // are provider-controlled text.
   const parts: string[] = [];
   if (missing.length > 0) parts.push(`is missing required field(s): ${missing.join(", ")}`);
-  parts.push(`carries a value outside the declared origins in field(s): ${withheld.join(", ")} (withheld)`);
-  return `contract violation: capability '${capabilityId}' — provider response ${parts.join("; and ")}. Declared output shape not met; raw body withheld.`;
+  if (invalid.length > 0) parts.push(`has a value of the wrong shape in field(s): ${invalidList(invalid)}`);
+  if (withheld.length > 0) parts.push(`carries a value outside the declared origins in field(s): ${withheld.join(", ")} (withheld)`);
+  return `contract violation: capability '${capabilityId}' — provider response ${parts.join("; and ")}. ${tail}`;
+}
+
+/** `price (expected quantity), rating (expected quantity)` — names and declared types only. */
+export function invalidList(invalid: readonly InvalidField[]): string {
+  return invalid.map((i) => `${i.field} (expected ${i.expected})`).join(", ");
+}
+
+/** The model-facing notes for a degraded mapping: optional fields the provider did not send, and —
+ *  apart from them — optional fields it sent in the wrong shape, named with the type they were
+ *  declared as. Both are omitted from the result; neither note carries a value. */
+export function degradedNotes(degraded: readonly string[], invalid: readonly InvalidField[] = []): string[] {
+  const wrong = new Set(invalid.map((i) => i.field));
+  const absent = degraded.filter((d) => !wrong.has(d));
+  const notes: string[] = [];
+  if (absent.length > 0) notes.push(`note: optional field(s) absent (degraded): ${absent.join(", ")}`);
+  if (invalid.length > 0) notes.push(`note: optional field(s) present but of the wrong shape, omitted (degraded): ${invalidList(invalid)}`);
+  return notes;
 }
 
 /** The model-facing note for a mapping that withheld an optional field's value. Names fields only. */

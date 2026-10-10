@@ -22,7 +22,7 @@ import {
   type ShapeDiff,
   type ShapeMap,
 } from "@archstone/compiler";
-import { evaluatePolicy, hasIdentityClaims, lifecycleExposure, passThroughRefusal } from "@archstone/emitter-support";
+import { evaluatePolicy, hasIdentityClaims, invalidList, lifecycleExposure, passThroughRefusal, type InvalidField } from "@archstone/emitter-support";
 import { applyResponseMapping } from "./mapping";
 import { invokeConnector, type ConnectorInvokeOptions } from "./connector";
 
@@ -279,12 +279,24 @@ function withheldDetail(withheld: readonly string[]): string {
   return `value outside declared origins in: ${withheld.join(", ")}`;
 }
 
+/** `degraded: optional field(s) absent — a, b; optional field(s) invalid — c (expected quantity)`:
+ *  what the provider did not send, apart from what it sent in the wrong shape. Names only. */
+function degradedDetail(degraded: readonly string[] | undefined, invalid: readonly InvalidField[] | undefined): string {
+  const parts: string[] = [];
+  const wrong = new Set((invalid ?? []).map((i) => i.field));
+  const absent = (degraded ?? []).filter((d) => !wrong.has(d));
+  if (absent.length > 0) parts.push(`optional field(s) absent — ${absent.join(", ")}`);
+  if (invalid && invalid.length > 0) parts.push(`optional field(s) invalid — ${invalidList(invalid)}`);
+  return parts.length > 0 ? `degraded: ${parts.join("; ")}` : "";
+}
+
 /** A violation's detail: the missing required fields, then any withheld ones, each named as what
  *  it is. With nothing withheld it is exactly the text it always was. */
-function violationDetail(missing: readonly string[], withheld: readonly string[] | undefined): string {
-  if (!withheld) return `missing required field(s) ${missing.join(", ")}`;
+function violationDetail(missing: readonly string[], withheld: readonly string[] | undefined, invalid: readonly InvalidField[] | undefined): string {
+  if (!withheld && !invalid) return `missing required field(s) ${missing.join(", ")}`;
   const parts = missing.length > 0 ? [`missing required field(s) ${missing.join(", ")}`] : [];
-  parts.push(withheldDetail(withheld));
+  if (invalid) parts.push(`wrong shape in: ${invalidList(invalid)}`);
+  if (withheld) parts.push(withheldDetail(withheld));
   return parts.join("; ");
 }
 
@@ -374,7 +386,7 @@ export async function verifyTool(tool: IRTool, dir: string, resources: IRResourc
   const mapped = applyResponseMapping(tool, result.data, resources, { collectUndeclared: true });
   const seen = { ...observed, ...(mapped.undeclaredNested ? { undeclaredNested: mapped.undeclaredNested } : {}) };
   if (mapped.status === "violation") {
-    return { ...seen, status: "red", detail: `contract violation: ${violationDetail(mapped.missing ?? [], mapped.withheld)}` };
+    return { ...seen, status: "red", detail: `contract violation: ${violationDetail(mapped.missing ?? [], mapped.withheld, mapped.invalid)}` };
   }
 
   // An origin-checked value outside the declared origins is RED even on an optional field. In
@@ -382,7 +394,8 @@ export async function verifyTool(tool: IRTool, dir: string, resources: IRResourc
   // operator has to hear it here: the provider's own data already breaks the guarantee. Kept
   // distinct from the yellow `degraded` text, which means the provider did not send a field.
   if (mapped.withheld) {
-    const degradedToo = mapped.degraded ? `; degraded: optional field(s) absent — ${mapped.degraded.join(", ")}` : "";
+    const dd = degradedDetail(mapped.degraded, mapped.invalid);
+    const degradedToo = dd ? `; ${dd}` : "";
     return { ...seen, status: "red", detail: `${withheldDetail(mapped.withheld)}${degradedToo}` };
   }
 
@@ -396,7 +409,7 @@ export async function verifyTool(tool: IRTool, dir: string, resources: IRResourc
   }
 
   if (mapped.status === "degraded") {
-    return { ...seen, status: "yellow", detail: `degraded: optional field(s) absent — ${(mapped.degraded ?? []).join(", ")}` };
+    return { ...seen, status: "yellow", detail: degradedDetail(mapped.degraded, mapped.invalid) };
   }
   if (fingerprintChanged) {
     const { detail, drift } = narrateShapeChange(contract, liveShape, liveFingerprint);
@@ -547,6 +560,8 @@ export interface ContractRecording {
   /** Required fields that came back absent or null. A VIOLATION, and the reason nothing is
    *  written: a manifest that violates on its own recording is not a manifest. */
   missing?: string[];
+  /** Fields that came back in the wrong shape (#196): `{field, expected}`, never the value. */
+  invalid?: InvalidField[];
   /** Origin-checked fields whose recorded value was outside the declared origins. Always `red`,
    *  and nothing is kept: a fixture `verify` would report red on its first replay is not worth
    *  writing down. Names only — the value is never printed. */
@@ -649,8 +664,9 @@ export async function recordContract(
     return {
       ...base,
       outcome: "red",
-      detail: `contract violation on the recorded response: ${violationDetail(mapped.missing ?? [], mapped.withheld)}`,
+      detail: `contract violation on the recorded response: ${violationDetail(mapped.missing ?? [], mapped.withheld, mapped.invalid)}`,
       ...(mapped.missing ? { missing: mapped.missing } : {}),
+      ...(mapped.invalid ? { invalid: mapped.invalid } : {}),
       ...(mapped.withheld ? { withheld: mapped.withheld } : {}),
     };
   }
@@ -669,7 +685,7 @@ export async function recordContract(
     return {
       ...base,
       outcome: "yellow",
-      detail: `recorded, degraded: optional field(s) absent — ${(mapped.degraded ?? []).join(", ")}`,
+      detail: `recorded, ${degradedDetail(mapped.degraded, mapped.invalid)}`,
       fingerprint,
       shape,
       fixture,

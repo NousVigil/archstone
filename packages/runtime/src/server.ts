@@ -26,6 +26,7 @@ import {
   contractViolationMessage,
   passThroughRefusal,
   withheldNote,
+  degradedNotes,
   evaluatePolicy,
   evaluateRateLimit,
   auditNow,
@@ -421,7 +422,7 @@ export async function callTool(
       const missing = mapped.missing ?? [];
       // The text is unchanged byte-for-byte; it moved into a shared helper (#44) only so the
       // embedded consumer, whose own result carries no text, records the identical sentence.
-      const text = contractViolationMessage(tool.id, missing, mapped.withheld);
+      const text = contractViolationMessage(tool.id, missing, mapped.withheld, mapped.invalid);
       // #19 (ADD-19 Rev 2 D-3′/D-6): structured error object lives in `_meta`, never
       // `structuredContent` — the reference SDK client validates `structuredContent` against
       // the tool's `outputSchema` unconditionally (not gated on `isError`), so a VIOLATION
@@ -442,6 +443,9 @@ export async function callTool(
             error: "contract_violation",
             capability: tool.id,
             missing,
+            // #196: present-but-wrong-shape fields, `{field, expected}`, never the value. `missing`
+            // keeps its shape and now lists only the absent ones.
+            ...(mapped.invalid ? { invalid: mapped.invalid } : {}),
             ...(mapped.withheld ? { withheld: mapped.withheld } : {}),
           },
         },
@@ -449,8 +453,8 @@ export async function callTool(
       };
     }
     const content: CallResult["content"] = [{ type: "text", text: JSON.stringify(mapped.data, null, 2) }];
-    if (mapped.status === "degraded" && (mapped.degraded ?? []).length > 0) {
-      content.push({ type: "text", text: `note: optional field(s) absent (degraded): ${(mapped.degraded ?? []).join(", ")}` });
+    if (mapped.status === "degraded") {
+      for (const text of degradedNotes(mapped.degraded ?? [], mapped.invalid)) content.push({ type: "text", text });
     }
     if (mapped.withheld) content.push({ type: "text", text: withheldNote(mapped.withheld) });
     // #44: `degraded` records `succeeded`, NOT `failed` — every *required* field was present and
