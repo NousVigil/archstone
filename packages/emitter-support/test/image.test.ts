@@ -142,7 +142,7 @@ describe("S-B9 / S-B15: nesting", () => {
     expect(r.data).toEqual({ photos: [ok(1), ok(2), ok(3), ok(5)] });
     expect(r.withheldAt).toEqual([{ path: "photos[3]", list: "photos", kept: 4 }]);
     expect(withheldNote(r.withheldAt ?? [])).toBe(
-      "note: withheld — value(s) outside the declared origins, at these locations in the original response: photos[3] (removed; the list now has 4 items). Every other value returned passed the origin check.",
+      "note: withheld — value(s) outside the declared origins, at these places in this result (a number is the item's position in the provider's list, before any removal): photos[3] (removed; the list now has 4 items). Every other link and image returned passed the origin check.",
     );
   });
 

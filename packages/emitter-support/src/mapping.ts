@@ -89,8 +89,9 @@ export interface RowViolation {
 }
 
 /**
- * Where one withheld value sat in the PROVIDER's original response, for the model-facing note.
- * `path` is the full path including every array index (`pages[1].url`, `photos[3]`) — never a
+ * Where one withheld value sat in the RESULT, for the model-facing note. `path` uses the OUTPUT
+ * field names the model sees (not the provider's own keys), and each number is the item's position
+ * in the PROVIDER's list before any removal (`stays[1].listingUrl`, `gallery.photos[3]`) — never a
  * value. An item removed from an origin-bound list also carries the list's path and how many items
  * it kept, because the list the model receives is shorter than the one the provider sent and the
  * original index would otherwise read as a position in it.
@@ -133,8 +134,8 @@ export interface MappingResult {
    * makes it a `violation`.
    */
   withheld?: string[];
-  /** The same withheld values located in the provider's original response (full paths, array
-   *  indices included) — what `withheldNote` is written from. Present iff `withheld` is. */
+  /** The same withheld values located in the result (output field names; each array index is the
+   *  item's position in the provider's list before any removal) — what `withheldNote` is written from. Present iff `withheld` is. */
   withheldAt?: WithheldAt[];
   /**
    * Only when the caller passed `collectUndeclared` (`verify` does; serving never does): the
@@ -163,7 +164,7 @@ interface Walk {
  *  the value it sat in — the provider sent it), and the optional slots dropped below the top. */
 interface WalkAcc {
   withheld: string[];
-  at: WithheldAt[]; // the same values, located in the provider's original response (path relative to the row)
+  at: WithheldAt[]; // the same values, located by output field names (path relative to the row)
   invalid: InvalidField[]; // optional slots dropped because the value was the wrong shape
 }
 
@@ -255,6 +256,12 @@ function typeReaches(w: Pick<Walk, "reaches">, type: IRType): boolean {
   if (type.kind === "scalar") return originListOf(type.semantic) !== undefined;
   if (type.kind === "list") return originListOf(type.items) !== undefined;
   return w.reaches.get(type.kind === "collection" ? type.of : type.name) === true;
+}
+
+/** `withheld` is a set; `withheldAt` is de-duplicated the same way (by path). */
+function uniqAt(at: readonly WithheldAt[]): WithheldAt[] {
+  const seen = new Set<string>();
+  return at.filter((a) => (seen.has(a.path) ? false : (seen.add(a.path), true)));
 }
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
@@ -599,13 +606,13 @@ export function applyResponseMapping(
   const degraded = new Set<string>();
   const withheld = new Set<string>();
   const requiredWithheld = new Set<string>();
-  const withheldAt: WithheldAt[] = []; // located in the provider's original response; see WithheldAt
+  const withheldAt: WithheldAt[] = []; // located by output field names; see WithheldAt
   const rowViolations: RowViolation[] = [];
   const data: Record<string, unknown> = {};
   let wholeResponseViolation = false;
   const walk = newWalk(tool, resources, options?.collectUndeclared === true);
-  // `prefix` turns a row-relative path into a path in the provider's original response: the output
-  // field plus, for a collection, the row's index in the provider's array (`pages[1].`).
+  // `prefix` turns a row-relative path into a path in the result: the output field plus, for a
+  // collection, the row's index in the provider's array (`stays[1].`).
   const place = (acc: WithheldAcc, prefix: string): void => {
     for (const a of acc.at) withheldAt.push({ ...a, path: prefix + a.path, ...(a.list !== undefined ? { list: prefix + a.list } : {}) });
   };
@@ -767,7 +774,7 @@ export function applyResponseMapping(
     const result: MappingResult = { status: "violation", missing: [...missing] };
     if (invalid.length > 0) result.invalid = dedupInvalid(invalid);
     if (withheld.size > 0) result.withheld = [...withheld];
-    if (withheld.size > 0) result.withheldAt = withheldAt;
+    if (withheld.size > 0) result.withheldAt = uniqAt(withheldAt);
     if (rowViolations.length > 0) result.rowViolations = rowViolations;
     if (walk.undeclared && walk.undeclared.size > 0) result.undeclaredNested = [...walk.undeclared];
     return result;
@@ -780,7 +787,7 @@ export function applyResponseMapping(
   if (degraded.size > 0) result.degraded = [...degraded];
   if (invalidOptional.length > 0) result.invalid = dedupInvalid(invalidOptional);
   if (withheld.size > 0) result.withheld = [...withheld];
-  if (withheld.size > 0) result.withheldAt = withheldAt;
+  if (withheld.size > 0) result.withheldAt = uniqAt(withheldAt);
   if (rowViolations.length > 0) result.rowViolations = rowViolations;
   if (walk.undeclared && walk.undeclared.size > 0) result.undeclaredNested = [...walk.undeclared];
   return result;
@@ -837,10 +844,12 @@ export function degradedNotes(degraded: readonly string[], invalid: readonly Inv
 
 /**
  * The model-facing note for a mapping that withheld a value. It names each location in the
- * provider's ORIGINAL response with its full path (`pages[1].url`) — never a value — and says what
+ * result by the output field names the model sees (`stays[1].listingUrl`; the number is the item's
+ * position in the provider's list) — never a value — and says what
  * became of it: a field is omitted from its item, a list item is removed and the list is now
  * shorter (so `photos[3]` cannot be mistaken for the fourth entry of the returned list). The last
- * sentence is the other half of the guarantee: whatever IS returned passed the origin check.
+ * sentence is the other half of the guarantee, scoped to what is origin-checked (links and
+ * images; text, numbers and money never are): every other link and image returned passed.
  */
 export function withheldNote(withheld: readonly WithheldAt[]): string {
   const parts: string[] = [];
@@ -859,7 +868,7 @@ export function withheldNote(withheld: readonly WithheldAt[]): string {
     const kept = g[0]?.kept ?? 0;
     parts.push(`${g.map((w) => w.path).join(", ")} (removed; the list now has ${kept} ${kept === 1 ? "item" : "items"})`);
   }
-  return `note: withheld — value(s) outside the declared origins, at these locations in the original response: ${parts.join("; ")}. Every other value returned passed the origin check.`;
+  return `note: withheld — value(s) outside the declared origins, at these places in this result (a number is the item's position in the provider's list, before any removal): ${parts.join("; ")}. Every other link and image returned passed the origin check.`;
 }
 
 /**

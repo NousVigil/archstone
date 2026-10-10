@@ -161,10 +161,10 @@ export async function runBattery(send: Send): Promise<Check[]> {
   const june = await callMcp("wanderlust_room-status", { propertyId: "ws-1002", date: "2027-06-05" });
   check("room-status for Pensão Azul on a June weekend is a usable answer", june.result?.isError !== true && !/agency-busy/.test(JSON.stringify(june.result)), JSON.stringify(june.result).slice(0, 160));
 
-  // The withheld-value note locates the value in the original response; it cannot be read as "the official link is withheld" (#201).
+  // The withheld-value note locates the value in this result by output field names; it cannot be read as "the official link is withheld" (#201).
   const notes = (r: unknown): string => ((r as { content?: { text?: string }[] } | undefined)?.content ?? []).map((c) => c.text ?? "").join("\n");
   const pageCall = await callMcp("wanderlust_stay-page", { stayId: "ws-1001" });
-  check("stay-page: the note names pages[1].url, not the agency's own page", /pages\[1\]\.url \(field omitted\)/.test(notes(pageCall.result)) && !/pages\[0\]/.test(notes(pageCall.result)) && /passed the origin check/.test(notes(pageCall.result)), notes(pageCall.result).slice(-260));
+  check("stay-page: the note names pages[1].url, not the agency's own page", /pages\[1\]\.url \(field omitted\)/.test(notes(pageCall.result)) && !/pages\[0\]/.test(notes(pageCall.result)) && /Every other link and image returned passed the origin check/.test(notes(pageCall.result)) && !/original response/.test(notes(pageCall.result)), notes(pageCall.result).slice(-260));
   const photoCall = await callMcp("wanderlust_stay-photos", { stayId: "ws-1001" });
   check("stay-photos: the note says the removed item and that the list is now shorter", /gallery\.photos\[3\] \(removed; the list now has 4 items\)/.test(notes(photoCall.result)), notes(photoCall.result).slice(-260));
   // One nightly rate per stay across search, availability and room-status.

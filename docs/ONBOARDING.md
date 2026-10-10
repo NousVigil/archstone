@@ -464,10 +464,13 @@ does not — another host, a lookalike host, `http:`, a relative path, `javascri
 
 - an **optional** field is omitted and the result is **DEGRADED**; the result names it in a
   separate `withheld` list (not in `degraded`), and the MCP response carries a
-  `note: withheld — value(s) outside the declared origins, at these locations in the original
-  response: <paths>. Every other value returned passed the origin check.` line, where each path
-  is the full path in the provider's response, array indices included (`pages[1].url (field
-  omitted)`);
+  `note: withheld — value(s) outside the declared origins, at these places in this result (a
+  number is the item's position in the provider's list, before any removal): <paths>. Every
+  other link and image returned passed the origin check.` line. Each path uses the output field
+  names the model sees, not the provider's own keys, with the item's position in the provider's
+  list as the index (a provider body `results[1].url` mapped to `stays[1].listingUrl` reads
+  `stays[1].listingUrl (field omitted)`). The `withheld` list keeps bare field names; the note
+  gives the places;
 - a **required** field makes the result a **VIOLATION**; the `_meta` contract-violation object
   carries `withheld: [<fields>]`, and the message says the value was outside the declared
   origins rather than missing. Inside a nested resource value, a required field that is withheld
@@ -534,9 +537,9 @@ one you declared. A value that passes is emitted in normalised form. A value tha
 - In a **scalar** field: treated like `web-page` — an optional field is omitted and the result
   is **DEGRADED**; a required field is a **VIOLATION**; the result names it in a `withheld`
   list and the MCP response carries the same `note: withheld — value(s) outside the declared
-  origins, at these locations in the original response: <paths>. …` line.
+  origins, at these places in this result (…): <paths>. …` line.
 - In a **list**: items are checked individually and off-origin ones are **dropped**. An item
-  named `photos[2]` (original 0-based position) fails the check and is removed from the list;
+  named `photos[2]` (the item's 0-based position in the provider's list) fails the check and is removed from the list;
   other items keep their order and the result is **DEGRADED** if any were withheld. The note
   says so in terms that cannot be confused with the shorter list the model receives:
   `gallery.photos[3] (removed; the list now has 4 items)`. An empty

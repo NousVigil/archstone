@@ -169,8 +169,9 @@ stays. So every id a search returns resolves on every follow-up tool (`test/api.
   availability, on every date.
 - The agency's own page (`stay-page`) is the first link and sits on the origin the binding declares,
   so it is returned; the "partner listing" is on an origin nothing declares, so it is withheld. The
-  note says exactly that: `pages[1].url (field omitted)` names the link in the agency's original
-  response, and "every other value returned passed the origin check" says the official link is fine.
+  note says exactly that: `pages[1].url (field omitted)` names the link in this result (the number is its
+  position in the agency's list), and "every other link and image returned passed the origin check"
+  says the official link is fine.
   A removed list item reads `gallery.photos[3] (removed; the list now has 4 items)`, so the original
   index is not mistaken for a position in the shorter list returned.
 
