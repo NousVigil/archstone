@@ -20,6 +20,11 @@ All notable changes to Archstone are documented here. Format loosely follows
 
 ## [0.32.0]
 
+> **0.30.0 and 0.31.0 were tagged but never published to npm.** Their release gate failed on the
+> `sql-reporting` example's verify step (fixed below), so npm kept serving 0.29.0. Everything in the
+> `[0.30.0]` and `[0.31.0]` sections below therefore ships for the first time in 0.32.0, together
+> with the entries listed here.
+
 ### Added
 
 - **The Showcase has an executable negative-scenario suite.** `examples/showcase/test/` now asserts, through the real runtime and with a request spy around the synthetic API, what Archstone withholds and refuses: no margin, passport, phone or raw HTML reaches a model; an off-origin image or page link is withheld by field path and never fetched; each of the seven denial reasons is reached and a test fails if one is not; no tool exists for deletion and no `DELETE` is ever issued; and a hand-written passthrough double proves the absence checks cannot pass by accident. Examples and tests only; nothing in the published packages changes.
