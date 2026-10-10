@@ -53,6 +53,20 @@ and published here on purpose:
 Anyone may use them. They unlock nothing but invented data. Never copy this pattern for a real
 credential.
 
+**Your own AI app has no key.** Connected to the hosted demo the usual way, an AI app sends no
+`Authorization` header, so `book`, `pay` and `cancel` are refused for lack of a key, before the agency is
+asked (S-06 shows exactly that). The read scenarios need no key. The scenario page's "Run it live"
+sends the published keys itself. To try the keyed scenarios from your own AI app, use one that lets
+you set a header on a remote MCP server. Claude Code does:
+
+```bash
+claude mcp add --transport http --header "Authorization: Bearer demo-public-key-visitor-0000" \
+  archstone-showcase https://demo.archstone.dev/mcp
+```
+
+Use the second key to see the blocked caller refused. Other clients vary; if yours has no header
+setting, it will see the refusal.
+
 ## Run it
 
 ```bash
@@ -202,7 +216,11 @@ policy), optional `alsoRun` (more fixed calls the live run makes and reports sep
 wrong-format price), optional `evidence` (a fact the card relies on that lives in the tool list:
 S-12's deprecation note, with where it lives), `anchor`, `test`, `issue` and `issueUrl` (only the two
 locked rows), and `copy` with English and Romanian slots (`ask`, `happens`,
-`refused`). The Romanian slots exist and are empty. Live rows are run by `test/manifests.test.ts`;
+`refused`). The Romanian slots exist and are empty. A row with a key may also carry `ownAi` (English
+and Romanian slots): one plain sentence on what a visitor's own AI app, connected without a key, will
+see. Every `ask` is written to be pasted alone into a fresh conversation: it names the stay, the dates,
+the guests and any booking number it needs (the seeded booking is `B-0000cafe`) rather than leaning on
+an earlier turn. Live rows are run by `test/manifests.test.ts`;
 recorded rows get their tests with the recorder; the two locked rows run nothing.
 
 ## Recorded scenarios (S-15 to S-21)

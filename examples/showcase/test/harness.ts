@@ -53,6 +53,8 @@ export interface ScenarioRow {
   issue: number | null;
   issueUrl: string | null;
   copy: Record<"en" | "ro", { ask: string; happens: string; refused: string }>;
+  /** Only on a keyed row: what a visitor's own AI app, connected without a key, will see. */
+  ownAi?: Record<"en" | "ro", string>;
 }
 
 export interface ScenarioDoc {

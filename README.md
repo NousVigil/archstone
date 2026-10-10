@@ -41,6 +41,10 @@ https://demo.archstone.dev/mcp
   claude mcp add --transport http archstone-tourism https://demo.archstone.dev/mcp
   ```
 
+  The read-only tools need no key. The demo's booking tools do; its two public keys are listed in
+  [the showcase](examples/showcase/README.md#the-two-demo-keys-are-public), and Claude Code can send
+  one with `--header "Authorization: Bearer <key>"`.
+
 The whole integration behind it is
 [12 lines of business YAML](examples/manifests/tourism/tourism.search.capability.yaml) — no HTTP,
 no JSON Schema, no MCP SDK. Everything else was generated.
