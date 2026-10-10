@@ -159,7 +159,7 @@ const CITY_ALIASES = {
   Bucharest: ["bucharest", "bucuresti", "bucarest", "bukarest"],
 };
 const COUNTRY_ALIASES = {
-  Portugal: ["portugal"],
+  Portugal: ["portugal", "portugalia"],
   Spain: ["spain", "espana", "spania"],
   France: ["france", "franta"],
   Romania: ["romania"],
