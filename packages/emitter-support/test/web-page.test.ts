@@ -130,8 +130,28 @@ describe("S-B.9: the violation message names the field, says why, and never echo
     expect(contractViolationMessage("shop.get", ["name"], [])).toBe(contractViolationMessage("shop.get", ["name"]));
   });
 
-  it("the model-facing note for an optional withheld field names fields only", () => {
-    expect(withheldNote(["listingUrl"])).toBe("note: field(s) withheld — value outside the declared origins: listingUrl");
+  it("the model-facing note locates the field in the original response and says what was returned passed", () => {
+    expect(withheldNote([{ path: "stay.listingUrl" }])).toBe(
+      "note: withheld — value(s) outside the declared origins, at these locations in the original response: stay.listingUrl (field omitted). Every other value returned passed the origin check.",
+    );
+  });
+
+  it("a withheld field in a collection row is located by its row index in the provider's array", () => {
+    const body = { results: [{ name: "A", url: "https://www.example.com/a" }, { name: "B (partner)", url: EVIL }] };
+    const r = applyResponseMapping(collectionTool(), body, stayResources(false));
+    expect(r.withheld).toEqual(["listingUrl"]);
+    expect(r.withheldAt).toEqual([{ path: "stays[1].listingUrl" }]);
+    const note = withheldNote(r.withheldAt ?? []);
+    expect(note).toContain("stays[1].listingUrl (field omitted)");
+    expect(note).not.toContain("stays[0]");
+    expect(note).not.toContain("evil.example.net");
+  });
+
+  it("the same holds with a declared onError (row index is the provider's index)", () => {
+    const body = { results: [{ error: "gone" }, { name: "B", url: EVIL }] };
+    const t = collectionTool(true);
+    const r = applyResponseMapping(t, body, { ...stayResources(false), RowError: [{ name: "error", required: true, type: { kind: "scalar", semantic: "text" } }] });
+    expect(r.withheldAt).toEqual([{ path: "stays[1].listingUrl" }]);
   });
 });
 

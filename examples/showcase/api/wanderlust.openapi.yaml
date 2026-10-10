@@ -136,7 +136,7 @@ paths:
   /v1/bookings:
     post:
       summary: Book a quoted stay (agency key required)
-      description: The quote must be one this agency issued, less than 15 minutes ago, for the same stay, dates and party; the booking is at the quoted total. The response carries OVER-EXPOSED guests (passport, phone) and the rate sheet.
+      description: The quote must be one this agency issued, less than 15 minutes ago, for the same stay, dates and party; the booking is at the quoted total. The response carries the pets and petFee the quote priced (0 when none) and OVER-EXPOSED guests (passport, phone) and the rate sheet.
       security: [{ agencyKey: [] }]
       requestBody:
         content:

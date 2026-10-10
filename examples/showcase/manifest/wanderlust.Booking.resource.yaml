@@ -17,7 +17,13 @@ resource:
       description: "The booked window."
     total:
       type: money
-      description: "Total price."
+      description: "Total price, including the pet fee when pets travel."
+    pets:
+      type: quantity
+      description: "How many pets the booking was priced for, as the quote fixed it (0 when none)."
+    petFee:
+      type: money
+      description: "The pet fee already included in the total: 0 when no pets travel or the stay takes pets free of charge."
     paymentQuote:
       type: identifier
       description: "The agency's payment quote for this booking and total; pass it to wanderlust.pay."

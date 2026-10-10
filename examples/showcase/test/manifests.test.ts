@@ -206,7 +206,7 @@ describe("AC-1.7: nothing is exposed for deletion, raw HTML, the margin, passpor
 
   it("the booking resource declares no guest field at all", () => {
     expect(registry.ir.resources["wanderlust.Booking"].map((f) => f.name)).toEqual([
-      "bookingId", "status", "stayId", "dates", "total", "paymentQuote", "payBy",
+      "bookingId", "status", "stayId", "dates", "total", "pets", "petFee", "paymentQuote", "payBy",
     ]);
   });
 
@@ -352,7 +352,9 @@ describe("what each manifest is wired to withhold, observed through the runtime"
     const ctx = newContext();
     const { result } = await runRow(ctx, row("S-03"));
     expect((result.structuredContent as { gallery: { photos: string[] } }).gallery.photos).toHaveLength(4);
-    expect(textOf(result)).toContain("withheld — value outside the declared origins: photos[3]");
+    // The note locates the value in the ORIGINAL response and says the returned list is shorter.
+    expect(textOf(result)).toContain("gallery.photos[3] (removed; the list now has 4 items)");
+    expect(textOf(result)).toContain("Every other value returned passed the origin check.");
     expect(ctx.spy.calls).toEqual(["GET /v1/stays/ws-1001/photos"]);
   });
 
@@ -363,7 +365,9 @@ describe("what each manifest is wired to withhold, observed through the runtime"
     expect(pages).toHaveLength(2);
     expect(pages[0].url).toBe("https://www.wanderlust-agency.example/hotels/casa-alfama");
     expect(pages[1].url).toBeUndefined();
-    expect(textOf(result)).toContain("withheld — value outside the declared origins");
+    // The note points at the partner row's link (index 1), not at the agency's own page (index 0).
+    expect(textOf(result)).toContain("pages[1].url (field omitted)");
+    expect(textOf(result)).not.toContain("pages[0]");
     expect(ctx.spy.calls).toEqual(["GET /v1/stays/ws-1001/pages"]);
   });
 
@@ -389,7 +393,7 @@ describe("what each manifest is wired to withhold, observed through the runtime"
     const allowed = await runRow(newContext(), r);
     expect(allowed.result.isError).toBe(false);
     const booking = (allowed.result.structuredContent as { booking: Record<string, unknown> }).booking;
-    expect(Object.keys(booking).sort()).toEqual(["bookingId", "dates", "payBy", "paymentQuote", "status", "stayId", "total"]);
+    expect(Object.keys(booking).sort()).toEqual(["bookingId", "dates", "payBy", "paymentQuote", "petFee", "pets", "status", "stayId", "total"]);
     clean(allowed.result);
   });
 
@@ -564,6 +568,38 @@ describe("#201: a believable agency, through the real runtime", () => {
     expect(textOf(refused)).toContain("backend returned 422");
     expect(tool("wanderlust.quote").input.map((f) => f.name)).toContain("pets");
     expect(definitionsOf("wanderlust_quote")).toMatch(/refuses a quote for a party with pets/);
+  });
+
+  it("a stay's nightly rate is one figure in search, quote, room-status and availability, on any date (#201 round 2)", async () => {
+    const ctx = newContext();
+    const search = await call(ctx, "wanderlust_search", { destination: "Lisbon", dates: { from: "2027-05-12", to: "2027-05-15" }, travelers: { adults: 2 } });
+    const stays = (search.structuredContent as { stays: { id: string; pricePerNight: number }[] }).stays;
+    expect(stays.length).toBeGreaterThan(0);
+    for (const s of stays) {
+      for (const date of ["2027-05-12", "2027-05-13", "2027-06-05", "2027-06-06", "2027-07-19"]) {
+        // A fresh context per call: availability's rate limit is a scenario, not this test's business.
+        const av = await call(newContext(), "wanderlust_availability", { propertyId: s.id, date });
+        expect(av.isError, `${s.id} ${date}`).toBeFalsy();
+        expect((av.structuredContent as { availability: { pricePerNight: number } }).availability.pricePerNight, `${s.id} ${date}`).toBe(s.pricePerNight);
+        const rs = await call(ctx, "wanderlust_room-status", { propertyId: s.id, date });
+        const free = (rs.structuredContent as { rooms?: { room: string; pricePerNight?: unknown }[] } | undefined)?.rooms?.find((r) => r.room === "Double Room");
+        if (typeof free?.pricePerNight === "number") expect(free.pricePerNight, `${s.id} ${date}`).toBe(s.pricePerNight);
+      }
+      const q = await call(ctx, "wanderlust_quote", { stayId: s.id, dates: { from: "2027-05-12", to: "2027-05-13" }, travelers: { adults: 2 } });
+      expect((q.structuredContent as { quote: { total: { amount: number } } }).quote.total.amount).toBe(s.pricePerNight);
+    }
+  });
+
+  it("cancel and pay say they need the agency key and an allowed principal; stay-page says the partner link is withheld (#201 round 2)", () => {
+    for (const name of ["wanderlust_book", "wanderlust_cancel", "wanderlust_pay"]) {
+      expect(definitionsOf(name), name).toMatch(/Needs the agency key and a principal the manifest's policy allows: Archstone's policy refuses a missing key or a caller who is not allowed before the agency is asked/);
+    }
+    for (const name of ["wanderlust_cancel", "wanderlust_pay"]) {
+      expect(definitionsOf(name), name).toMatch(/a person should approve it; this version of Archstone does not enforce that/);
+    }
+    expect(definitionsOf("wanderlust_pay")).toMatch(/the agency, not Archstone, checks it/);
+    expect(definitionsOf("wanderlust_stay-page")).toMatch(/agency's own page is returned/);
+    expect(definitionsOf("wanderlust_stay-page")).toMatch(/partner listing on another site[^.]*link is withheld/);
   });
 
   it("R4: a stay's name is a destination, on both searches", async () => {

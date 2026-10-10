@@ -491,7 +491,7 @@ export async function callTool(
     if (mapped.status === "degraded") {
       for (const text of degradedNotes(mapped.degraded ?? [], mapped.invalid)) content.push({ type: "text", text });
     }
-    if (mapped.withheld) content.push({ type: "text", text: withheldNote(mapped.withheld) });
+    if (mapped.withheldAt) content.push({ type: "text", text: withheldNote(mapped.withheldAt) });
     // #44: `degraded` records `succeeded`, NOT `failed` — every *required* field was present and
     // an optional one was not, so the invocation succeeded. Pinned in a comment because
     // "degraded" reads like a failure and the next reader will guess otherwise.

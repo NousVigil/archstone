@@ -169,7 +169,7 @@ describe("N-03 / AC-2.4, AC-2.5: a photo on an undeclared host is withheld, by p
     const photos = (result.structuredContent as { gallery: { photos: string[] } }).gallery.photos;
     expect(photos).toHaveLength(4);
     expect(textOf(result)).toContain("withheld");
-    expect(textOf(result)).toContain("photos[3]");
+    expect(textOf(result)).toContain("gallery.photos[3] (removed; the list now has 4 items)");
     expect(textOf(result)).not.toContain("partner-photos");
     expectNoLeaks(modelFacing(result), "S-03");
   });
@@ -200,7 +200,8 @@ describe("N-04 / AC-2.6: a page link on an undeclared origin is withheld, by pat
     expect(JSON.stringify(r)).not.toContain("partner-hotels");
 
     const { result } = await s.run(row("S-04"));
-    expect(textOf(result)).toContain("withheld");
+    expect(textOf(result)).toContain("pages[1].url (field omitted)");
+    expect(textOf(result)).not.toContain("pages[0]");
     expect(textOf(result)).not.toContain("partner-hotels");
   });
 

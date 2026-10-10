@@ -464,7 +464,10 @@ does not — another host, a lookalike host, `http:`, a relative path, `javascri
 
 - an **optional** field is omitted and the result is **DEGRADED**; the result names it in a
   separate `withheld` list (not in `degraded`), and the MCP response carries a
-  `note: field(s) withheld — value outside the declared origins: <fields>` line;
+  `note: withheld — value(s) outside the declared origins, at these locations in the original
+  response: <paths>. Every other value returned passed the origin check.` line, where each path
+  is the full path in the provider's response, array indices included (`pages[1].url (field
+  omitted)`);
 - a **required** field makes the result a **VIOLATION**; the `_meta` contract-violation object
   carries `withheld: [<fields>]`, and the message says the value was outside the declared
   origins rather than missing. Inside a nested resource value, a required field that is withheld
@@ -530,11 +533,13 @@ one you declared. A value that passes is emitted in normalised form. A value tha
 
 - In a **scalar** field: treated like `web-page` — an optional field is omitted and the result
   is **DEGRADED**; a required field is a **VIOLATION**; the result names it in a `withheld`
-  list and the MCP response carries a `note: field(s) withheld — value outside the declared
-  origins: <fields>` line.
+  list and the MCP response carries the same `note: withheld — value(s) outside the declared
+  origins, at these locations in the original response: <paths>. …` line.
 - In a **list**: items are checked individually and off-origin ones are **dropped**. An item
   named `photos[2]` (original 0-based position) fails the check and is removed from the list;
-  other items keep their order and the result is **DEGRADED** if any were withheld. An empty
+  other items keep their order and the result is **DEGRADED** if any were withheld. The note
+  says so in terms that cannot be confused with the shorter list the model receives:
+  `gallery.photos[3] (removed; the list now has 4 items)`. An empty
   list (all items withheld) is still present, not omitted, and the result is DEGRADED whether
   the list is optional or required. Item names appear only in `withheld`, not in `degraded`.
 

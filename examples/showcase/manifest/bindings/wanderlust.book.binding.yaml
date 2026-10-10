@@ -18,5 +18,7 @@ binding:
       stayId: "$.stayId"
       dates: "$.dates"
       total: "$.total"
+      pets: "$.pets"
+      petFee: "$.petFee"
       paymentQuote: "$.paymentQuote"
       payBy: "$.payBy"

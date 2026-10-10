@@ -162,9 +162,17 @@ stays. So every id a search returns resolves on every follow-up tool (`test/api.
 - A **quote** takes an optional `pets` count (0 to 4). The stay's `petPolicy` is where the fee comes
   from ("EUR 10 per night" is per pet per night; "free of charge" is a fee of 0); the quote shows
   `pets`, `petFee` and a `total` that includes it, and a booking from that quote is at that total. A
-  stay with "No pets" refuses a quote that declares pets (the agency's `422 pets_not_allowed`).
+  stay with "No pets" refuses a quote that declares pets (the agency's `422 pets_not_allowed`). The
+  booking carries the same `pets` and `petFee`, recovered from the quote id, so it records what the
+  total includes.
+- A stay's nightly rate is the same figure in search, quote, room-status (the Double Room) and
+  availability, on every date.
 - The agency's own page (`stay-page`) is the first link and sits on the origin the binding declares,
-  so it is returned; the "partner listing" is on an origin nothing declares, so it is withheld.
+  so it is returned; the "partner listing" is on an origin nothing declares, so it is withheld. The
+  note says exactly that: `pages[1].url (field omitted)` names the link in the agency's original
+  response, and "every other value returned passed the origin check" says the official link is fine.
+  A removed list item reads `gallery.photos[3] (removed; the list now has 4 items)`, so the original
+  index is not mistaken for a position in the shorter list returned.
 
 `test/conversations.test.ts` runs the arguments a model sends for these phrasings, deterministically.
 `conversations/run.mjs` does the same with a real model against a live endpoint.
