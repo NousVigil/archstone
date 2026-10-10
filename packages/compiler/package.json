@@ -1,6 +1,6 @@
 {
   "name": "@archstone/compiler",
-  "version": "0.31.0",
+  "version": "0.32.0",
   "private": false,
   "type": "module",
   "description": "The Archstone compiler — validates a capability model and lowers it to a target-agnostic intermediate representation that every emitter consumes.",

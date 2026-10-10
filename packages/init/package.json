@@ -1,6 +1,6 @@
 {
   "name": "@archstone/init",
-  "version": "0.31.0",
+  "version": "0.32.0",
   "private": false,
   "type": "module",
   "description": "Turn an existing API into a compiling Archstone CDL manifest: a provenance-carrying draft model, pure YAML emission, a closed compile loop, and an IR-level diff harness. No LLM, on any path.",

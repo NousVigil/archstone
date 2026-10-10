@@ -1,1 +1,0 @@
-- **Behaviour change: a backend that returns a bare number or string for a `money` field is no longer passed through.** The value is now withheld (optional field, result `degraded`) or a `contract_violation` (required field). Declare such a field `quantity` if the backend really sends a plain number, or have the backend send `{amount, currency}`.
