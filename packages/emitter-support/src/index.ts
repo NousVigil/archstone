@@ -17,3 +17,4 @@ export * from "./audit";
 export * from "./extraction";
 export * from "./caller";
 export * from "./input";
+export * from "./semantic-types";

@@ -62,6 +62,7 @@ import {
 } from "@archstone/compiler";
 import { allowedOrigins, checkOrigin } from "./origins";
 import { isMoneyShape } from "./money";
+import { assertKnownSemanticType } from "./semantic-types";
 
 export type MappingStatus = "ok" | "degraded" | "violation";
 
@@ -372,6 +373,8 @@ function projectSemantic(w: Walk, semantic: SemanticType, value: unknown, path: 
   // `boolean` is a JSON true or false and nothing else: no "true"/"1"/"t" is accepted, and the
   // provider's value is never echoed. (Other plain scalars still pass any primitive; see #157.)
   if (semantic === "boolean") return typeof value === "boolean" ? ok(value) : misfit(w, type, path, acc);
+  // #214: the remaining plain scalars are named, not a catch-all; an unknown type is refused.
+  assertKnownSemanticType(semantic, path);
   return isPrimitive(value) ? ok(value) : misfit(w, type, path, acc);
 }
 
