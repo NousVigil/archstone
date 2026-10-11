@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { toolName, inputJsonSchema, objectJsonSchema, extractionJsonSchema, ExtractionSchemaError } from "../src/lowering";
-import type { IRField, IRResourceRegistry } from "@archstone/compiler";
+import { SEMANTIC_TYPES, type IRField, type IRResourceRegistry } from "@archstone/compiler";
 
 describe("toolName", () => {
   it("sanitizes capability ids to MCP tool names", () => {
@@ -322,4 +322,20 @@ describe("objectJsonSchema â€” onError row shapes in outputSchema (#81, ADD-12 Â
     const plain = objectJsonSchema(fields, resources) as { properties: { items: { items: Record<string, unknown> } } };
     expect(plain.properties.items.items).not.toHaveProperty("oneOf");
   });
+});
+
+describe("guard: no semantic type is silently lowered as a bare string (#212)", () => {
+  // `semanticJsonSchema` and `checkScalar` both end in a `default:` arm that means "a string". A new
+  // semantic type that forgot its own case would be advertised, and enforced, as a string with no
+  // error anywhere. Only these three are meant to be exactly that. (`checkScalar` in input.ts has the
+  // same string default; the drift test in input.test.ts covers location, identifier, string and text.)
+  const BARE_STRING = new Set(["identifier", "string", "text"]);
+  for (const semantic of SEMANTIC_TYPES) {
+    if (BARE_STRING.has(semantic)) continue;
+    it(`${semantic} lowers to something other than exactly { type: 'string' }`, () => {
+      const f: IRField[] = [{ name: "f", required: true, type: { kind: "scalar", semantic, ...(semantic === "enum" ? { values: ["a"] } : {}) } }];
+      const lowered = (objectJsonSchema(f) as { properties: Record<string, unknown> }).properties.f;
+      expect(lowered).not.toEqual({ type: "string" });
+    });
+  }
 });

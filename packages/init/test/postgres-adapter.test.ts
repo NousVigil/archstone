@@ -5,8 +5,8 @@ import { canRecordSqlContract } from "../src/adapters/postgres/contract";
 // ADR-0012 D-10 — `archstone init`'s Postgres adapter, the pure/mechanical pieces.
 
 describe("mapColumnType (S-US9.3, D-10)", () => {
-  it("skips boolean, json, jsonb, and array columns with column-type-not-expressible", () => {
-    for (const pgType of ["boolean", "json", "jsonb", "ARRAY"]) {
+  it("skips json, jsonb, and array columns with column-type-not-expressible", () => {
+    for (const pgType of ["json", "jsonb", "ARRAY"]) {
       const m = mapColumnType(pgType, "flag_col");
       expect(m.ok).toBe(false);
       if (!m.ok) expect(m.reasonCode).toBe(COLUMN_TYPE_NOT_EXPRESSIBLE);

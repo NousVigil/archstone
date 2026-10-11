@@ -58,6 +58,7 @@ const CASES: Record<string, Case> = {
   datetime: { field: scalar("datetime"), accepted: ["2026-01-01T00:00:00Z"], refused: [0] },
   "time-slot": { field: scalar("time-slot"), accepted: ["2026-01-01T09:00:00Z"], refused: [9] },
   quantity: { field: scalar("quantity"), accepted: [3, 3.5, 0, -1], refused: ["3", true, null] },
+  boolean: { field: scalar("boolean"), accepted: [true, false], refused: ["true", "false", 1, 0, null, {}, []] },
   enum: {
     field: scalar("enum", ["open", "closed"]),
     accepted: ["open", "closed"],

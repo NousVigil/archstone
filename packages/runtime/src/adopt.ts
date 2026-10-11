@@ -15,7 +15,6 @@ import type { IRTool, IRResourceRegistry, JsonType, SemanticType, ShapeDiff } fr
 export type AdoptionRefusal =
   | "outside-collection"
   | "nested"
-  | "no-boolean-type"
   | "not-a-leaf"
   | "already-declared"
   /** #82 (ADD-12 §8.2): an observed array field whose elements are objects. Distinct from
@@ -84,6 +83,9 @@ export interface AdoptionPlan {
 function semanticFor(observed: JsonType): SemanticType | undefined {
   if (observed === "string") return "text";
   if (observed === "number") return "quantity";
+  // An observed JSON boolean records the JSON TYPE, which is exactly what `boolean` is; no value is
+  // interpreted. A later non-boolean value fails loudly at the mapping boundary.
+  if (observed === "boolean") return "boolean";
   return undefined;
 }
 
@@ -93,8 +95,6 @@ function refusalDetail(reason: AdoptionRefusal, observed: JsonType): string {
       return "outside the collection this capability maps; it is not a field of the resource";
     case "nested":
       return "nested, or a provider key containing a dot — indistinguishable here; either way the resource field would have to be another resource, which adoption does not create";
-    case "no-boolean-type":
-      return "CDL has no boolean semantic type, and declaring it as text would state a lie about the shape";
     case "not-a-leaf":
       return `observed as ${observed}, which is a structure rather than a value`;
     case "already-declared":
@@ -212,7 +212,7 @@ export function planAdoption(tool: IRTool, drift: ShapeDiff, resources: IRResour
     }
     const semantic = semanticFor(elementType);
     if (!semantic) {
-      // An element type CDL has no semantic for (e.g. boolean) — genuinely not adoptable.
+      // An element type CDL has no semantic for (e.g. null or object) — genuinely not adoptable.
       candidates.push(refuse(base, "array", "not-a-leaf"));
       continue;
     }
@@ -240,10 +240,6 @@ export function planAdoption(tool: IRTool, drift: ShapeDiff, resources: IRResour
     // two, and its detail says so. Either way the answer is the same: not adopted.
     if (rest.includes(".")) {
       candidates.push(refuse(path, observed, "nested"));
-      continue;
-    }
-    if (observed === "boolean") {
-      candidates.push(refuse(path, observed, "no-boolean-type"));
       continue;
     }
     const semantic = semanticFor(observed);

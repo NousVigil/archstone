@@ -24,13 +24,14 @@ export type SemanticType =
   | "date"
   | "datetime"
   | "web-page" // Experimental, output-only — see ORIGIN_BOUND_TYPES below
+  | "boolean" // Experimental — a JSON true or false, nothing else; never coerced
   | "image"; // Experimental, output-only, origin-bound — an absolute https URL of a picture, shown and never fetched
 
 /** The closed set of semantic types (mirrors cdl.schema.json). A field `type:` not in
  *  this set is a resource-typed reference, not a scalar. Shared by the compiler + resolver. */
 export const SEMANTIC_TYPES: ReadonlySet<SemanticType> = new Set<SemanticType>([
   "location", "date-range", "party", "preference-set", "money", "identifier",
-  "string", "text", "time-slot", "quantity", "enum", "date", "datetime", "web-page", "image",
+  "string", "text", "time-slot", "quantity", "enum", "date", "datetime", "web-page", "image", "boolean",
 ]);
 
 /**

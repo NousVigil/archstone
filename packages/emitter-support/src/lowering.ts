@@ -74,6 +74,10 @@ function semanticJsonSchema(semantic: SemanticType, values: string[] | undefined
       return { type: "number" };
     case "enum":
       return { type: "string", enum: values ?? [] };
+    case "boolean":
+      // Experimental. A JSON true or false and nothing else; no generic description, so the
+      // authored one wins as for every other type. The validator and the mapper judge the same rule.
+      return { type: "boolean" };
     case "identifier":
     case "string":
     case "text":

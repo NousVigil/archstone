@@ -102,7 +102,6 @@ describe("archstone adopt — it needs a person (ADD-117 D-2, ADR-0008 R-1)", ()
     try {
       const { out } = await runAdopt(mock.url);
       expect(out).toContain("not adoptable");
-      expect(out).toContain("no boolean semantic type");
       expect(out).toContain("structure rather than a value");
     } finally {
       await mock.close();

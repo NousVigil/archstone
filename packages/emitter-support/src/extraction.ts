@@ -240,6 +240,15 @@ function checkScalar(semantic: SemanticType, values: string[] | undefined, value
     return value;
   }
 
+  if (semantic === "boolean") {
+    // A model may legitimately produce true/false. Nothing else is repaired into one.
+    if (typeof value !== "boolean") {
+      acc.invalid.push(`${path}: expected boolean`);
+      return undefined;
+    }
+    return value;
+  }
+
   if (STRING_SEMANTICS.has(semantic)) {
     if (typeof value !== "string") {
       acc.invalid.push(`${path}: expected string`);

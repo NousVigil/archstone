@@ -683,3 +683,31 @@ describe("verifyTool — naming what moved (ADD-114)", () => {
     expect(JSON.stringify(rec.shape)).not.toContain("Hotel A");
   });
 });
+
+describe("verifyTool — a recorded boolean replayed as a non-boolean is red (#212)", () => {
+  const boolResources: IRResourceRegistry = {
+    Stay: [
+      { name: "name", required: true, type: { kind: "scalar", semantic: "text" } },
+      { name: "breakfast", required: true, type: { kind: "scalar", semantic: "boolean" } },
+    ],
+  };
+  const recorded = { stays: [{ name: "Hotel A", breakfast: true }] };
+  const boolTool = (): IRTool => {
+    const t = tool(fingerprintShape(recorded));
+    t.response = { ...t.response!, fields: [{ name: "name", path: "$.name" }, { name: "breakfast", path: "$.breakfast" }] };
+    return t;
+  };
+
+  it("green when the backend still sends a JSON boolean", () =>
+    withFixture(async (dir) => {
+      const fetchImpl: FetchLike = async () => new Response(JSON.stringify({ stays: [{ name: "Hotel A", breakfast: false }] }), { status: 200 });
+      expect((await verifyTool(boolTool(), dir, boolResources, { fetchImpl })).status).toBe("green");
+    }));
+
+  it("red when the backend starts sending 1 (shape drift and a mapping violation)", () =>
+    withFixture(async (dir) => {
+      const fetchImpl: FetchLike = async () => new Response(JSON.stringify({ stays: [{ name: "Hotel A", breakfast: 1 }] }), { status: 200 });
+      const r = await verifyTool(boolTool(), dir, boolResources, { fetchImpl });
+      expect(r.status).toBe("red");
+    }));
+});

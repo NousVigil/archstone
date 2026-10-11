@@ -326,6 +326,13 @@ That's the general rule the runtime applies to every mapped element, checked aga
   carries the provider's value. The agent can branch deterministically on the stable error code
   instead of parsing prose.
 
+A `boolean` field follows the same rule with no softening: `true` and `false` pass (`false` counts
+as present), and every other value is the wrong shape. That includes `0`, `1`, `"true"`, `"t"`,
+an object and an array: a required field is a violation with `invalid: [{field, expected:
+"boolean"}]`, and an optional one is omitted and the result is degraded. `null` or a missing key is
+absent, not invalid. If your backend sends `0`/`1`, declare the field as `quantity`, or as an `enum`
+of the strings it sends, or fix it at the source.
+
 A capability with **no** binding still validates — it just isn't invocable yet (`apply`
 warns and reports it as not bound). A binding with **no** `response:` still validates too —
 the runtime falls back to today's raw pass-through for that tool (rollout-safe), but the
@@ -914,8 +921,9 @@ not declare — is refused with `isError: true` and `_meta["dev.archstone/input_
 `path` is a dotted path of *declared* field names (`$` is the whole argument object); `expected` is a
 fixed phrase. Neither ever contains what the caller sent: not a value, and not the name of an
 undeclared key. At most 16 problems are returned, with `"truncated": true` when there were more.
-Nothing is coerced, defaulted or dropped (`"42"` is not a number; an extra key is refused rather than
-silently ignored), `null` on an optional field counts as absent, and the `inputSchema` that
+Nothing is coerced, defaulted or dropped (`"42"` is not a number, `"true"` is not a `boolean`; an
+extra key is refused rather than silently ignored), `null` on an optional field counts as absent,
+and the `inputSchema` that
 `tools/list` advertises is closed (`additionalProperties: false`, and `party` counts have
 `minimum: 0`) so the contract a client reads is the contract the runtime holds it to. The check runs
 after lifecycle and policy (a caller who is refused learns nothing about your schema) and before
@@ -1371,12 +1379,17 @@ It needs a person: with stdin closed — a pipeline, a cron job — it refuses a
 That is the point rather than a limitation. What lands in your repository is an ordinary diff
 you review like any other change.
 
-Some fields it will not adopt, and it says why rather than skipping them silently: a boolean
-(CDL has no boolean type), a nested object, an array of objects (refused with reason
-`array-of-objects-unresolved`; such a shape needs a row-level resource declaration core #49
-has not ratified yet), or anything outside the collection your capability maps. **Scalar
-arrays** — an observed set of strings, numbers or other semantic types — **are now adoptable**
-(ADD-12 §8.2) as `list:` fields, populating them via `extract:` paths.
+An observed JSON `true` or `false` is offered as a `boolean` field (and an array of them as
+`list: boolean`). That records the JSON *type*, not an interpretation of a value, and you still
+confirm each field; a backend that later sends `1` or `"true"` there fails loudly instead of
+being coerced.
+
+Some fields it will not adopt, and it says why rather than skipping them silently: a nested
+object, an array of objects (refused with reason `array-of-objects-unresolved`; such a shape needs
+a row-level resource declaration core #49 has not ratified yet), or anything outside the
+collection your capability maps. **Scalar arrays** — an observed set of strings, numbers, booleans
+or other semantic types — **are now adoptable** (ADD-12 §8.2) as `list:` fields, populating them
+via `extract:` paths.
 
 ---
 

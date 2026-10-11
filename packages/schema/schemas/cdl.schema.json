@@ -104,9 +104,10 @@
             "date",
             "datetime",
             "web-page",
-            "image"
+            "image",
+            "boolean"
           ],
-          "description": "A semantic type. `web-page` and `image` are Experimental and output-only: `web-page` is the page where a person sees this resource on the provider's own site, checked against the binding's `origins.pages`; `image` is an absolute https URL of a picture of the resource, to be shown and never fetched, checked against the binding's `origins.images`."
+          "description": "A semantic type. `web-page` and `image` are Experimental and output-only: `web-page` is the page where a person sees this resource on the provider's own site, checked against the binding's `origins.pages`; `image` is an absolute https URL of a picture of the resource, to be shown and never fetched, checked against the binding's `origins.images`. `boolean` is Experimental: a JSON true or false, nothing else; \"true\", 1 and \"t\" are not booleans and are never coerced, on input or output."
         },
         "required": { "type": "boolean", "default": true },
         "description": { "type": "string" },
@@ -173,7 +174,8 @@
             "enum",
             "date",
             "datetime",
-            "image"
+            "image",
+            "boolean"
           ]
         },
         "required": { "type": "boolean", "default": true },
