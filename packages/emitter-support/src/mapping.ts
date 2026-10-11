@@ -369,6 +369,9 @@ function projectSemantic(w: Walk, semantic: SemanticType, value: unknown, path: 
   if (semantic === "preference-set") {
     return Array.isArray(value) && value.every(isPrimitive) ? ok([...value]) : misfit(w, type, path, acc);
   }
+  // `boolean` is a JSON true or false and nothing else: no "true"/"1"/"t" is accepted, and the
+  // provider's value is never echoed. (Other plain scalars still pass any primitive; see #157.)
+  if (semantic === "boolean") return typeof value === "boolean" ? ok(value) : misfit(w, type, path, acc);
   return isPrimitive(value) ? ok(value) : misfit(w, type, path, acc);
 }
 

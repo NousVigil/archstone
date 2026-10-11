@@ -183,6 +183,7 @@ describe("drift: validateInput agrees with inputJsonSchema", () => {
       if (schema.format === "date-time") return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/.test(v) && !Number.isNaN(Date.parse(v));
       return true;
     }
+    if (t === "boolean") return typeof v === "boolean";
     if (t === "number") return typeof v === "number" && Number.isFinite(v);
     if (t === "integer") return typeof v === "number" && Number.isInteger(v) && (schema.minimum === undefined || v >= (schema.minimum as number));
     if (t === "array") return Array.isArray(v) && v.every((x) => accepts(schema.items as S, x));
@@ -199,11 +200,11 @@ describe("drift: validateInput agrees with inputJsonSchema", () => {
 
   const samples: unknown[] = [
     "", "x", "2027-05-12", "2027-02-30", "2027-05-12T10:00:00Z", "2027-05-12T10:00:00+02:00", "2027-05-12 10:00",
-    0, 1, -1, 1.5, "3", null, true, [], ["a"], [1], {}, { from: "2027-01-01", to: "2027-01-02" }, { from: "2027-01-01" },
+    0, 1, -1, 1.5, "3", null, true, false, "true", "false", [], ["a"], [1], {}, { from: "2027-01-01", to: "2027-01-02" }, { from: "2027-01-01" },
     { adults: 1 }, { adults: 0, children: 2 }, { adults: -1 }, { adults: 1.5 }, { adults: 1, x: 1 }, { amount: 1, currency: "EUR" },
     { amount: "1", currency: "EUR" }, { amount: 1 }, { $ne: 1 }, "basic", "gold",
   ];
-  const semantics = ["location", "date-range", "party", "preference-set", "money", "identifier", "string", "text", "time-slot", "quantity", "enum", "date", "datetime"] as const;
+  const semantics = ["location", "date-range", "party", "preference-set", "money", "identifier", "string", "text", "time-slot", "quantity", "enum", "date", "datetime", "boolean"] as const;
 
   for (const semantic of semantics) {
     it(`${semantic}: every sample is judged the same by the schema and by validateInput`, () => {

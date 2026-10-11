@@ -151,6 +151,9 @@ function checkScalar(
     case "quantity":
       if (!isNumber(value)) out.add(path, "number");
       return;
+    case "boolean":
+      if (typeof value !== "boolean") out.add(path, "boolean");
+      return;
     case "enum":
       if (typeof value !== "string") out.add(path, "string");
       else if (!(values ?? []).includes(value)) out.add(path, "one of the declared values");

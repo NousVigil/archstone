@@ -173,3 +173,20 @@ describe("#9: refuses exactly what extractionJsonSchema refuses", () => {
     expect(() => validateExtraction(fields, { x: {} }, {})).toThrow(ExtractionSchemaError);
   });
 });
+
+describe("#212: a boolean field is an extraction target; nothing is repaired into one", () => {
+  const FLAG: IRField[] = [{ name: "breakfast", required: true, type: { kind: "scalar", semantic: "boolean" } }];
+  it("true and false are kept", () => {
+    expect(validateExtraction(FLAG, { breakfast: true })).toEqual({ status: "ok", data: { breakfast: true } });
+    expect(validateExtraction(FLAG, { breakfast: false })).toEqual({ status: "ok", data: { breakfast: false } });
+  });
+  it("'true', 1 and null are refused without echoing the answer", () => {
+    for (const v of ["true", 1]) {
+      const r = validateExtraction(FLAG, { breakfast: v });
+      expect(r.status).toBe("violation");
+      expect(JSON.stringify(r)).toContain("breakfast: expected boolean");
+      expect(JSON.stringify(r)).not.toContain('"true"');
+    }
+    expect(validateExtraction(FLAG, { breakfast: null }).missing).toEqual(["breakfast"]);
+  });
+});
