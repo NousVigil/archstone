@@ -20,7 +20,8 @@
 
 import { recordContract, runVerify, type ContractRecording, type ProbeOutcome, type RecordContractOptions } from "@archstone/runtime/verify";
 import type { IR, IRTool } from "@archstone/compiler";
-import type { CapabilityDecision } from "./decisions";
+import { hasIdentityClaims } from "@archstone/emitter-support";
+import type { CapabilityDecision, DecisionRecord } from "./decisions";
 import type { RecordedContract } from "./emit";
 
 /** Why a probe did not happen. Distinct from `ProbeOutcome`, which is why one that DID happen
@@ -39,7 +40,18 @@ export type ProbeRefusal =
   /** §1.3: the fixture's `request` is capability input, and none was supplied. */
   | "probe-input-unavailable"
   /** The compiled manifest has no such tool, or the tool has no connector to call. */
-  | "not-invocable";
+  | "not-invocable"
+  /** A database lookup with no positive principal the identity map resolves (ADR-0012 D-8). */
+  | "no-positive-identity"
+  /** A database lookup with no second principal, or the same one twice: with nobody to replay it
+   *  as there is no isolation test, and a contract without one is never recorded (BR-20). */
+  | "no-negative-identity"
+  /** The negative principal is named but the identity map resolves it to no claims — D-8 case 4.
+   *  A refusal here, not a contract that records and then goes red at the first `verify`. */
+  | "negative-identity-unresolved"
+  /** A bounded list: D-8's negative leg replays the identical request and requires zero rows, and
+   *  a list returns the other identity's own rows, so no contract could ever pass. */
+  | "list-has-no-isolation-test";
 
 export interface ProbeReport {
   capabilityId: string;
@@ -58,13 +70,65 @@ export interface ProbeReport {
 
 const FREE_METHODS = new Set(["GET", "HEAD"]);
 
+/** The two principals a database lookup's contract is recorded and replayed under. */
+export interface SqlIdentities {
+  principal: string;
+  negativePrincipal: string;
+}
+
 export interface GateContext {
   /** False for CI and for a Decision Record file. The distinction is not cosmetic: the
    *  non-`GET` second confirmation is a human act, and there is no human here. */
   interactive: boolean;
+  /** Database sources only: the principals the Decision Record names. */
+  identities?: DecisionRecord["identities"];
+  /** Database sources only: does the run's identity map resolve this principal to any claims?
+   *  Absent means nothing does — a principal nobody can resolve is not an identity. */
+  resolves?: (principal: string) => boolean;
 }
 
-export type GateResult = { allowed: true; input: Record<string, unknown> } | { allowed: false; refusal: ProbeRefusal; detail: string };
+export type GateResult =
+  | { allowed: true; input: Record<string, unknown>; identities?: SqlIdentities }
+  | { allowed: false; refusal: ProbeRefusal; detail: string };
+
+type SqlGate = { ok: true; identities: SqlIdentities } | { ok: false; refusal: ProbeRefusal; detail: string };
+
+/**
+ * ADR-0012 D-8 / D-10, as a gate: a database capability is probed, and a contract recorded, only as
+ * a LOOKUP with two principals the identity map resolves. Every refusal here returns before a
+ * connection is opened — the same strong claim the REST gate makes about a request.
+ *
+ * The HTTP method rule has no meaning for a database call and is not applied to it; the transaction
+ * is READ ONLY and `effect: read` is still required by the caller of this function.
+ */
+function sqlGate(tool: IRTool, ctx: GateContext): SqlGate {
+  if ((tool.connector?.sql?.params.length ?? 0) === 0) {
+    return {
+      ok: false,
+      refusal: "list-has-no-isolation-test",
+      detail: "a bounded list returns the other identity's own rows, so D-8's isolation replay could never pass — choose a lookup column to record a contract",
+    };
+  }
+  const resolves = ctx.resolves ?? (() => false);
+  const principal = ctx.identities?.principal;
+  const negative = ctx.identities?.negativePrincipal;
+  if (principal === undefined || principal === "") {
+    return { ok: false, refusal: "no-positive-identity", detail: "the Decision Record names no `identities.principal` — the principal that owns the sample row" };
+  }
+  if (!resolves(principal)) {
+    return { ok: false, refusal: "no-positive-identity", detail: `principal '${principal}' resolves to no claims in the identity map` };
+  }
+  if (negative === undefined || negative === "") {
+    return { ok: false, refusal: "no-negative-identity", detail: "the Decision Record names no `identities.negativePrincipal` — without a second identity there is no isolation test" };
+  }
+  if (negative === principal) {
+    return { ok: false, refusal: "no-negative-identity", detail: "the negative principal is the positive one — replaying a request as the same identity proves nothing" };
+  }
+  if (!resolves(negative)) {
+    return { ok: false, refusal: "negative-identity-unresolved", detail: `negative principal '${negative}' resolves to no claims in the identity map (D-8 case 4)` };
+  }
+  return { ok: true, identities: { principal, negativePrincipal: negative } };
+}
 
 /**
  * R-8's gate, as a pure function so it can be tested exhaustively without a backend.
@@ -85,17 +149,24 @@ export function probeGate(decision: Extract<CapabilityDecision, { keep: true }>,
     return { allowed: false, refusal: "effect-not-read", detail: `confirmed effect is '${decision.effect}' — \`init\` never issues a write` };
   }
 
-  const method = (tool.connector.rest?.method ?? "").toUpperCase();
-  if (!FREE_METHODS.has(method)) {
-    if (!ctx.interactive) {
-      return {
-        allowed: false,
-        refusal: "non-interactive-non-read-method",
-        detail: `${method} needs a second, explicit human confirmation, and there is no human here`,
-      };
-    }
-    if (decision.probeNonReadMethodConfirmed !== true) {
-      return { allowed: false, refusal: "method-not-confirmed", detail: `${method} needs a second, separate confirmation beyond \`effect: read\`` };
+  let identities: SqlIdentities | undefined;
+  if (tool.connector.type === "sql") {
+    const gate = sqlGate(tool, ctx);
+    if (!gate.ok) return { allowed: false, refusal: gate.refusal, detail: gate.detail };
+    identities = gate.identities;
+  } else {
+    const method = (tool.connector.rest?.method ?? "").toUpperCase();
+    if (!FREE_METHODS.has(method)) {
+      if (!ctx.interactive) {
+        return {
+          allowed: false,
+          refusal: "non-interactive-non-read-method",
+          detail: `${method} needs a second, explicit human confirmation, and there is no human here`,
+        };
+      }
+      if (decision.probeNonReadMethodConfirmed !== true) {
+        return { allowed: false, refusal: "method-not-confirmed", detail: `${method} needs a second, separate confirmation beyond \`effect: read\`` };
+      }
     }
   }
 
@@ -108,22 +179,36 @@ export function probeGate(decision: Extract<CapabilityDecision, { keep: true }>,
     // customer's record (D-13).
     return { allowed: false, refusal: "probe-input-unavailable", detail: `no sample value for required input(s): ${missing.join(", ")}` };
   }
-  return { allowed: true, input: input ?? {} };
+  return { allowed: true, input: input ?? {}, ...(identities ? { identities } : {}) };
 }
 
 /** A recording promoted to an emittable contract — or `undefined` when nothing may be written. */
-function contractOf(recording: ContractRecording): RecordedContract | undefined {
+function contractOf(recording: ContractRecording, identities?: SqlIdentities): RecordedContract | undefined {
   if (recording.fingerprint === undefined || recording.fixture === undefined) return undefined;
+  // A database lookup's fixture names the two principals it is replayed under and demands a row on
+  // the positive leg (ADR-0012 D-8, D-10) — otherwise "zero rows for the other identity" would be
+  // true of an empty table. They are written here, beside the recording, because `recordContract`
+  // knows one request and not who made it; the replay in `verifyRecorded` is what proves them.
+  const fixture = identities
+    ? {
+        ...recording.fixture,
+        identity: { principal: identities.principal },
+        negativeIdentity: { principal: identities.negativePrincipal },
+        expects: { collectionNonEmpty: true },
+      }
+    : recording.fixture;
   return {
     fingerprint: recording.fingerprint,
     ...(recording.shape ? { shape: recording.shape } : {}),
     recordedAt: recording.fixture.recordedAt ?? new Date(0).toISOString(),
-    fixture: recording.fixture,
+    fixture,
   };
 }
 
 export interface RunProbesOptions extends RecordContractOptions {
   interactive: boolean;
+  /** Database sources only: the two principals the Decision Record names. */
+  identities?: DecisionRecord["identities"];
 }
 
 /**
@@ -145,13 +230,22 @@ export async function runProbes(
   // impression than a wait, and nothing here is latency-sensitive.
   for (const decision of decisions) {
     const tool = byId.get(decision.capabilityId);
-    const gate = probeGate(decision, tool, { interactive: opts.interactive });
+    const gate = probeGate(decision, tool, {
+      interactive: opts.interactive,
+      ...(opts.identities ? { identities: opts.identities } : {}),
+      resolves: (principal) => hasIdentityClaims(opts.identityAdapter?.(principal)),
+    });
     if (!gate.allowed) {
       reports.push({ capabilityId: decision.capabilityId, outcome: "refused", refusal: gate.refusal, detail: gate.detail });
       continue;
     }
-    const recording = await recordContract(tool!, gate.input, ir.resources, opts);
-    const contract = contractOf(recording);
+    // The positive leg is recorded AS the positive principal; `invokeSql` resolves its claims
+    // through the same identity adapter `verify` will use.
+    const recordOpts: RecordContractOptions = gate.identities
+      ? { ...opts, caller: { ...opts.caller, principal: gate.identities.principal } }
+      : opts;
+    const recording = await recordContract(tool!, gate.input, ir.resources, recordOpts);
+    const contract = contractOf(recording, gate.identities);
     reports.push({
       capabilityId: decision.capabilityId,
       outcome: recording.outcome,
