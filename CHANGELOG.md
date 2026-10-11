@@ -18,6 +18,24 @@ All notable changes to Archstone are documented here. Format loosely follows
 
 ## [Unreleased]
 
+## [0.34.0]
+
+### Added
+
+- **`boolean` semantic type (Experimental).** A field can now be declared `type: boolean` or `list: boolean`, on inputs and outputs and inside resources. It means a JSON `true` or `false` and nothing else, and lowers to `{"type": "boolean"}` in `inputSchema` and `outputSchema`. Nothing is coerced on either side: an input of `"true"`, `1` or `null` (for a required field) is refused as `input_invalid` naming the field before the provider is called, and a provider value that is not a JSON boolean (`0`/`1`, `"true"`, `"t"`) is the wrong shape for its field, which is a contract violation when the field is required and an omitted, degraded field when it is optional. `false` counts as present. A Postgres `boolean` column reaches a `boolean` field as a JSON boolean, and `@archstone/agent` carries the type through unchanged. `boolean` is the first plain scalar whose output value the response mapper type-checks (`quantity` and `text` still accept any primitive; see #157). Packages: `@archstone/compiler`, `@archstone/schema`, `@archstone/emitter-support`.
+
+### Changed
+
+- **`archstone init` and `archstone adopt` now emit `boolean`.** An OpenAPI `type: boolean` and a Postgres `boolean` column (previously skipped with `column-type-not-expressible`) map to `boolean`, and `adopt` offers an observed JSON `true`/`false` (and an array of them as `list: boolean`) instead of refusing it with `no-boolean-type`. A union such as `[boolean, string]` still resolves to `string`. For an author who had declared a flag as `string` and moves it to `boolean`, `archstone diff` reports the change as breaking (`input-retyped` / `output-retyped`), because the contract really does change. Packages: `@archstone/init`, `@archstone/runtime`.
+
+### Fixed
+
+- **The README's Claude Code key instructions led to a failing command.** It named the `--header "Authorization: Bearer <key>"` flag without saying where it goes, and placed before the server name it fails with `error: missing required argument 'name'`, because `--header` takes every argument that follows it. The README now gives the whole command, with the header after the name and URL, as the showcase README already does.
+
+- **Showcase prompts that only worked as a follow-up.** Pasted alone into a fresh conversation against the hosted demo, the suggested prompts of S-02, S-06 to S-09, S-11 and S-12 ("Book that quote…", "Pay for the booking…", "Tell me more about Casa Alfama") made a model ask for the missing context instead of calling a tool. Each now names the stay, the dates, the guests and any booking number it needs, so it works on its own (checked with a model, one prompt per conversation). Keyed rows (S-06 to S-09) gain an optional `ownAi` note in `scenarios.json` saying what an AI app connected without a key will see, and the showcase README shows how to send a demo key from a client that lets you set an `Authorization` header (Claude Code does).
+
+- **An IR that names a semantic type the runtime does not know is now refused at load, not lowered as `string`.** `@archstone/emitter-support`'s `Registry` constructor, which `@archstone/runtime` (`archstone serve`) and `@archstone/agent` (`fromIR`) both build, now throws `UnknownSemanticTypeError` naming the type and the field path (for example `tools[shop.get].input.flag`), for input, output, list-element and resource fields alike. The JSON Schema lowering, the input validator and the response mapper throw the same error rather than defaulting to a string, so a runtime older than the compiler no longer advertises a newer type as `string` and rejects valid values with "expected string". This protects runtimes from 0.34.0 onward: a runtime older than 0.34.0 still falls back to `string` for an unknown type, so keep the compiler, the runtime and `@archstone/agent` on the same version. `UnknownSemanticTypeError` is exported from `@archstone/emitter-support`, `@archstone/runtime` and `@archstone/agent`.
+
 ## [0.33.0]
 
 > **Upgrading: inputs are now enforced, and permissive manifests may see new refusals.** From this
