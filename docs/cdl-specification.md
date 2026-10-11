@@ -349,9 +349,10 @@ one the author wrote is the one shown. A processor lowers `list: boolean` to an 
   `required`.
 - On **output**, a present value that is not `true` or `false` is a value of the wrong shape for
   its field: when the field is optional it is omitted and the result is degraded, and when the field
-  is required it is a contract violation. Either way the field is listed as `{field, expected:
-  "boolean"}` among the wrong-shape fields, and the provider's value is never echoed. A list is
-  all or nothing: one item that is not a boolean makes the whole list the wrong shape.
+  is required it is a contract violation. Either way the field is listed among the wrong-shape
+  fields as `{field, expected: "boolean"}`, and the provider's value is never echoed. A list is
+  all or nothing: one item that is not a boolean makes the whole list the wrong shape, listed as
+  `{field, expected: "list of boolean"}`.
 - `false` is a value. It satisfies `required`, and it is never treated as absent.
 - In an extraction (ADR-0011) a model may produce `true` or `false`; anything else is reported as
   invalid and the document is a violation, since extraction does not repair.
@@ -363,8 +364,7 @@ the provider sends, or a fix at the source. Moving a field already declared as `
 
 `boolean` is Experimental: its meaning may still change before it is frozen with the rest of the
 semantic type system. The rule most likely to be reviewed is the one above that nothing is
-coerced; it graduates once it has been through at least one release unchanged and a real manifest
-uses it.
+coerced.
 
 ---
 

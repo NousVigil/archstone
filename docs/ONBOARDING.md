@@ -921,8 +921,9 @@ not declare — is refused with `isError: true` and `_meta["dev.archstone/input_
 `path` is a dotted path of *declared* field names (`$` is the whole argument object); `expected` is a
 fixed phrase. Neither ever contains what the caller sent: not a value, and not the name of an
 undeclared key. At most 16 problems are returned, with `"truncated": true` when there were more.
-Nothing is coerced, defaulted or dropped (`"42"` is not a number, `"true"` is not a `boolean`; an extra key is refused rather than
-silently ignored), `null` on an optional field counts as absent, and the `inputSchema` that
+Nothing is coerced, defaulted or dropped (`"42"` is not a number, `"true"` is not a `boolean`; an
+extra key is refused rather than silently ignored), `null` on an optional field counts as absent,
+and the `inputSchema` that
 `tools/list` advertises is closed (`additionalProperties: false`, and `party` counts have
 `minimum: 0`) so the contract a client reads is the contract the runtime holds it to. The check runs
 after lifecycle and policy (a caller who is refused learns nothing about your schema) and before
@@ -1383,11 +1384,12 @@ An observed JSON `true` or `false` is offered as a `boolean` field (and an array
 confirm each field; a backend that later sends `1` or `"true"` there fails loudly instead of
 being coerced.
 
-Some fields it will not adopt, and it says why rather than skipping them silently: a nested object, an array of objects (refused with reason
-`array-of-objects-unresolved`; such a shape needs a row-level resource declaration core #49
-has not ratified yet), or anything outside the collection your capability maps. **Scalar
-arrays** — an observed set of strings, numbers or other semantic types — **are now adoptable**
-(ADD-12 §8.2) as `list:` fields, populating them via `extract:` paths.
+Some fields it will not adopt, and it says why rather than skipping them silently: a nested
+object, an array of objects (refused with reason `array-of-objects-unresolved`; such a shape needs
+a row-level resource declaration core #49 has not ratified yet), or anything outside the
+collection your capability maps. **Scalar arrays** — an observed set of strings, numbers, booleans
+or other semantic types — **are now adoptable** (ADD-12 §8.2) as `list:` fields, populating them
+via `extract:` paths.
 
 ---
 

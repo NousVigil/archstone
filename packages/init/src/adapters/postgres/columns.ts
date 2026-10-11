@@ -4,8 +4,9 @@
 // closed `SemanticType` set — no guessing, no LLM. `cdl.schema.json`'s semantic types
 // (`location`, `date-range`, `party`, `preference-set`, `money`, `identifier`, `string`, `text`,
 // `time-slot`, `quantity`, `enum`, `date`, `datetime`, `boolean`) have no faithful member for a
-// Postgres `json`/`jsonb` or array column (a `boolean` column maps to `boolean`) — this is a TOOL limitation, not a CDL gap (D-10),
-// and is reported with the reason code `column-type-not-expressible` rather than guessed around,
+// Postgres `json`/`jsonb` or array column (a `boolean` column maps to `boolean`). That is a TOOL
+// limitation, not a CDL gap (D-10), and is reported with the reason code
+// `column-type-not-expressible` rather than guessed around,
 // mirroring internal ADD-37's own precedent for an unmappable OpenAPI construct
 // (`field-path-not-expressible`).
 //

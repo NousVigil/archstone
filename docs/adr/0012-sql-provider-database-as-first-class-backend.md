@@ -807,8 +807,9 @@ its machinery rather than duplicating it:
   around:** Postgres `json`/`jsonb`/array column types have no faithful `SemanticType`
   in `cdl.schema.json`'s closed set (`location`, `date-range`, `party`, `preference-set`,
   `money`, `identifier`, `string`, `text`, `time-slot`, `quantity`, `enum`, `date`, `datetime`,
-  `boolean` — no raw JSON). A `boolean` column maps to `boolean` (amended 2026-10-11). Per-column skip-and-report with a new reason code
-  (`column-type-not-expressible`), mirroring ADD-37's own precedent for an unmappable OpenAPI
+  `boolean` — no raw JSON). A `boolean` column maps to `boolean` (amended 2026-10-11).
+  Per-column skip-and-report with a new reason code (`column-type-not-expressible`), mirroring
+  ADD-37's own precedent for an unmappable OpenAPI
   construct (`field-path-not-expressible`) — a tool limitation, not a CDL gap, and not proposed
   as a new semantic type here.
 - **The effect hint is always `read`** (v1 is read-only by construction), routed through the

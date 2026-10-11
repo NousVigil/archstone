@@ -327,7 +327,8 @@ describe("objectJsonSchema â€” onError row shapes in outputSchema (#81, ADD-12 Â
 describe("guard: no semantic type is silently lowered as a bare string (#212)", () => {
   // `semanticJsonSchema` and `checkScalar` both end in a `default:` arm that means "a string". A new
   // semantic type that forgot its own case would be advertised, and enforced, as a string with no
-  // error anywhere. Only these three are meant to be exactly that.
+  // error anywhere. Only these three are meant to be exactly that. (`checkScalar` in input.ts has the
+  // same string default; the drift test in input.test.ts covers location, identifier, string and text.)
   const BARE_STRING = new Set(["identifier", "string", "text"]);
   for (const semantic of SEMANTIC_TYPES) {
     if (BARE_STRING.has(semantic)) continue;
