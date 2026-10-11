@@ -87,7 +87,7 @@ needs no checkout of this one
 
 | Command | What it does |
 |---|---|
-| `archstone init <openapi>` | Draft a manifest from an OpenAPI document |
+| `archstone init <openapi>` | Draft a manifest from an OpenAPI document (or, with `--source postgres --dsn-env <VAR>`, from a Postgres catalog) |
 | `archstone apply <dir>` | Validate and compile to IR; `--exposure` lists what a model sees and what it never sees, and which capabilities are exposed, unlisted or not exposed (retired, unbound) |
 | `archstone build <dir>` | Write a portable IR artifact for embedding |
 | `archstone serve <dir>` | Serve MCP tools over stdio; `--http --token <t>` for HTTP |

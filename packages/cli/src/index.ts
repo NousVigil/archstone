@@ -99,6 +99,7 @@ function printUsage(opts?: { toStderr?: boolean }): void {
       "         artifact or a manifest dir. Exits 1 iff a change is breaking. --all lists compatible ones\n" +
       "       archstone doctor <manifest-dir> [--json]  — pre-production checks, offline\n" +
       "       archstone init <spec-file> --out <dir>   — start here if you have no manifest yet\n" +
+      "       archstone init --source postgres --dsn-env <VAR> --out <dir>   — the same, from a database\n" +
       "       archstone adopt <manifest-dir>\n" +
       "         declare a field the backend started returning; asks before writing, needs a person\n\n" +
       "       archstone audit <file...> [--since <date>] [--format summary|jsonl|csv]\n" +

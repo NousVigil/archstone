@@ -112,6 +112,17 @@ export class YamlWriter {
     return this;
   }
 
+  /** `key: |` and the text as a literal block — for a SQL statement, where the line breaks are the
+   *  point. Every line is indented one level under the key; the text must not contain a line that
+   *  is blank or starts with whitespace, so no relation or column name can break out of the scalar. */
+  literal(key: string, text: string): this {
+    this.lines.push(`${this.pad()}${yamlKey(key)}: |`);
+    this.depth += 1;
+    for (const line of text.split("\n")) this.lines.push(`${this.pad()}${line}`);
+    this.depth -= 1;
+    return this;
+  }
+
   /** `key: [a, b, c]` — flow style, used only for a closed `values:` set. */
   flowList(key: string, values: YamlScalar[]): this {
     this.lines.push(`${this.pad()}${yamlKey(key)}: [${values.map(yamlScalar).join(", ")}]`);

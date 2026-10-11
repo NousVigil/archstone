@@ -23,6 +23,9 @@ export {
   observed,
   valueOr,
   valueOrUndefined,
+  type CatalogColumn,
+  type CatalogRelation,
+  type CatalogSnapshot,
   type Derivation,
   type DraftArrayNode,
   type DraftAuth,
@@ -35,6 +38,7 @@ export {
   type DraftProperty,
   type DraftRowErrors,
   type DraftScalarNode,
+  type DraftSqlOperation,
   type DraftUnknownNode,
   type Effect,
   type EffectHint,
@@ -44,6 +48,7 @@ export {
   type SourceAdapter,
   type SourceInput,
   type SourceObservation,
+  type SqlRelationKind,
 } from "./model";
 
 export {
@@ -116,6 +121,7 @@ export {
 // ---------------------------------------------------------------------------------------
 
 export { openApiAdapter } from "./adapters/openapi";
+export { postgresAdapter } from "./adapters/postgres";
 
 // The YAML scalar/key quoting rules, shared rather than re-implemented.
 //

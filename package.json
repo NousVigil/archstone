@@ -16,7 +16,7 @@
     "typecheck": "tsc -p tsconfig.json",
     "lint": "eslint .",
     "test": "pnpm run build && pnpm --filter archstone-demo-remote-mcp-worker run build:ir && vitest run",
-    "test:postgres": "pnpm run build && vitest run providers/sql/test/postgres packages/runtime/test/verify-sql-isolation.integration packages/cli/test/sql-postgres-e2e",
+    "test:postgres": "pnpm run build && vitest run providers/sql/test/postgres packages/runtime/test/verify-sql-isolation.integration packages/cli/test/sql-postgres-e2e packages/cli/test/init-postgres.integration",
     "showcase:record": "node examples/showcase/record/record.mjs",
     "showcase:record:check": "node examples/showcase/record/record.mjs --check",
     "showcase:conversations": "node examples/showcase/conversations/run.mjs"

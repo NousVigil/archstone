@@ -297,7 +297,11 @@ export async function runInit(draft: DraftModel, record: DecisionRecord, opts: R
     const compiled = compileManifest(staging);
     if (!compiled.ok || !compiled.ir) return emptyResult(firstPass, compiled.failures);
 
-    const probes = await runProbes(compiled.ir, kept, { ...opts.invoke, interactive: opts.interactive === true });
+    const probes = await runProbes(compiled.ir, kept, {
+      ...opts.invoke,
+      interactive: opts.interactive === true,
+      ...(record.identities ? { identities: record.identities } : {}),
+    });
 
     const recorded = new Map<string, RecordedContract>();
     for (const probe of probes) if (probe.contract) recorded.set(probe.capabilityId, probe.contract);

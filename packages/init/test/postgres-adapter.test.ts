@@ -20,9 +20,19 @@ describe("mapColumnType (S-US9.3, D-10)", () => {
     expect(mapColumnType("uuid", "id")).toEqual({ ok: true, type: "identifier" });
   });
 
-  it("maps numeric types to quantity and falls back to string for text-like types", () => {
-    expect(mapColumnType("integer", "delta")).toEqual({ ok: true, type: "quantity" });
-    expect(mapColumnType("numeric", "delta_pct")).toEqual({ ok: true, type: "quantity" });
+  it("maps only the types the driver returns as a JS number to quantity; bigint and numeric stay strings", () => {
+    for (const t of ["integer", "smallint", "real", "double precision"]) expect(mapColumnType(t, "n")).toEqual({ ok: true, type: "quantity" });
+    for (const t of ["bigint", "numeric", "decimal"]) expect(mapColumnType(t, "n")).toEqual({ ok: true, type: "string" });
+  });
+
+  it("skips types whose driver value is not the declared scalar (interval, bytea, geometric, oid)", () => {
+    for (const t of ["interval", "bytea", "point", "polygon", "oid"]) {
+      const m = mapColumnType(t, "c");
+      expect(m.ok, t).toBe(false);
+    }
+  });
+
+  it("falls back to string for text-like types", () => {
     expect(mapColumnType("character varying", "headline")).toEqual({ ok: true, type: "string" });
     expect(mapColumnType("text", "headline")).toEqual({ ok: true, type: "string" });
   });

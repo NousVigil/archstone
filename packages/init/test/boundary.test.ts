@@ -21,6 +21,8 @@ const FORBIDDEN: RegExp[] = [
   /^node:/, // fs, path, os, http, crypto — ALL of it. The root export is pure.
   /^@modelcontextprotocol\/sdk/,
   /^@archstone\/provider-rest$/,
+  /^pg$/, // a driver: the Postgres adapter is handed a catalog, it never opens a connection
+  /^@archstone\/provider-sql/, // the host reads the catalog; init never depends on a provider
   /^@archstone\/runtime/, // root or subpath: the loop needs neither, and R-2 says do not reach for it early
 ];
 

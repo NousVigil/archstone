@@ -37,8 +37,9 @@ Node 22+ · pnpm 11+. When running a single test file directly with `pnpm exec v
 
 The `sql` provider's isolation guarantee is only as good as the database that enforces it, so the
 `*.integration.test.ts` suites that cover it (`providers/sql/test/`,
-`packages/runtime/test/verify-sql-isolation.integration.test.ts` and
-`packages/cli/test/sql-postgres-e2e.integration.test.ts`) run against a real Postgres.
+`packages/runtime/test/verify-sql-isolation.integration.test.ts`,
+`packages/cli/test/sql-postgres-e2e.integration.test.ts` and
+`packages/cli/test/init-postgres.integration.test.ts`) run against a real Postgres.
 
 **In CI they are mandatory and are never skipped.** The `build` job runs the whole test suite against
 the current Postgres major (18) and the `postgres-compat` job runs just these suites against an older

@@ -5,6 +5,31 @@ D-1–D-9 have partly shipped ahead of acceptance (`providers/sql`, `IRSqlConnec
 `invokeConnector`); where shipped code and this text disagreed, the amendments below say which
 one moved.
 
+**Amended (2026-10-12),** from the design pass for the `init` Postgres adapter (#87). **D-10**
+only; decision text is edited in place, and this list is what moved:
+
+1. **D-10, adapter input.** `SourceAdapter.adapt()` stays pure and synchronous. The host reads the
+   catalog with `introspectCatalog` (2026-10-02, item 1: unchanged) and hands the adapter the rows
+   as a new optional `SourceInput.catalog`, the same split `SourceInput.documents` already makes
+   for OpenAPI. `introspectCatalog` had not been added to `providers/sql` when this was written; it is the first
+   piece of this work, not an assumption.
+2. **D-10, scoping and ground truth.** A relation is proposed only if the role holds `USAGE` on
+   its schema and `SELECT` on at least one of its columns, and only those columns are proposed. The
+   catalog read is `pg_catalog`, not `information_schema`: materialized views, which D-10 already
+   proposes, are absent from `information_schema`. The type vocabulary stays `information_schema`'s,
+   so `mapColumnType` is unchanged.
+3. **D-10, candidate shape.** One candidate per relation. A human chooses at the gate whether it
+   is a bounded list or a lookup by one named column; the adapter suggests the catalog's
+   single-column key where it declares one.
+4. **D-10, the Draft Model.** It gains the minimum a database needs (a `sql` source on a
+   candidate, a `param` input location, a `sql` block on the model); its REST vocabulary is not
+   reused with invented values.
+5. **D-10, contracts.** A bounded list can never carry a contract: D-8's negative leg replays the
+   identical request under another identity, and a list returns that identity's own rows. A
+   contract is offered only for a lookup, with both principals named and the positive leg
+   required to return a row, so that the isolation test cannot pass on an empty result.
+6. **D-10, the source is named by an environment variable, never a literal DSN.**
+
 **Amended (2026-10-11),** by the `boolean` semantic type (#212). **D-10's named gap is closed for
 `boolean`:** a Postgres `boolean` column now maps to `boolean`, declared from the catalog, and
 `init` no longer skips it with `column-type-not-expressible`. `json`, `jsonb` and array columns
@@ -776,9 +801,14 @@ its machinery rather than duplicating it:
 - **A new `SourceAdapter` under `packages/init/src/adapters/postgres/`.** Unlike the OpenAPI
   adapter (a pure, static document parse), this adapter's input is *live*: the catalog, read
   over a real, read-only connection using the runtime role. Scoping is by the role's effective
-  privileges — `has_table_privilege(…, 'SELECT')` and `has_column_privilege(…, 'SELECT')`,
-  which count `PUBLIC` and inherited membership, the same visibility D-9 layer 4 relies on — not
-  by what the catalog merely lets the role *see*. Tables, partitioned tables, views and
+  privileges — `has_schema_privilege(…, 'USAGE')` on the schema and `has_column_privilege(…,
+  'SELECT')` on each column, which count `PUBLIC` and inherited membership, the same visibility
+  D-9 layer 4 relies on — not by what the catalog merely lets the role *see*. A relation is
+  proposed iff the schema is usable and at least one of its columns is selectable, and only the
+  selectable columns are proposed: a table-level `SELECT` makes every column selectable, a
+  column-level grant only the granted ones, and a `SELECT` on a table in a schema the role cannot
+  use proposes nothing. The filter is in the introspection query, so the snapshot the adapter is
+  handed never contains a name the role cannot read; there is no second list to leak from. Tables, partitioned tables, views and
   materialized views are proposed; partitions fold into their parent; foreign tables are
   reported and deferred (RLS cannot be enabled on them, and reading one reaches a third host).
   So `init` can only ever propose what the runtime role can already `SELECT`, which is
@@ -792,7 +822,11 @@ its machinery rather than duplicating it:
   a pure function of the snapshot it is handed. It sets no session identity because it runs no
   declared query: D-3's gate protects tenant rows read by a declared query, and the catalog has no
   tenant rows, is not subject to RLS, and is read with constant query text no author or caller can
-  influence. It does **not** go through `invokeConnector` over a synthetic `IRTool` — that would
+  influence. The source is named by an environment variable (`--dsn-env VAR`), exactly as a
+  binding names its DSN: `init` accepts no literal connection string, which would put a password in
+  shell history and the process list, and the `${VAR}` it writes into every binding is the variable
+  it read. A refusal (`rolsuper`, `rolbypassrls`, a role that owns a relation it can read) ends the
+  run with D-9's own message, exit non-zero, nothing written. It does **not** go through `invokeConnector` over a synthetic `IRTool` — that would
   need a fabricated `identityAdapter` to pass D-3's gate (a hole in the very gate it exists for),
   would move SQL authoring out of the one package that owns `pg`, and would push a meaningless tool
   through the policy evaluator and response mapper. An "introspection" flag on the invocation path
@@ -800,14 +834,23 @@ its machinery rather than duplicating it:
   real invocation. Either way there is never a second, parallel connection/role-check
   implementation, so D-9's over-privileged check runs for `init`'s own introspection connection for
   free: pointing `init` at a superuser DSN refuses immediately, consistently with everywhere else.
-- **Column → CDL semantic type**, from `information_schema.columns` ground truth (`is_nullable`,
-  `data_type`) rather than a spec's possibly-stale declaration — actually *more* reliable than
-  the OpenAPI adapter's declared/observed distinction, since this is the catalog itself. Required
-  vs. optional is `is_nullable = 'NO'` directly, no probing needed. **Named gap, not built
+- **Column → CDL semantic type**, from the catalog's ground truth (nullability and type) rather
+  than a spec's possibly-stale declaration — actually *more* reliable than the OpenAPI adapter's
+  declared/observed distinction, since this is the catalog itself. The read is `pg_catalog`
+  (`pg_class`, `pg_attribute`, `pg_type`), because `information_schema` omits materialized views
+  and this adapter proposes them; the type is reported in `information_schema.columns.data_type`'s
+  vocabulary (`character varying`, `timestamp with time zone`, a domain as its base type, any array
+  as `ARRAY`), so `mapColumnType` keeps one vocabulary. Required vs. optional is `NOT NULL` /
+  `is_nullable = 'NO'` directly, no probing needed. **Named gap, not built
   around:** Postgres `json`/`jsonb`/array column types have no faithful `SemanticType`
   in `cdl.schema.json`'s closed set (`location`, `date-range`, `party`, `preference-set`,
   `money`, `identifier`, `string`, `text`, `time-slot`, `quantity`, `enum`, `date`, `datetime`,
   `boolean` — no raw JSON). A `boolean` column maps to `boolean` (amended 2026-10-11).
+  A column is typed by what the driver returns for it, not by what it holds: `integer`, `smallint`,
+  `real` and `double precision` arrive as JS numbers and map to `quantity`; `bigint` and
+  `numeric`/`decimal` arrive as strings (a JS number cannot hold them exactly) and map to `string`;
+  `interval`, `bytea`, the geometric types and `oid` arrive as an object, a null or a number that is
+  not the declared scalar, and are skipped as `column-type-not-expressible` (amended 2026-10-12).
   Per-column skip-and-report with a new reason code (`column-type-not-expressible`), mirroring
   ADD-37's own precedent for an unmappable OpenAPI
   construct (`field-path-not-expressible`) — a tool limitation, not a CDL gap, and not proposed
@@ -827,7 +870,56 @@ its machinery rather than duplicating it:
   be attempted — no second identity available, non-interactive mode with none supplied —
   `init` records **no** `contract:` for that capability at all (extending the existing
   "contract is all-or-nothing," ADD-37 Challenge 2 item 3, rather than emitting a
-  testable-looking contract with no isolation proof).
+  testable-looking contract with no isolation proof). Four consequences of that rule are
+  decided here, because each is a way to emit exactly that testable-looking contract:
+  - *Both principals come from the human and must resolve.* The Decision Record names them; the
+    claims come from the same `--identity-map` file `verify` and `serve` take, which `init` reads
+    and never copies into the manifest. A negative principal the map cannot resolve is D-8
+    case 4, so it is a refusal at the gate, not a contract that records and then goes red.
+  - *Only a lookup can carry a contract.* D-8's negative leg replays the **identical** request and
+    requires zero rows. A bounded list returns the other identity's own rows, so it can never pass:
+    no contract is recorded for a list, and the report says so. A lookup's `sampleInput` (the key
+    of a row the positive identity owns) is the human's, as for every probe (D-13); `init` never
+    reads a tenant row to choose one.
+  - *An empty positive leg proves nothing.* Zero rows for the negative identity is vacuous if the
+    positive identity also got zero. The recorded fixture sets `expects.collectionNonEmpty`, so the
+    replay `init` already runs before committing (`verifyRecorded`) drops a contract whose positive
+    leg is empty.
+  - *Without `--probe`, no tenant row is read at all.* The catalog read touches no tenant data and
+    needs no consent; every query that can return a row goes through the existing opt-in probe.
+- **The Draft Model carries a database source; it does not borrow REST's fields.** A candidate is
+  one relation, not an endpoint. The response side fits unchanged: a relation's rows are an
+  array of objects whose scalar properties carry a declared type and a declared required-ness, so
+  the locus census, resource emission and report need no change. The request side does not: a
+  `method`, a `path`, a `baseUrl` and a `path`/`query`/`body` location describe HTTP. The model gains
+  `DraftModel.sql` (engine and the DSN variable name), `DraftOperation.sql` (the relation, its kind,
+  the adapter-rendered `SELECT … FROM …` text, the lookup columns and the catalog's single-column
+  key), and the input location `param`. Quoting a Postgres identifier is knowledge of the source and
+  lives only under `adapters/postgres/`; the emitter appends one of two fixed suffixes (a `LIMIT`
+  constant, or `WHERE <column> = $1`) to text it is handed and never composes identifiers.
+  `method` is `SELECT` and `path` is `<schema>.<relation>` so existing candidate keys keep their
+  `<verb> <target>` form; nothing reads them as HTTP once `sql` is present. Reusing `GET` and a fake
+  path was refused: a binding that says `GET` is a binding a reviewer reads as HTTP, and the probe
+  gate's method rule would then govern a database call.
+- **A candidate is a relation; a human chooses what it does.** The adapter proposes one candidate
+  per relation, never one per column and never a merge of relations (ADD-37 §3). The Decision Record
+  may set `lookupColumn` to one of the candidate's lookup columns, which makes the capability a
+  lookup by that column; absent, it is a list bounded by a literal `LIMIT` the reviewer reads in the
+  binding. The catalog's single-column primary key (tables and partitioned tables; a view has none)
+  is offered as the suggested default at the interactive gate, never applied without the answer. A
+  column that is not a legal CDL field name, or whose type is not a scalar, is not a lookup column.
+  An unknown `lookupColumn` is a per-candidate refusal.
+- **CLI surface.** `archstone init --source postgres --dsn-env <VAR> --out <dir> [--decisions
+  <file>] [--identity-map <file>] [--probe]`. `<spec-file>` stays the OpenAPI form, unchanged byte
+  for byte, and is refused with `--source postgres`; `--identity-map` is meaningful only with
+  `--probe` and a SQL source.
+- **New reason codes, all registered in `reasons.ts` as `(adapter)` codes like the OpenAPI
+  adapter's:** `column-type-not-expressible` (a column, skipped; the capability is still emitted),
+  `no-expressible-columns` (every selectable column was skipped: the candidate is skipped),
+  `foreign-table-deferred` (manifest-level note, no candidate), `unknown-lookup-column` (the
+  decision names a column the candidate does not offer: the candidate is refused), and
+  `list-has-no-isolation-test` (a note on a list: no contract is possible, by D-8). A column the
+  role cannot select has no code because it is never seen.
 - **Loop structure is identical to the OpenAPI adapter's**: temp-dir materialize → `load` →
   `validateSemantics` → `compile` → `new Registry()` (tool-name collision refusal, ADD-30) →
   record-and-verify-green-before-commit → write only on success. "Adding an adapter must touch no
@@ -890,6 +982,11 @@ change above is binding/provider/IR-side.
 | Dispatch logic duplicated in each of the four invocation call sites | The exact defect class internal ADD-30 already found and fixed once (two independently-buggy hand-rolled indexes); centralizing in one new subpath costs one file |
 | Putting `invokeConnector` in `@archstone/emitter-support` (root or subpath) | The root breaks that package's own "IR-only: no MCP SDK, no fs, no HTTP" contract for every existing pure consumer; a subpath makes a circular workspace dependency, since both providers depend on `emitter-support`. A `@archstone/runtime` subpath (precedent: ADD-37 R-2) solves both |
 | `init` introspection through `invokeConnector` over a synthetic `IRTool`, or an "introspection" flag on `invokeSql` | The first needs a fabricated `identityAdapter` to pass D-3's gate and authors SQL outside `providers/sql`; the second is a flag on the invocation path that someone will set on a real invocation. `introspectCatalog` shares `ensureConnection` and D-4's read-only transaction instead (D-10) |
+| Giving the Draft Model's REST fields database values (`method: GET`, a `schema.table` path), so no model change is needed | Every consumer of those fields would have to learn which candidates are lying: the emitter writes a `rest` connector from them, and the probe gate's method rule would govern a database call. A `sql` source beside them is one optional field; the lie is a latent bug in each of the emitter, the gate and the report (D-10) |
+| A dedicated Postgres module with its own emitter, because the Draft Model is REST-shaped | Forks the resource emission, required-ness rules, locus census, report and the compile-and-probe loop, which fit unchanged on the response side. The cost of the fork is two codebases that must agree on what a manifest is; the cost of the extension is three optional fields (D-10) |
+| One candidate per (relation, column) lookup, so the Decision Record only says keep or decline | A 30-table schema with 12 columns each is a 360-row gate, almost all of it noise. The lookup column is an answer only a human has (a view carries no key), so it is asked once per relation (D-10) |
+| A list capability with a contract and a negative identity | D-8 replays the identical request and requires zero rows; a list returns the other identity's own rows, so the contract would be red on its first replay. Recording it would be a contract the tool knew would fail, or a test weakened until it passed (D-10) |
+| Introspection filtered in the adapter from visibility (`information_schema`) plus privilege flags | The catalog lets a role see names it cannot read, and `information_schema` omits materialized views. Filtering in the query means the snapshot cannot contain what the role cannot read, and the adapter has nothing to forget to filter (D-10) |
 | RLS/GUC session state as an explicit binding-authored `SET LOCAL` statement, symmetric with the declared query | Reopens exactly the "manifest author is part of the security boundary" problem this design exists to close — a binding author could omit or mis-author the `SET`, and nothing would catch it |
 | D-9 layers 3–4 cached once per DSN for the life of the process, with the topology assumption documented (#123) | The server behind a DSN can change under a running process — logical replication, logical blue/green, a re-pointed name or proxy — and a cached verdict then describes a server the process no longer talks to. Layer 3 runs per transaction and layer 4 per (server, database) instead (D-9, "When layers 3 and 4 re-run"), where the other alternatives considered are also listed |
 
@@ -953,7 +1050,16 @@ change above is binding/provider/IR-side.
    `invokeConnector` only as a caller-supplied override (D-5/D-6).
 6. **`packages/init/src/adapters/postgres/`**: build only after steps 1–4 land, per D-10/R-5,
    with `introspectCatalog` added to `providers/sql` and `GoldenFixture.identity` to
-   `runtime/src/verify.ts` in the same series.
+   `runtime/src/verify.ts` in the same series. `GoldenFixture.identity` has shipped;
+   `introspectCatalog` had not when the 2026-10-12 amendment was written. In order: (a)
+   `introspectCatalog` and its real-Postgres tests; (b) the Draft Model additions and the emitter's
+   `sql` branch, tested with a hand-built Draft Model before any adapter exists; (c) the pure
+   adapter, passing the shared `SourceAdapter` conformance suite; (d) the probe gate's SQL rules;
+   (e) the CLI. The first increment adds no leg to `scripts/release-gate.mjs` and changes no file
+   under `examples/manifests/`: the gate reads every example as an input, so an example added for
+   `init` becomes a verify leg that needs a database, and a release has already failed twice on
+   exactly that. The OpenAPI `init` probe in the gate is the regression check for the CLI change,
+   and the Postgres path is covered by the integration suite until a release has shipped it.
 7. **Docs**: the topology guide (curated-view default, RLS-on-base-tables alternative, the
    fail-closed role check's exact error text) — a tech-writer follow-up once the mechanism above
    is implemented, not before.

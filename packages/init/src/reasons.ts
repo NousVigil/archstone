@@ -182,6 +182,18 @@ export const REASON_CODES = {
   "unsupported-free-form-map": { skipsOperation: true, summary: "free-form map shape has no named fields to map" },
   /** *(adapter)* Webhooks, callbacks and links — an operation shape that is not a call. */
   "unsupported-operation-shape": { skipsOperation: true, summary: "webhook/callback/link operations are not capabilities in v1" },
+  /**
+   * *(adapter)* Every selectable column of a relation was left out (`column-type-not-expressible`,
+   * or a name no JSONPath can address), so there is nothing to select and nothing to map. The
+   * candidate is skipped; the per-column notes say why each column went.
+   */
+  "no-expressible-columns": { skipsOperation: true, summary: "every selectable column was left out, so there is nothing to select" },
+  /**
+   * The Decision Record names a `lookupColumn` this candidate does not offer — not a column of the
+   * relation, not selectable, not a scalar the manifest can express, or not a legal CDL field name.
+   * Refused per candidate rather than falling back to a list: the human asked for a lookup.
+   */
+  "unknown-lookup-column": { skipsOperation: true, summary: "the named lookup column is not one this relation offers" },
 
   // ---- Candidate emitted, but degraded (a report line, never a fallback into invention) ----
   /** D-9 step 1, last branch: the response is a scalar, an array of scalars, or has no
@@ -236,6 +248,25 @@ export const REASON_CODES = {
    *  declaration. The report states the sample size — the difference between a measurement and
    *  a claim. */
   "required-classification-observational": { skipsOperation: false, summary: "required/optional classified from observed items only" },
+  /**
+   * *(adapter)* A column of a database relation that has no faithful CDL semantic type —
+   * `json`/`jsonb` and array columns (ADR-0012 D-10) — or whose name no JSONPath can address. FIELD
+   * scoped and non-skipping: the column is left out of the `SELECT` and the capability is still
+   * emitted. A tool limitation, never a language gap.
+   */
+  "column-type-not-expressible": { skipsOperation: false, summary: "a column has no expressible CDL type — left out of the select" },
+  /**
+   * *(adapter)* A foreign table the runtime role can read. Manifest-level and not a candidate:
+   * RLS cannot be enabled on a foreign table and reading one reaches a third host (ADR-0012 D-10),
+   * so it is reported and deferred, never proposed.
+   */
+  "foreign-table-deferred": { skipsOperation: false, summary: "a foreign table was reported, not proposed — RLS cannot cover it" },
+  /**
+   * A bounded list (`LIMIT 100`) never carries a contract: D-8's negative leg replays the identical
+   * request under another identity and requires zero rows, and a list returns that identity's own
+   * rows, so the contract would be red on its first replay. A lookup can.
+   */
+  "list-has-no-isolation-test": { skipsOperation: false, summary: "a list cannot carry a contract: its isolation replay returns the other identity's own rows" },
   /** *(adapter)* Pagination is visible in the source but is not modeled as a capability input. */
   "pagination-not-modeled": { skipsOperation: false, summary: "pagination is not modeled in v1" },
   /**
