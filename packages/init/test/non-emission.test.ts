@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import type { FetchLike } from "@archstone/provider-rest";
 import { REASON_CODES, emit, openApiAdapter, type DecisionRecord, type SourceInput } from "@archstone/init";
 import { runInit } from "@archstone/init/loop";
+import { reportingDraft } from "./pg-catalog";
 
 // ADD-37 §6 step 8 — ONE TEST PER NON-EMISSION, asserting the key is ABSENT.
 //
@@ -259,6 +260,7 @@ describe("every `skipsOperation: true` code withholds FILES, not just raises a n
         "company-id-not-derivable",
         "declined",
         "empty-confirmed-set",
+        "no-expressible-columns",
         "oneof-error-fields-unresolved",
         "oneof-no-discriminator",
         "oneof-non-object-branch",
@@ -267,6 +269,7 @@ describe("every `skipsOperation: true` code withholds FILES, not just raises a n
         "resource-name-conflict",
         "resource-name-not-derivable",
         "unknown-candidate",
+        "unknown-lookup-column",
         "unsupported-composition",
         "unsupported-connector",
         "unsupported-free-form-map",
@@ -352,6 +355,32 @@ describe("every `skipsOperation: true` code withholds FILES, not just raises a n
       capabilityId: "catalog.header-param",
       make: () =>
         emit(quirks, { ...specDecisions, decisions: [{ operation: "GET /api/v2/header-param", keep: true, capabilityId: "catalog.header-param", effect: "read" }] }),
+    },
+    // ADR-0012 D-10 — the database adapter's two skipping codes. A surviving list capability keeps
+    // the run from refusing as a whole (D-7), so the table measures the code and not `empty-confirmed-set`.
+    {
+      code: "no-expressible-columns",
+      capabilityId: "reporting.blobs",
+      make: () =>
+        emit(reportingDraft(), {
+          ...specDecisions,
+          decisions: [
+            { operation: "SELECT app.blobs", keep: true, capabilityId: "reporting.blobs", effect: "read" },
+            { operation: "SELECT app.accounts", keep: true, capabilityId: "reporting.list-accounts", effect: "read", resourceName: "Account" },
+          ],
+        }),
+    },
+    {
+      code: "unknown-lookup-column",
+      capabilityId: "reporting.get-position",
+      make: () =>
+        emit(reportingDraft(), {
+          ...specDecisions,
+          decisions: [
+            { operation: "SELECT app.positions_v", keep: true, capabilityId: "reporting.get-position", effect: "read", lookupColumn: "nope", resourceName: "Position" },
+            { operation: "SELECT app.accounts", keep: true, capabilityId: "reporting.list-accounts", effect: "read", resourceName: "Account" },
+          ],
+        }),
     },
   ];
 

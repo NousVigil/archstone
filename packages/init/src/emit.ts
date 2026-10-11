@@ -42,6 +42,7 @@ import {
   type DraftInputField,
   type DraftModel,
   type DraftOperation,
+  type DraftSqlOperation,
   type DraftNode,
   type DraftProperty,
   type DraftScalarNode,
@@ -73,6 +74,10 @@ import { YamlWriter } from "./yaml";
 const CONNECTOR_METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
 
 const PATH_PLACEHOLDER_RE = /\{([^}]+)\}/g;
+
+/** The literal bound on a database list capability (ADR-0012 D-10). A constant the reviewer reads
+ *  in the binding, not a knob: a list that needs paging is a lookup, or a view someone curates. */
+export const SQL_LIST_LIMIT = 100;
 
 export interface EmittedCapability {
   capabilityId: string;
@@ -168,7 +173,16 @@ interface PlannedInput {
   /** The source `in:` this field arrived from — `input:` in CDL never carries it (business
    *  shape only), but the binding writer needs it to decide which fields belong in `rest.query`
    *  (`query`/`path`) versus the JSON body (`body`). */
-  in: "path" | "query" | "body";
+  in: "path" | "query" | "body" | "param";
+}
+
+/** What a database candidate becomes (ADR-0012 D-10): the `sql` connector's own fields. */
+interface PlannedSql {
+  dsnEnvVar: string;
+  /** The adapter's `SELECT … FROM …` plus exactly one fixed suffix — never composed here. */
+  query: string;
+  params: string[];
+  lookup: boolean;
 }
 
 interface PlannedCapability {
@@ -180,6 +194,8 @@ interface PlannedCapability {
   /** The auth that applies to THIS operation, already resolved against the manifest default. */
   auth?: DraftAuth;
   input: PlannedInput[];
+  /** Present iff the candidate is a database relation: the connector is `sql`, not `rest`. */
+  sql?: PlannedSql;
   resource?: PlannedResource;
   /** Present iff a resource was planned. */
   response?: { collection?: string; outputField: string };
@@ -272,7 +288,10 @@ function basisComment(basis: RequiredBasis): string | undefined {
     case "declared":
       switch (basis.nullability.kind) {
         case "declared-nullable":
-          return "declared required, but nullable — optional here (a null maps like a missing value)";
+          // Worded to be true of both sources: an OpenAPI field declared required but nullable, and a
+          // database column that is simply nullable. A null maps like a missing value, so a field that
+          // can be null cannot be required without turning the first null into a contract violation.
+          return "nullable, so optional here (a null maps like a missing value)";
         case "unknown":
           // D-12's new case, and the one worth a line in the file: the source said "required"
           // but never established that the value cannot be null. `required: true` demands
@@ -363,6 +382,44 @@ function planResourceField(property: DraftProperty, path: string, capabilityId: 
   };
 }
 
+/**
+ * A database candidate's request side (ADR-0012 D-10): a bounded list, or a lookup by the one
+ * column the Decision Record names.
+ *
+ * Whether it is a list or a lookup is the human's answer and nothing here defaults it to the
+ * catalog's key — that is the gate's suggestion, applied only if the human gave it. The two query
+ * shapes are the adapter's `select` plus one fixed suffix; no identifier is composed in this file.
+ */
+function planSql(
+  dsnEnvVar: string,
+  op: DraftSqlOperation,
+  decision: Extract<CapabilityDecision, { keep: true }>,
+  capabilityId: string,
+  notes: Note[],
+  skip: (code: ReasonCode, detail?: string) => void,
+): { input: PlannedInput[]; sql: PlannedSql } | undefined {
+  if (decision.lookupColumn === undefined) {
+    notes.push(
+      note(
+        "list-has-no-isolation-test",
+        "operation",
+        capabilityId,
+        `bounded to ${SQL_LIST_LIMIT} rows. D-8's isolation test replays one request under a second identity and requires zero rows; a list returns that identity's own rows, so no contract is possible. Choose a lookup column for one.`,
+      ),
+    );
+    return { input: [], sql: { dsnEnvVar, query: `${op.select}\nLIMIT ${SQL_LIST_LIMIT}`, params: [], lookup: false } };
+  }
+  const column = decision.lookupColumn;
+  const choice = op.lookupColumns.find((c) => c.field.name === column);
+  if (!choice) {
+    const offered = op.lookupColumns.map((c) => `'${c.field.name}'`).join(", ");
+    skip("unknown-lookup-column", `'${column}' is not offered. ${offered === "" ? "This relation offers no lookup column." : `Offered: ${offered}.`}`);
+    return undefined;
+  }
+  const input = [planInput(choice.field, capabilityId, notes)];
+  return { input, sql: { dsnEnvVar, query: `${op.select}\nWHERE ${choice.predicate}`, params: [choice.field.name], lookup: true } };
+}
+
 /** D-9 steps 1–4 for one candidate. Returns `undefined` when the candidate is skipped
  *  entirely; a plan with no `resource` is the honest degraded path, not a failure. */
 function planCapability(
@@ -379,24 +436,39 @@ function planCapability(
   const domain = domainOfCapabilityId(capabilityId);
 
   const method = operation.method.toUpperCase();
-  if (!CONNECTOR_METHODS.has(method) || operation.path === "") {
-    skip("unsupported-connector", `method '${operation.method}' / path '${operation.path}'`);
-    return undefined;
-  }
+  let input: PlannedInput[];
+  let sql: PlannedSql | undefined;
+  let auth: DraftAuth | undefined;
+  if (operation.sql !== undefined) {
+    // A database candidate: the method and path are a key, not HTTP, so neither rule below applies
+    // to it (ADR-0012 D-10). The `rest` branch is untouched.
+    if (draft.sql === undefined) {
+      skip("unsupported-connector", "a database candidate in a draft that names no database source");
+      return undefined;
+    }
+    const planned = planSql(draft.sql.dsnEnvVar, operation.sql, decision, capabilityId, notes, skip);
+    if (!planned) return undefined;
+    ({ input, sql } = planned);
+  } else {
+    if (!CONNECTOR_METHODS.has(method) || operation.path === "") {
+      skip("unsupported-connector", `method '${operation.method}' / path '${operation.path}'`);
+      return undefined;
+    }
 
-  // The connector path's `{placeholders}` are interpolated BY EXACT NAME against the capability
-  // input, so a placeholder with no matching input field is a binding that can never be invoked.
-  // Refused here rather than emitted and discovered at the first call.
-  const placeholders = [...operation.path.matchAll(PATH_PLACEHOLDER_RE)].map((m) => m[1]!);
-  const inputNames = new Set(operation.input.map((f) => f.name));
-  const unmatched = placeholders.filter((p) => !inputNames.has(p));
-  if (unmatched.length > 0) {
-    skip("unsupported-connector", `path placeholder(s) with no matching input field: ${unmatched.join(", ")}`);
-    return undefined;
-  }
+    // The connector path's `{placeholders}` are interpolated BY EXACT NAME against the capability
+    // input, so a placeholder with no matching input field is a binding that can never be invoked.
+    // Refused here rather than emitted and discovered at the first call.
+    const placeholders = [...operation.path.matchAll(PATH_PLACEHOLDER_RE)].map((m) => m[1]!);
+    const inputNames = new Set(operation.input.map((f) => f.name));
+    const unmatched = placeholders.filter((p) => !inputNames.has(p));
+    if (unmatched.length > 0) {
+      skip("unsupported-connector", `path placeholder(s) with no matching input field: ${unmatched.join(", ")}`);
+      return undefined;
+    }
 
-  const input = operation.input.map((f) => planInput(f, capabilityId, notes));
-  const auth = authFor(draft, operation);
+    input = operation.input.map((f) => planInput(f, capabilityId, notes));
+    auth = authFor(draft, operation);
+  }
 
   // D-14 — enumerate, then read the SELECTION. Never re-derive a preferred candidate here:
   // if the emitter could, the gate's question would be decorative and this would be branch
@@ -416,6 +488,7 @@ function planCapability(
       path: operation.path,
       ...(auth ? { auth } : {}),
       input,
+      ...(sql ? { sql } : {}),
       notes,
       ...(census.observedPaths ? { observedPaths: census.observedPaths } : {}),
     };
@@ -553,6 +626,7 @@ function planCapability(
     path: operation.path,
     ...(auth ? { auth } : {}),
     input,
+    ...(sql ? { sql } : {}),
     notes,
     resource: {
       name: resourceName,
@@ -655,6 +729,12 @@ function writeFieldMap(w: YamlWriter, fields: Array<PlannedInput | PlannedResour
   }
 }
 
+/** The provider every emitted capability points at: `<company>-api`, or `<company>-db` for a
+ *  database source, unless the Decision Record names one. */
+function providerFor(draft: DraftModel, record: DecisionRecord): string {
+  return providerId(record, draft.sql !== undefined ? "db" : "api");
+}
+
 function renderCapabilitiesFile(draft: DraftModel, record: DecisionRecord, plans: PlannedCapability[]): string {
   const w = new YamlWriter();
   header(w, draft, "capabilities.yaml — this company's contract with the AI world");
@@ -671,7 +751,7 @@ function renderCapabilitiesFile(draft: DraftModel, record: DecisionRecord, plans
   });
   w.blank();
   w.block("providers", (pw) => {
-    pw.item(providerId(record));
+    pw.item(providerFor(draft, record));
   });
   return w.toString();
 }
@@ -732,7 +812,7 @@ function renderCapabilityFile(draft: DraftModel, record: DecisionRecord, plan: P
     }
 
     cw.blank();
-    cw.entry("provider", providerId(record));
+    cw.entry("provider", providerFor(draft, record));
   });
   return w.toString();
 }
@@ -772,58 +852,82 @@ function renderBindingFile(
   header(w, draft, `${plan.decision.capabilityId} — implementation binding. NOT CDL`);
   w.block("binding", (bw) => {
     bw.entry("capabilityId", plan.decision.capabilityId);
-    bw.block("connector", (cw) => {
-      cw.entry("type", "rest");
-      cw.block("rest", (rw) => {
-        const observed = valueOrUndefined(draft.baseUrl);
-        rw.entry("baseUrl", envPlaceholder(baseUrlEnvVar(record)), observed !== undefined ? `the source names ${observed}` : undefined);
-        rw.entry("method", plan.method);
-        rw.entry("path", plan.path);
-        // #63: a `query`-location field needs a `rest.query` entry when it is remapped
-        // (`wireName`), when it is a `list` field with an explicit `explode` (Goal 1), or
-        // (Goal 2) when this operation ALSO carries a body — `invokeRest` builds the query
-        // string from ONLY the `onQuery`-marked fields in that case, so every query field must
-        // say so or it silently falls into the JSON body instead. A field needing only the
-        // plain rename keeps the pre-#63 string shorthand; anything else uses the object form.
-        const hasBody = plan.input.some((f) => f.in === "body");
-        const queryFields = plan.input.filter((f) => f.in === "query");
-        const needsEntry = queryFields.filter((f) => f.wireName !== undefined || (f.list && f.explode !== undefined) || hasBody);
-        if (needsEntry.length > 0) {
-          if (hasBody) rw.comment("query fields on a method that also has a body — sent on the URL; every other input field goes in the JSON body");
-          else rw.comment("the backend spells these differently on the wire; the CDL keeps the business name");
-          rw.block("query", (qw) => {
-            for (const f of needsEntry) {
-              const needsObjectForm = (f.list && f.explode !== undefined) || hasBody;
-              if (!needsObjectForm) {
-                qw.entry(f.name, f.wireName!);
-                continue;
-              }
-              qw.block(f.name, (fw) => {
-                if (f.wireName !== undefined) fw.entry("name", f.wireName);
-                if (f.list && f.explode !== undefined) fw.entry("explode", f.explode);
-                if (hasBody) fw.entry("onQuery", true);
-              });
-            }
-          });
-        }
-        // Challenge 2 item 2: a declared security scheme becomes a header placeholder, never
-        // `policies: [authenticated]`. Challenge 2 item 4 (Amendment 1 §A-5): the placeholder
-        // is `${ENV}` and never `${caller.…}` — the CLI supplies no caller, so a caller
-        // placeholder fails every `serve` and every `verify`. The value resolves from the
-        // environment at invocation time; `init` never stores, logs, or writes a credential
-        // into an emitted file.
-        //
-        // PER OPERATION, not per manifest: writing this header into a binding whose endpoint
-        // is public makes that capability un-invocable until an unnecessary variable is set.
-        if (plan.auth) {
-          const envVar = authEnvVar(record);
-          rw.comment(`auth (${plan.auth.scheme ?? "declared scheme"}): set ${envVar} in the environment that runs this manifest`);
-          rw.block("headers", (hw) => {
-            hw.entry(plan.auth!.headerName, authHeaderValue(plan.auth!, envVar));
-          });
-        }
+    if (plan.sql) {
+      const sql = plan.sql;
+      // The tenant is deliberately nowhere in this query (ADR-0012 D-1/D-3): identity reaches the
+      // database as a transaction-scoped session setting that a row-level-security policy reads, so
+      // there is nothing here a binding author could forget to filter by. The connection string is a
+      // `${VAR}` placeholder — `init` never held it, and never writes it.
+      bw.comment([
+        sql.lookup ? "A lookup by one column, with the key bound as $1." : `A list, bounded by a literal LIMIT ${SQL_LIST_LIMIT} you can read here.`,
+        "Whose rows these are is not a field in this file: the caller's identity reaches the database as a",
+        "session setting that row-level security reads. Delete the policy and the isolation test goes red.",
+      ]);
+      bw.block("connector", (cw) => {
+        cw.entry("type", "sql");
+        cw.block("sql", (sw) => {
+          sw.entry("engine", "postgres");
+          sw.entry("dsn", envPlaceholder(sql.dsnEnvVar));
+          sw.entry("statementKind", "select");
+          sw.literal("query", sql.query);
+          if (sql.params.length === 0) sw.flowList("params", []);
+          else sw.block("params", (pw) => sql.params.forEach((p) => pw.item(p)));
+        });
       });
-    });
+    } else {
+      bw.block("connector", (cw) => {
+        cw.entry("type", "rest");
+        cw.block("rest", (rw) => {
+          const observed = valueOrUndefined(draft.baseUrl);
+          rw.entry("baseUrl", envPlaceholder(baseUrlEnvVar(record)), observed !== undefined ? `the source names ${observed}` : undefined);
+          rw.entry("method", plan.method);
+          rw.entry("path", plan.path);
+          // #63: a `query`-location field needs a `rest.query` entry when it is remapped
+          // (`wireName`), when it is a `list` field with an explicit `explode` (Goal 1), or
+          // (Goal 2) when this operation ALSO carries a body — `invokeRest` builds the query
+          // string from ONLY the `onQuery`-marked fields in that case, so every query field must
+          // say so or it silently falls into the JSON body instead. A field needing only the
+          // plain rename keeps the pre-#63 string shorthand; anything else uses the object form.
+          const hasBody = plan.input.some((f) => f.in === "body");
+          const queryFields = plan.input.filter((f) => f.in === "query");
+          const needsEntry = queryFields.filter((f) => f.wireName !== undefined || (f.list && f.explode !== undefined) || hasBody);
+          if (needsEntry.length > 0) {
+            if (hasBody) rw.comment("query fields on a method that also has a body — sent on the URL; every other input field goes in the JSON body");
+            else rw.comment("the backend spells these differently on the wire; the CDL keeps the business name");
+            rw.block("query", (qw) => {
+              for (const f of needsEntry) {
+                const needsObjectForm = (f.list && f.explode !== undefined) || hasBody;
+                if (!needsObjectForm) {
+                  qw.entry(f.name, f.wireName!);
+                  continue;
+                }
+                qw.block(f.name, (fw) => {
+                  if (f.wireName !== undefined) fw.entry("name", f.wireName);
+                  if (f.list && f.explode !== undefined) fw.entry("explode", f.explode);
+                  if (hasBody) fw.entry("onQuery", true);
+                });
+              }
+            });
+          }
+          // Challenge 2 item 2: a declared security scheme becomes a header placeholder, never
+          // `policies: [authenticated]`. Challenge 2 item 4 (Amendment 1 §A-5): the placeholder
+          // is `${ENV}` and never `${caller.…}` — the CLI supplies no caller, so a caller
+          // placeholder fails every `serve` and every `verify`. The value resolves from the
+          // environment at invocation time; `init` never stores, logs, or writes a credential
+          // into an emitted file.
+          //
+          // PER OPERATION, not per manifest: writing this header into a binding whose endpoint
+          // is public makes that capability un-invocable until an unnecessary variable is set.
+          if (plan.auth) {
+            const envVar = authEnvVar(record);
+            rw.comment(`auth (${plan.auth.scheme ?? "declared scheme"}): set ${envVar} in the environment that runs this manifest`);
+            rw.block("headers", (hw) => {
+              hw.entry(plan.auth!.headerName, authHeaderValue(plan.auth!, envVar));
+            });
+          }
+        });
+      });
+    }
 
     if (plan.resource && plan.response) {
       bw.blank();
@@ -899,11 +1003,21 @@ function renderBindingFile(
       // probe, the capability's confirmed effect was `read`, the method rule allowed it, and
       // the recorded response then passed a real `runVerify` over the written files.
       bw.blank();
-      bw.comment([
-        "What we recorded the live backend returning, at the time shown. `archstone verify`",
-        "replays this fixture's `request` and compares the response shape — that is how you",
-        "find out the backend changed before an agent does.",
-      ]);
+      bw.comment(
+        plan.sql
+          ? [
+              "What we recorded the database returning, at the time shown. `archstone verify` replays",
+              "this fixture's `request` as its `identity`, then replays the SAME request as its",
+              "`negativeIdentity` and requires zero rows: that is the isolation test, run against the",
+              "real database. The positive leg must return a row (`expects.collectionNonEmpty`), or the",
+              "test would pass on an empty answer.",
+            ]
+          : [
+              "What we recorded the live backend returning, at the time shown. `archstone verify`",
+              "replays this fixture's `request` and compares the response shape — that is how you",
+              "find out the backend changed before an agent does.",
+            ],
+      );
       bw.block("contract", (cw) => {
         cw.entry("source", "recorded");
         cw.entry("fingerprint", contract.fingerprint);
@@ -954,8 +1068,8 @@ export function emit(
   if (!COMPANY_ID_RE.test(record.company.id)) {
     return refuse("company-id-not-derivable", `'${record.company.id}' does not match ^[a-z][a-z0-9-]*$`);
   }
-  if (!COMPANY_ID_RE.test(providerId(record))) {
-    return refuse("company-id-not-derivable", `provider '${providerId(record)}' does not match ^[a-z][a-z0-9-]*$`);
+  if (!COMPANY_ID_RE.test(providerFor(draft, record))) {
+    return refuse("company-id-not-derivable", `provider '${providerFor(draft, record)}' does not match ^[a-z][a-z0-9-]*$`);
   }
 
   const byKey = new Map(draft.operations.map((op) => [op.key, op]));

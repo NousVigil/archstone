@@ -70,6 +70,15 @@ export type CapabilityDecision =
       /** Business input for the probe — the fixture's `request` is capability input, not an
        *  HTTP request (§1.3), and a document usually cannot supply it. */
       sampleInput?: Record<string, unknown>;
+      /**
+       * A database candidate only (ADR-0012 D-10): make this capability a LOOKUP by the named
+       * column. Absent, it is a list bounded by a literal `LIMIT 100`.
+       *
+       * The adapter proposes one candidate per relation and the human says what it does: a view has
+       * no key the catalog can name, and which column identifies a row is an answer only a person
+       * has. A name the candidate does not offer refuses that candidate (`unknown-lookup-column`).
+       */
+      lookupColumn?: string;
     };
 
 /**
@@ -89,7 +98,7 @@ export interface DecisionRecord {
     description?: string;
   };
   /** The provider identifier every emitted capability points at (`^[a-z][a-z0-9-]*$`).
-   *  Defaults to `<company.id>-api` when absent. */
+   *  Defaults to `<company.id>-api` when absent (`-db` for a database source). */
   provider?: string;
   /** The environment variable the emitted `baseUrl` placeholder references. Defaults to
    *  `<COMPANY_ID>_API_URL`. Credentials never appear in an emitted file (product §5 rule 3). */
@@ -104,6 +113,16 @@ export interface DecisionRecord {
    * never appears anywhere — only the variable's name, inside a `${…}` placeholder.
    */
   authEnvVar?: string;
+  /**
+   * A database source only (ADR-0012 D-10): the two principals the isolation test needs, named by
+   * the human. Both must be keys of the `--identity-map` the run was given; `init` reads the map
+   * and never copies it into the manifest.
+   *
+   * `principal` is the identity that owns the lookup's sample row; `negativePrincipal` is a
+   * different one that must see none of it. A contract is recorded only when both resolve (D-8) —
+   * otherwise the capability is emitted with no contract and the report says which part was missing.
+   */
+  identities?: { principal?: string; negativePrincipal?: string };
   decisions: CapabilityDecision[];
 }
 
@@ -112,9 +131,10 @@ export function keptDecisions(record: DecisionRecord): Extract<CapabilityDecisio
   return record.decisions.filter((d): d is Extract<CapabilityDecision, { keep: true }> => d.keep);
 }
 
-/** The provider id an emitted manifest will declare. */
-export function providerId(record: DecisionRecord): string {
-  return record.provider ?? `${record.company.id}-api`;
+/** The provider id an emitted manifest will declare: `<company>-api` for a REST source, `<company>-db`
+ *  for a database. */
+export function providerId(record: DecisionRecord, kind: "api" | "db" = "api"): string {
+  return record.provider ?? `${record.company.id}-${kind}`;
 }
 
 /** The env var an emitted `baseUrl` placeholder will reference. */
@@ -189,6 +209,21 @@ export function validateDecisionRecord(value: unknown): DecisionRecordValidation
     problems.push(`provider: '${value["provider"]}' does not match ^[a-z][a-z0-9-]*$`);
   }
 
+  const identities = value["identities"];
+  if (identities !== undefined) {
+    if (!isRecord(identities)) {
+      problems.push("identities: must be an object with `principal` and `negativePrincipal` when present");
+    } else {
+      for (const key of ["principal", "negativePrincipal"]) {
+        const v = identities[key];
+        if (v !== undefined && (typeof v !== "string" || v === "")) problems.push(`identities.${key}: must be a non-empty string when present`);
+      }
+      for (const key of Object.keys(identities)) {
+        if (key !== "principal" && key !== "negativePrincipal") problems.push(`identities.${key}: unknown — expected \`principal\` and \`negativePrincipal\``);
+      }
+    }
+  }
+
   const decisions = value["decisions"];
   if (!Array.isArray(decisions)) {
     problems.push("decisions: required — an array (possibly empty) of per-candidate answers");
@@ -221,9 +256,10 @@ export function validateDecisionRecord(value: unknown): DecisionRecordValidation
     if (typeof entry["effect"] !== "string" || !EFFECTS.has(entry["effect"] as Effect)) {
       problems.push(`${at}.effect: required when keep is true — one of read, write, irreversible. \`init\` never defaults this.`);
     }
-    for (const key of ["resourceName", "responseLocus"]) {
+    for (const key of ["resourceName", "responseLocus", "lookupColumn"]) {
       if (entry[key] !== undefined && typeof entry[key] !== "string") problems.push(`${at}.${key}: must be a string when present`);
     }
+    if (entry["lookupColumn"] === "") problems.push(`${at}.lookupColumn: must not be empty — omit it for a bounded list`);
     for (const key of ["probe", "probeNonReadMethodConfirmed"]) {
       if (entry[key] !== undefined && typeof entry[key] !== "boolean") problems.push(`${at}.${key}: must be a boolean when present`);
     }

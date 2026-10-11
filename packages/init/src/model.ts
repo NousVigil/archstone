@@ -203,8 +203,9 @@ export interface DraftProperty {
   node: DraftNode;
 }
 
-/** Where an input value travels on the wire. */
-export type InputLocation = "path" | "query" | "body";
+/** Where an input value travels on the wire. `param` is a bound query parameter (`$1`) of a
+ *  database source: nothing about it is HTTP. */
+export type InputLocation = "path" | "query" | "body" | "param";
 
 export interface DraftInputField {
   /**
@@ -254,8 +255,34 @@ export interface DraftOperation {
   /** This operation's auth, when the source states one per operation. Absent ⇒ inherit
    *  `DraftModel.auth`. See `DraftOperationAuth` for why this is not manifest-scoped. */
   auth?: DraftOperationAuth;
+  /** Present iff this candidate is a database relation. `method` is then `SELECT` and `path` is
+   *  `<schema>.<relation>`, so the candidate key keeps its `<verb> <target>` form — but nothing
+   *  reads either as HTTP once `sql` is here, and the emitter writes a `sql` connector from it. */
+  sql?: DraftSqlOperation;
   /** What this candidate's adapter could not carry across. */
   notes: Note[];
+}
+
+/** The kinds of relation a database adapter proposes. */
+export type SqlRelationKind = "table" | "partitioned_table" | "view" | "materialized_view";
+
+/**
+ * A candidate that is one database relation (ADR-0012 D-10), not an endpoint.
+ *
+ * The adapter renders every piece of SQL text that names an identifier; the emitter appends one of
+ * two fixed suffixes to what it is handed (a literal `LIMIT`, or `WHERE <predicate>`) and never
+ * composes or quotes an identifier. Quoting is knowledge of the source and lives under `adapters/`.
+ */
+export interface DraftSqlOperation {
+  relation: { schema: string; name: string; kind: SqlRelationKind };
+  /** `SELECT "a", "b"\nFROM "s"."r"` — the expressible, selectable columns, rendered by the adapter. */
+  select: string;
+  /** The columns a lookup may be keyed on. Each carries the capability input field it would become
+   *  (`in: "param"`) and the adapter-rendered predicate (`"id" = $1`). Empty ⇒ list only. */
+  lookupColumns: Array<{ field: DraftInputField; predicate: string }>;
+  /** The catalog's single-column primary key, offered as the suggested default at the gate and never
+   *  applied without an answer. Empty for a view, a composite key, or an unreadable key. */
+  keyColumns: string[];
 }
 
 /**
@@ -319,6 +346,9 @@ export interface DraftModel {
   baseUrl: Fact<string>;
   /** The manifest-level DEFAULT auth, overridable per operation. */
   auth?: DraftAuth;
+  /** Present iff the source is a database: the engine and the NAME of the environment variable
+   *  that carries its connection string. Never the connection string (ADR-0012 D-10). */
+  sql?: { engine: "postgres"; dsnEnvVar: string };
   operations: DraftOperation[];
   /** Manifest-level things the adapter could not carry across. */
   notes: Note[];
@@ -349,6 +379,42 @@ export interface SourceInput {
   documents?: Record<string, string>;
   /** Already-recorded observations, for adapters that derive from real traffic. */
   observations?: SourceObservation[];
+  /**
+   * A database catalog the host already read (ADR-0012 D-10), for adapters whose source is a
+   * database. `adapt` stays pure and synchronous: opening a connection is the host's job, exactly
+   * as reading a file is for `document`. The snapshot is already scoped to what the connecting role
+   * may SELECT — the filter is in the host's query, so the adapter has nothing to forget to filter.
+   */
+  catalog?: CatalogSnapshot;
+  /** The NAME of the environment variable the catalog was read through. Written into every binding
+   *  as `"${VAR}"`; the connection string itself never enters `init`. */
+  dsnEnvVar?: string;
+}
+
+/** One selectable column, as the catalog reports it. `dataType` is `information_schema.columns`'
+ *  vocabulary (`character varying`, `timestamp with time zone`, a domain as its base type, `ARRAY`). */
+export interface CatalogColumn {
+  name: string;
+  dataType: string;
+  isNullable: "YES" | "NO";
+}
+
+export interface CatalogRelation {
+  schema: string;
+  name: string;
+  kind: SqlRelationKind;
+  /** The columns the role may SELECT, in attribute order. */
+  columns: CatalogColumn[];
+  /** The single-column primary key, if the relation declares one and the role may select it. */
+  keyColumns: string[];
+}
+
+/** What the host's catalog read hands an adapter. Defined here and not imported from the SQL
+ *  provider: this package never depends on a provider. The CLI pins the two types to each other. */
+export interface CatalogSnapshot {
+  relations: CatalogRelation[];
+  /** Foreign tables the role could read — reported, never proposed. */
+  deferred: Array<{ schema: string; name: string; kind: "foreign_table" }>;
 }
 
 /** One real request/response pair a host recorded on the adapter's behalf. */

@@ -1,0 +1,16 @@
+{
+  "capabilityId": "reporting.get-position",
+  "recordedAt": "2026-10-12T00:00:00.000Z",
+  "request": {
+    "id": 1
+  },
+  "identity": {
+    "principal": "acme-analyst"
+  },
+  "negativeIdentity": {
+    "principal": "globex-analyst"
+  },
+  "expects": {
+    "collectionNonEmpty": true
+  }
+}

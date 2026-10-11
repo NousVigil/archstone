@@ -80,11 +80,26 @@ function checkModel(draft: DraftModel, adapter: SourceAdapter, input: SourceInpu
       expect(operation.effectHint.rationale).not.toBe("");
     }
     for (const field of operation.input) {
-      expect(["path", "query", "body"]).toContain(field.in);
+      expect(["path", "query", "body", "param"]).toContain(field.in);
       checkFact(field.type, `${operation.key}.${field.name}.type`);
       checkFact(field.required, `${operation.key}.${field.name}.required`);
       checkFact(field.description, `${operation.key}.${field.name}.description`);
       checkFact(field.example, `${operation.key}.${field.name}.example`);
+    }
+    if (operation.sql) {
+      // A database candidate (ADR-0012 D-10): the model must carry a database source, a finished
+      // SELECT, and lookup columns that are bound parameters with facts like any other input.
+      expect(draft.sql, `${operation.key}: a database candidate needs DraftModel.sql`).toBeDefined();
+      expect(operation.sql.select, `${operation.key}: select`).toMatch(/^SELECT /);
+      for (const { field, predicate } of operation.sql.lookupColumns) {
+        expect(field.in).toBe("param");
+        checkFact(field.type, `${operation.key}.${field.name}.type`);
+        checkFact(field.required, `${operation.key}.${field.name}.required`);
+        expect(predicate, `${operation.key}.${field.name}: predicate`).toMatch(/ = \$1$/);
+      }
+      for (const key of operation.sql.keyColumns) {
+        expect(operation.sql.lookupColumns.map((c) => c.field.name), `${operation.key}: a suggested key must be a lookup column`).toContain(key);
+      }
     }
     checkNode(operation.response, `${operation.key}.response`);
     for (const n of operation.notes) expect(REASON_CODES).toHaveProperty(n.code);
