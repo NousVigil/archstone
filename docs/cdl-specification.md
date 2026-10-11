@@ -364,8 +364,8 @@ the provider sends, or a fix at the source. Moving a field already declared as `
 
 `boolean` is Experimental: its meaning may still change before it is frozen with the rest of the
 semantic type system. The rule most likely to be reviewed is the one above that nothing is
-coerced. It graduates under Rule 11 once it has been exercised by the compiler and a real manifest,
-and has shipped in at least one release with the strict output rule unchanged.
+coerced. It graduates under Rule 11 once the compiler and a real manifest have exercised it and it
+has shipped in at least one release with the strict output rule unchanged.
 
 ---
 
