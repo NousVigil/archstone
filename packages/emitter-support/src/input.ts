@@ -20,6 +20,7 @@
 // `ExecuteResult` shaping in agent/execute.ts.
 
 import type { IRField, IRResourceRegistry, SemanticType } from "@archstone/compiler";
+import { refuseSemanticType } from "./semantic-types";
 
 export interface InputProblem {
   /** Dotted path of DECLARED field names (`dates.from`, `tags[2]`); `$` is the argument object. */
@@ -158,10 +159,17 @@ function checkScalar(
       if (typeof value !== "string") out.add(path, "string");
       else if (!(values ?? []).includes(value)) out.add(path, "one of the declared values");
       return;
-    default:
-      // location, identifier, string, text, web-page, image — and, as in the lowering, any value
-      // this build does not recognise: a string.
+    case "location":
+    case "identifier":
+    case "string":
+    case "text":
+    case "web-page":
+    case "image":
       if (typeof value !== "string") out.add(path, "string");
+      return;
+    default:
+      // #214: a type this build does not know is refused, never validated as a string.
+      return refuseSemanticType(semantic, path);
   }
 }
 

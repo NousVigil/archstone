@@ -6,6 +6,7 @@
 // shares this, never re-implements it. No MCP SDK here — the SDK-specific tool shape
 // (McpToolDef) stays in @archstone/runtime.
 
+import { refuseSemanticType } from "./semantic-types";
 import { originListOf, type IRField, type IRResourceRegistry, type SemanticType } from "@archstone/compiler";
 
 type JsonSchema = Record<string, unknown>;
@@ -22,7 +23,7 @@ export function toolName(id: string): string {
   return id.replace(/[^a-zA-Z0-9_-]/g, "_");
 }
 
-function semanticJsonSchema(semantic: SemanticType, values: string[] | undefined, mode: LowerMode): JsonSchema {
+function semanticJsonSchema(semantic: SemanticType, values: string[] | undefined, mode: LowerMode, path: string): JsonSchema {
   const closed = mode !== "open" ? { additionalProperties: false } : {};
   switch (semantic) {
     case "location":
@@ -81,8 +82,10 @@ function semanticJsonSchema(semantic: SemanticType, values: string[] | undefined
     case "identifier":
     case "string":
     case "text":
-    default:
       return { type: "string" };
+    default:
+      // #214: a type this build does not know is refused, never lowered as a string.
+      return refuseSemanticType(semantic, path);
   }
 }
 
@@ -144,7 +147,7 @@ function fieldJsonSchema(
   }
   if (f.type.kind === "list") {
     const fallback = f.type.items === "image" && !f.description ? { description: IMAGE_FALLBACK_DESCRIPTION } : {};
-    return { ...base, ...fallback, type: "array", items: semanticJsonSchema(f.type.items, f.type.values, mode) };
+    return { ...base, ...fallback, type: "array", items: semanticJsonSchema(f.type.items, f.type.values, mode, `${f.name}[]`) };
   }
   if (f.type.kind === "collection") {
     if (onError && onError.field === f.name) {
@@ -171,7 +174,7 @@ function fieldJsonSchema(
   // cannot reintroduce it. Re-asserting the key rather than reversing the spread keeps every OTHER key
   // (type, format, properties, required, enum) semantic-owned, and keeps emitted key order
   // byte-identical for the fields this does not change.
-  const semantic = semanticJsonSchema(f.type.semantic, f.type.values, mode);
+  const semantic = semanticJsonSchema(f.type.semantic, f.type.values, mode, f.name);
   if (f.type.semantic === "image" && !f.description) return { ...semantic, description: IMAGE_FALLBACK_DESCRIPTION };
   return f.description ? { ...base, ...semantic, description: f.description } : { ...base, ...semantic };
 }

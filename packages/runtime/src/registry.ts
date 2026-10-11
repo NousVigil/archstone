@@ -17,9 +17,9 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { load, type LoadResult, type LoadIssue } from "@archstone/schema";
 import { validateSemantics, compile, type Diagnostic } from "@archstone/compiler";
-import { Registry, type HealthStatus } from "@archstone/emitter-support";
+import { Registry, UnknownSemanticTypeError, type HealthStatus } from "@archstone/emitter-support";
 
-export { Registry } from "@archstone/emitter-support";
+export { Registry, UnknownSemanticTypeError } from "@archstone/emitter-support";
 
 /** Conventional health-snapshot file, read once next to the manifest dir (ADD-24 D-8): the
  *  operator/CI populates it by redirecting the ALREADY-shipped `archstone verify --json`
@@ -93,7 +93,18 @@ export function buildRegistry(dir: string): BuildResult {
   const hasErrors = diagnostics.some((d) => d.severity === "error");
   let ok = model.ok && !hasErrors;
 
-  const registry = ok ? new Registry(compile(model), readHealthSnapshot(dir)) : undefined;
+  let registry: Registry | undefined;
+  if (ok) {
+    try {
+      registry = new Registry(compile(model), readHealthSnapshot(dir));
+    } catch (err) {
+      // #214: the shared load-time check refuses an unknown semantic type; report it like any
+      // other build diagnostic so `serve` refuses to start rather than crashing with a stack.
+      if (!(err instanceof UnknownSemanticTypeError)) throw err;
+      ok = false;
+      diagnostics.push({ severity: "error", code: "unknown-semantic-type", message: err.message });
+    }
+  }
   if (registry) {
     for (const c of registry.toolNameCollisions) {
       ok = false;

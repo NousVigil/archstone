@@ -51,7 +51,7 @@ export type { PolicyDenialReason } from "@archstone/emitter-support";
  *  dependency of this package and not a declared dependency of theirs (#46). Type-only — no
  *  runtime edge, no change to this entry's import graph (test/boundary.test.ts). */
 export type { FetchLike, CallerContext } from "@archstone/provider-rest";
-export { Registry } from "@archstone/emitter-support";
+export { Registry, UnknownSemanticTypeError } from "@archstone/emitter-support";
 /** #44: the audit sink surface. Re-exported here (and from `@archstone/runtime`) so a deployer
  *  wires a sink from the package they already depend on, rather than adding
  *  `@archstone/emitter-support` — a transitive dependency of this one — to their own manifest.
@@ -100,6 +100,9 @@ export interface Archstone {
  * `archstone build`, ADD-0008 #27). Fail-closed: only `version` is validated before the
  * artifact is trusted — the rest of the shape is treated as opaque/trusted once that check
  * passes (D-2: the IR is not a documented public contract).
+ *
+ * #214: throws `UnknownSemanticTypeError` (naming the type and the field path) when the
+ * artifact uses a semantic type this build does not know, instead of lowering it as `string`.
  */
 export function fromIR(json: unknown): Archstone {
   if (typeof json !== "object" || json === null) {

@@ -36,6 +36,7 @@
 
 import type { IR, IRField, IRTool } from "@archstone/compiler";
 import { toolName } from "./lowering";
+import { assertKnownSemanticTypes } from "./semantic-types";
 import { lifecycleExposure, combineExposure, surfaceOf, type Exposure, type HealthStatus, type Surface } from "./exposure";
 
 export interface ToolNameCollision {
@@ -73,6 +74,9 @@ export class Registry {
    *   ever raises a tool's hint severity, composed with its lifecycle-derived exposure below.
    */
   constructor(public readonly ir: IR, health?: ReadonlyMap<string, HealthStatus>) {
+    // #214: refuse an artifact naming a semantic type this build does not know, at load,
+    // before anything is indexed, advertised or lowered.
+    assertKnownSemanticTypes(ir);
     this.byId = new Map(ir.tools.map((t) => [t.id, t]));
 
     this.byName = new Map();
