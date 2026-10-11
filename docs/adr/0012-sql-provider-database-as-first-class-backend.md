@@ -11,8 +11,8 @@ only; decision text is edited in place, and this list is what moved:
 1. **D-10, adapter input.** `SourceAdapter.adapt()` stays pure and synchronous. The host reads the
    catalog with `introspectCatalog` (2026-10-02, item 1: unchanged) and hands the adapter the rows
    as a new optional `SourceInput.catalog`, the same split `SourceInput.documents` already makes
-   for OpenAPI. `introspectCatalog` is not yet in `providers/sql`; it is the first piece of
-   this work, not an assumption.
+   for OpenAPI. `introspectCatalog` had not been added to `providers/sql` when this was written; it is the first
+   piece of this work, not an assumption.
 2. **D-10, scoping and ground truth.** A relation is proposed only if the role holds `USAGE` on
    its schema and `SELECT` on at least one of its columns, and only those columns are proposed. The
    catalog read is `pg_catalog`, not `information_schema`: materialized views, which D-10 already
@@ -846,6 +846,11 @@ its machinery rather than duplicating it:
   in `cdl.schema.json`'s closed set (`location`, `date-range`, `party`, `preference-set`,
   `money`, `identifier`, `string`, `text`, `time-slot`, `quantity`, `enum`, `date`, `datetime`,
   `boolean` — no raw JSON). A `boolean` column maps to `boolean` (amended 2026-10-11).
+  A column is typed by what the driver returns for it, not by what it holds: `integer`, `smallint`,
+  `real` and `double precision` arrive as JS numbers and map to `quantity`; `bigint` and
+  `numeric`/`decimal` arrive as strings (a JS number cannot hold them exactly) and map to `string`;
+  `interval`, `bytea`, the geometric types and `oid` arrive as an object, a null or a number that is
+  not the declared scalar, and are skipped as `column-type-not-expressible` (amended 2026-10-12).
   Per-column skip-and-report with a new reason code (`column-type-not-expressible`), mirroring
   ADD-37's own precedent for an unmappable OpenAPI
   construct (`field-path-not-expressible`) — a tool limitation, not a CDL gap, and not proposed

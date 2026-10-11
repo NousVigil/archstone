@@ -4,7 +4,9 @@
 // closed `SemanticType` set — no guessing, no LLM. `cdl.schema.json`'s semantic types
 // (`location`, `date-range`, `party`, `preference-set`, `money`, `identifier`, `string`, `text`,
 // `time-slot`, `quantity`, `enum`, `date`, `datetime`, `boolean`) have no faithful member for a
-// Postgres `json`/`jsonb` or array column (a `boolean` column maps to `boolean`). That is a TOOL
+// Postgres `json`/`jsonb` or array column (a `boolean` column maps to `boolean`). A column is typed
+// by what the DRIVER returns for it, not by what the column holds: `bigint` and `numeric` arrive as
+// strings, so they are `string`, never `quantity`. That is a TOOL
 // limitation, not a CDL gap (D-10), and is reported with the reason code
 // `column-type-not-expressible` rather than guessed around,
 // mirroring internal ADD-37's own precedent for an unmappable OpenAPI construct
@@ -37,7 +39,25 @@ export type ColumnMapping = ColumnMapped | ColumnSkipped;
  *  type (D-10) — raw JSON, and every array form (`data_type` is literally `"ARRAY"`
  *  for any array column; the element type lives in a separate catalog column this function
  *  never needs, because the whole column is skipped regardless of its element type). */
-const INEXPRESSIBLE = new Set(["json", "jsonb", "array"]);
+const INEXPRESSIBLE = new Set([
+  "json",
+  "jsonb",
+  "array",
+  // The driver hands these back as something that is not the type a CDL scalar declares: an object
+  // (`interval`, the geometric types), a `Buffer` that the provider turns into null (`bytea`), or a
+  // JS number for a type that reads as an identifier (`oid`). Declaring any of them would publish an
+  // output type the value does not have, so they are left out rather than mistyped.
+  "interval",
+  "bytea",
+  "point",
+  "line",
+  "lseg",
+  "box",
+  "path",
+  "polygon",
+  "circle",
+  "oid",
+]);
 
 /**
  * Map one Postgres column's declared type to a CDL semantic type, from `information_schema`
@@ -56,7 +76,10 @@ export function mapColumnType(pgDataType: string, columnName: string): ColumnMap
   }
   if (/^(timestamp|timestamptz)/.test(normalized)) return { ok: true, type: "datetime" };
   if (normalized === "date") return { ok: true, type: "date" };
-  if (["integer", "bigint", "smallint", "numeric", "real", "double precision", "decimal"].includes(normalized)) {
+  // `quantity` is a JSON number, and only these arrive as one. `bigint` and `numeric`/`decimal` arrive
+  // as STRINGS (a JS number cannot hold them exactly), so they fall through to `string` below: the
+  // declared type is the value's type, and the digits survive.
+  if (["integer", "smallint", "real", "double precision"].includes(normalized)) {
     return { ok: true, type: "quantity" };
   }
   if (normalized === "uuid") return { ok: true, type: "identifier" };

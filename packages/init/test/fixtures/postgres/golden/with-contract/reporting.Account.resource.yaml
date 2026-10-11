@@ -12,7 +12,7 @@ resource:
     name:
       type: string
     balance:
-      type: quantity
+      type: string
       required: false
       # nullable, so optional here (a null maps like a missing value)
     active:

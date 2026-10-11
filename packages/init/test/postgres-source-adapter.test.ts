@@ -58,7 +58,7 @@ describe("one candidate per relation", () => {
     expect(byName["id"]).toMatchObject({ declaredRequired: { derivation: "declared", value: true } });
     expect(byName["id"]!.node).toMatchObject({ kind: "scalar", type: { value: "identifier", source: "app.accounts.id" }, nullable: { value: false } });
     expect(byName["balance"]).toMatchObject({ declaredRequired: { value: false } });
-    expect(byName["balance"]!.node).toMatchObject({ type: { value: "quantity" }, nullable: { value: true } });
+    expect(byName["balance"]!.node).toMatchObject({ type: { value: "string" }, nullable: { value: true } });
     expect(byName["active"]!.node).toMatchObject({ type: { value: "boolean" } });
     expect(byName["opened_at"]!.node).toMatchObject({ type: { value: "datetime" } });
     expect(accounts.response.items.name).toMatchObject({ derivation: "declared", value: "accounts" });

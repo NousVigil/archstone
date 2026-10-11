@@ -35,6 +35,17 @@ export interface ReportInput {
   candidates: number;
 }
 
+/** A target worth printing on one line: a name with a control character or a line separator (a
+ *  quoted Postgres identifier may contain one) is shown as a JSON string instead of breaking the
+ *  report. Everything else is printed as it always was. */
+function printable(target: string): string {
+  for (const ch of target) {
+    const c = ch.codePointAt(0)!;
+    if (c <= 0x1f || (c >= 0x7f && c <= 0x9f) || c === 0x2028 || c === 0x2029) return JSON.stringify(target);
+  }
+  return target;
+}
+
 const SCOPE_ORDER = ["manifest", "operation", "field"] as const;
 
 /**
@@ -139,7 +150,7 @@ export function formatReport(input: ReportInput): string {
       const code = key.split("\u0000")[0]!;
       lines.push(`  ${code} [${group[0]!.scope}] (${group.length}) — ${reasonSummary(code as never)}`);
       for (const n of group.slice(0, 12)) {
-        lines.push(`    - ${n.target ?? "(manifest)"}${n.detail ? `: ${n.detail}` : ""}`);
+        lines.push(`    - ${n.target !== undefined ? printable(n.target) : "(manifest)"}${n.detail ? `: ${n.detail}` : ""}`);
       }
       if (group.length > 12) lines.push(`    … and ${group.length - 12} more`);
     }

@@ -100,15 +100,16 @@ archstone init --source postgres --dsn-env REPORTING_DSN --out my-manifest
 - **You decide what a relation does.** At the gate you pick a *lookup* by one column (the table's
   single-column primary key is offered as the default; a view has none, so you name one) or a *list*
   bounded by a literal `LIMIT 100` that you can read in the binding. `json`, `jsonb` and array
-  columns have no CDL type and are left out of the `SELECT` with a note; `boolean` maps to
-  `boolean`.
+  columns have no CDL type and are left out of the `SELECT` with a note, as are `interval` and
+  `bytea`; `boolean` maps to `boolean`. Each column is typed by what the driver returns: `bigint`
+  and `numeric` arrive as strings, so they are `string`, while `integer`, `smallint`, `real` and
+  `double precision` are `quantity`.
 - **Contracts need two identities.** Without `--probe`, no tenant row is read at all. With
   `--probe --identity-map identity-map.json`, a *lookup* is read once as a first principal and the
   recording is replayed as a second, which must see no rows; the fixture records both principals
   and that the first leg returned a row. A list cannot carry a contract (it would return the second
   principal's own rows), so lists, a missing or unresolvable second principal, and an empty first leg
   all end the same way: a compiling manifest with no `contract:`, and a report line saying which.
-
 
 ### Try it now (no writing required)
 

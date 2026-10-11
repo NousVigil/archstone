@@ -10,8 +10,11 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, w
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildRegistry, callTool, toolDefinitions } from "@archstone/runtime";
+import { invokeConnector, type ConnectorInvokeOptions } from "@archstone/runtime/connector";
+import type { ConnectionEntry } from "@archstone/provider-sql";
 // Test-only, by relative path: the fixture owns `pg` and the Postgres gate (see its header).
-import { createPgFixture, createScriptDatabase, describePostgres, DSN_VARS, type PgFixture, type ScriptDatabase } from "../../../providers/sql/test/support/postgres";
+import { createPgFixture, createScriptDatabase, describePostgres, endPools, DSN_VARS, type PgFixture, type ScriptDatabase } from "../../../providers/sql/test/support/postgres";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "../../..");
@@ -220,6 +223,9 @@ describePostgres("archstone init --source postgres — what the runtime role may
       );
       INSERT INTO app.kinds VALUES (1, 'one', true, '{"a":1}', '{"b":2}', '{x,y}', '2026-10-01T10:00:00Z', NULL);
       GRANT SELECT ON app.kinds TO ${role};
+      CREATE TABLE app.nums (id int4 PRIMARY KEY, big bigint NOT NULL, amount numeric(12,2) NOT NULL, small int2 NOT NULL, ratio double precision, span interval, blob bytea);
+      INSERT INTO app.nums VALUES (1, 9007199254740993, 12.50, 7, 0.5, '1 day', '\\xdeadbeef');
+      GRANT SELECT ON app.nums TO ${role};
     `);
   }, 60_000);
 
@@ -252,6 +258,32 @@ describePostgres("archstone init --source postgres — what the runtime role may
     expect(resource).toMatch(/note:\n\s+type: string\n\s+required: false/);
     expect(run.stdout).toMatch(/column-type-not-expressible \[field\] \(3\)/);
     expect((await runCli(["apply", out], {})).code).toBe(0);
+  }, 180_000);
+
+  it("(h) a column is declared as the type the driver returns: bigint and numeric are strings, int and float are numbers, interval and bytea are left out", async () => {
+    const { run, out } = await init([{ operation: "SELECT app.nums", keep: true, capabilityId: "acme.list-nums", effect: "read", resourceName: "Num" }], DSN_VARS.runtime);
+    expect(run.code, run.stdout + run.stderr).toBe(0);
+    const binding = readFileSync(join(out, "bindings", "acme.list-nums.binding.yaml"), "utf8");
+    expect(binding).toContain('SELECT "id", "big", "amount", "small", "ratio"\n');
+    expect(binding).not.toMatch(/"span"|"blob"/);
+
+    const built = buildRegistry(out);
+    expect(built.ok).toBe(true);
+    const declared = JSON.stringify(toolDefinitions(built.registry!)[0]!.outputSchema);
+    for (const [field, type] of [["id", "number"], ["big", "string"], ["amount", "string"], ["small", "number"], ["ratio", "number"]] as const) {
+      expect(declared, field).toMatch(new RegExp(`"${field}":\\{[^}]*"type":"${type}"`));
+    }
+
+    const connectionRegistry = new Map<string, ConnectionEntry>();
+    try {
+      const options: ConnectorInvokeOptions = { env: { PG_DSN: fx.env[DSN_VARS.runtime]! }, identityAdapter: () => ({ tenant_id: "any" }), caller: { principal: "any" }, connectionRegistry };
+      const result = await callTool(built.registry!, "acme_list-nums", {}, { ...options, connector: invokeConnector });
+      const row = (result.structuredContent as { nums: Array<Record<string, unknown>> }).nums[0]!;
+      expect(row).toEqual({ id: 1, big: "9007199254740993", amount: "12.50", small: 7, ratio: 0.5 });
+      expect([typeof row["id"], typeof row["big"], typeof row["amount"], typeof row["small"], typeof row["ratio"]]).toEqual(["number", "string", "string", "number", "number"]);
+    } finally {
+      await endPools(connectionRegistry);
+    }
   }, 180_000);
 
   const refused: Array<[string, keyof typeof DSN_VARS, RegExp]> = [
