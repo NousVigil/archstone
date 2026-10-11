@@ -452,6 +452,170 @@ export async function checkConnectionPrivileges(dsnEnvVar: string, resolvedDsn: 
   }
 }
 
+// ---------------------------------------------------------------------------------------
+// Catalog introspection for `archstone init` (ADR-0012 D-10)
+// ---------------------------------------------------------------------------------------
+
+export type CatalogRelationKind = "table" | "partitioned_table" | "view" | "materialized_view";
+
+export interface CatalogColumn {
+  name: string;
+  /** `information_schema.columns.data_type`'s vocabulary: `character varying`,
+   *  `timestamp with time zone`, a domain as its base type, any array as `ARRAY`, any type outside
+   *  `pg_catalog` (an enum, an extension type) as `USER-DEFINED`. */
+  dataType: string;
+  isNullable: "YES" | "NO";
+}
+
+export interface CatalogRelation {
+  schema: string;
+  name: string;
+  kind: CatalogRelationKind;
+  /** The columns the role may SELECT, in attribute order. Never a column it may not. */
+  columns: CatalogColumn[];
+  /** The single-column primary key, when the relation is a table that declares one and the role may
+   *  select that column; otherwise empty. A composite key is not offered. */
+  keyColumns: string[];
+}
+
+export interface CatalogSnapshot {
+  relations: CatalogRelation[];
+  /** Foreign tables the role could read: reported, never proposed (D-10: RLS cannot be enabled on
+   *  one, and reading one reaches a third host). */
+  deferred: Array<{ schema: string; name: string; kind: "foreign_table" }>;
+}
+
+export type CatalogResult = { ok: true; snapshot: CatalogSnapshot } | { ok: false; error: string; incomplete?: true };
+
+/**
+ * The catalog read, as constant text: nothing an author or a caller supplies reaches it.
+ *
+ * `pg_catalog`, not `information_schema`: the latter omits materialized views, which D-10 proposes.
+ * The scoping is IN the query. A relation produces rows only if the role holds USAGE on its schema
+ * and SELECT on at least one of its columns, and only the columns it may select produce a row, so
+ * the snapshot never contains a name the role cannot read and there is no second list to leak from.
+ * `has_column_privilege` counts a table-level SELECT, PUBLIC and inherited membership: the same
+ * visibility D-9 layer 4 relies on. Partitions fold into their parent (`NOT relispartition`).
+ *
+ * `data_type` is computed the way `information_schema.columns` computes it, with the type modifier
+ * left out (`format_type(…, NULL)`), so the init adapter's type mapping has one vocabulary.
+ */
+const CATALOG_READ = `SELECT n.nspname AS schema_name,
+       c.relname AS relation_name,
+       c.relkind::text AS relkind,
+       a.attname AS column_name,
+       CASE WHEN t.typtype = 'd' THEN
+              CASE WHEN bt.typelem <> 0 AND bt.typlen = -1 THEN 'ARRAY'
+                   WHEN nbt.nspname = 'pg_catalog' THEN format_type(t.typbasetype, NULL)
+                   ELSE 'USER-DEFINED' END
+            ELSE
+              CASE WHEN t.typelem <> 0 AND t.typlen = -1 THEN 'ARRAY'
+                   WHEN nt.nspname = 'pg_catalog' THEN format_type(a.atttypid, NULL)
+                   ELSE 'USER-DEFINED' END
+       END AS data_type,
+       CASE WHEN a.attnotnull THEN 'NO' ELSE 'YES' END AS is_nullable,
+       (SELECT ka.attname
+          FROM pg_constraint k
+          JOIN pg_attribute ka ON ka.attrelid = k.conrelid AND ka.attnum = k.conkey[1]
+         WHERE k.conrelid = c.oid AND k.contype = 'p' AND array_length(k.conkey, 1) = 1
+           AND c.relkind IN ('r', 'p')
+           AND has_column_privilege(c.oid, ka.attnum, 'SELECT')) AS key_column
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+JOIN pg_attribute a ON a.attrelid = c.oid
+JOIN pg_type t ON t.oid = a.atttypid
+JOIN pg_namespace nt ON nt.oid = t.typnamespace
+LEFT JOIN (pg_type bt JOIN pg_namespace nbt ON nbt.oid = bt.typnamespace) ON t.typtype = 'd' AND t.typbasetype = bt.oid
+WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f')
+  AND NOT c.relispartition
+  AND n.nspname <> 'information_schema'
+  AND n.nspname NOT LIKE 'pg\\_%'
+  AND a.attnum > 0
+  AND NOT a.attisdropped
+  AND has_schema_privilege(n.oid, 'USAGE')
+  AND has_column_privilege(c.oid, a.attnum, 'SELECT')
+ORDER BY n.nspname, c.relname, a.attnum`;
+
+const RELATION_KINDS: Record<string, CatalogRelationKind | "foreign_table"> = {
+  r: "table",
+  p: "partitioned_table",
+  v: "view",
+  m: "materialized_view",
+  f: "foreign_table",
+};
+
+type CatalogRow = {
+  schema_name: string;
+  relation_name: string;
+  relkind: string;
+  column_name: string;
+  data_type: string;
+  is_nullable: string;
+  key_column: string | null;
+};
+
+function snapshotOf(rows: CatalogRow[]): CatalogSnapshot {
+  const relations: CatalogRelation[] = [];
+  const deferred: CatalogSnapshot["deferred"] = [];
+  let current: CatalogRelation | undefined;
+  let currentKey: string | undefined;
+  for (const row of rows) {
+    const key = `${row.schema_name}\u0000${row.relation_name}`;
+    if (key !== currentKey) {
+      currentKey = key;
+      current = undefined;
+      const kind = RELATION_KINDS[row.relkind];
+      if (kind === "foreign_table") deferred.push({ schema: row.schema_name, name: row.relation_name, kind });
+      else if (kind !== undefined) {
+        current = { schema: row.schema_name, name: row.relation_name, kind, columns: [], keyColumns: row.key_column ? [row.key_column] : [] };
+        relations.push(current);
+      }
+    }
+    current?.columns.push({ name: row.column_name, dataType: row.data_type, isNullable: row.is_nullable === "NO" ? "NO" : "YES" });
+  }
+  return { relations, deferred };
+}
+
+/**
+ * Read the catalog `archstone init` proposes capabilities from (ADR-0012 D-10), over the runtime
+ * role's own connection: `BEGIN; SET TRANSACTION READ ONLY; <D-9 layers 3 and 4>; <catalog read>;
+ * COMMIT`. It shares `ensureConnection` and `judgeTransaction` with `invokeSql`, so an
+ * over-privileged connection (a superuser, BYPASSRLS, a role that owns a relation it can read) is
+ * refused with D-9's own message and no catalog is read. It sets no session identity: it runs no
+ * declared query, and the catalog holds no tenant rows.
+ *
+ * Never throws. `incomplete: true` marks a read that reached no verdict, as in
+ * `checkConnectionPrivileges`.
+ */
+export async function introspectCatalog(dsnEnvVar: string, resolvedDsn: string, opts: SqlInvokeOptions = {}): Promise<CatalogResult> {
+  const connection = ensureConnection(dsnEnvVar, resolvedDsn, opts);
+  if (connection.pool === undefined) return { ok: false, error: connection.error, incomplete: true };
+  if (connection.refusal !== undefined) return { ok: false, error: connection.refusal };
+  let client: PgPoolClient;
+  try {
+    client = await connection.pool.connect();
+  } catch (err) {
+    return { ok: false, error: driverFailure("pool checkout failed while reading the catalog", dsnEnvVar, resolvedDsn, err), incomplete: true };
+  }
+  try {
+    await client.query("BEGIN");
+    await client.query("SET TRANSACTION READ ONLY"); // D-9 layer 2, D-4
+    const refusal = await judgeTransaction(client, connection.entry, dsnEnvVar);
+    if (refusal !== undefined) {
+      await rollbackQuietly(client);
+      return { ok: false, error: refusal };
+    }
+    const result = await client.query(CATALOG_READ);
+    await client.query("COMMIT");
+    return { ok: true, snapshot: snapshotOf(result.rows as CatalogRow[]) };
+  } catch (err) {
+    await rollbackQuietly(client);
+    return { ok: false, error: driverFailure("catalog read failed", dsnEnvVar, resolvedDsn, err), incomplete: true };
+  } finally {
+    client.release();
+  }
+}
+
 /** D-3: `${claim key} -> app.<claim key>` by default. Deployer-configured, never CDL content. */
 function gucName(prefix: string, claim: string): string {
   return `${prefix}${claim}`;
