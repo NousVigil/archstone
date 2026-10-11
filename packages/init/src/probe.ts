@@ -44,7 +44,7 @@ export type ProbeRefusal =
   /** A database lookup with no positive principal the identity map resolves (ADR-0012 D-8). */
   | "no-positive-identity"
   /** A database lookup with no second principal, or the same one twice: with nobody to replay it
-   *  as there is no isolation test, and a contract without one is never recorded (BR-20). */
+   *  as there is no isolation test, and a contract without one is never recorded. */
   | "no-negative-identity"
   /** The negative principal is named but the identity map resolves it to no claims — D-8 case 4.
    *  A refusal here, not a contract that records and then goes red at the first `verify`. */

@@ -21,8 +21,10 @@ import {
   isKnown,
   locusCandidates,
   openApiAdapter,
+  postgresAdapter,
   valueOrUndefined,
   type CapabilityDecision,
+  type CatalogSnapshot as InitCatalogSnapshot,
   validateDecisionRecord,
   type DecisionRecord,
   type DraftModel,
@@ -32,12 +34,34 @@ import {
   type SourceInput,
 } from "@archstone/init";
 import { runInit } from "@archstone/init/loop";
+import type { RecordContractOptions } from "@archstone/runtime/verify";
+import { introspectCatalog, type CatalogSnapshot as SqlCatalogSnapshot, type SqlInvokeOptions } from "@archstone/provider-sql";
 
 /** Bounded so a malformed or hostile document cannot make the host loop forever fetching. */
 const MAX_REFERENCE_ROUNDS = 8;
 
+/**
+ * `init` never imports a provider, so the catalog snapshot type is defined twice: once by the SQL
+ * provider that reads it and once by `init` that consumes it. This is the one place both are in
+ * scope, and it fails to compile if either drifts from the other — in either direction.
+ */
+type Agree<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;
+export const CATALOG_TYPES_AGREE: Agree<SqlCatalogSnapshot, InitCatalogSnapshot> = true;
+
 export interface InitArgs {
+  /** The OpenAPI document. Empty for `--source postgres`, which reads a database and takes none. */
   spec: string;
+  /** Where the capabilities come from. Absent means `openapi`, which is what every invocation
+   *  before `--source` existed meant. */
+  source?: "openapi" | "postgres";
+  /** `--dsn-env`: the NAME of the environment variable holding the connection string. Never a
+   *  connection string — that would be in shell history and the process list. */
+  dsnEnv?: string;
+  /** `--identity-map`: principal → session claims, the same file `verify` and `serve` take. */
+  identityMap?: string;
+  /** The principals the identity map names, in file order. Filled by the verb after it reads the
+   *  map, never by argv; the gate offers them as defaults. */
+  principals?: string[];
   out: string;
   domain?: string;
   company?: string;
@@ -50,10 +74,20 @@ export interface InitArgs {
 
 export const INIT_USAGE = [
   "usage: archstone init <spec-file> --out <dir> [options]",
+  "       archstone init --source postgres --dsn-env <VAR> --out <dir> [options]",
   "",
-  "  Read an API description, ask you the questions no tool can answer, and write a CDL",
-  "  manifest the real compiler has already compiled. No LLM is involved, on any path.",
+  "  Read an API description (or a Postgres catalog), ask you the questions no tool can answer,",
+  "  and write a CDL manifest the real compiler has already compiled. No LLM is involved, on any path.",
   "",
+  "  --source postgres      read the catalog of a Postgres database instead of a spec file. One",
+  "                         candidate per relation the runtime role can SELECT; you choose whether",
+  "                         each is a list (LIMIT 100) or a lookup by one column. The connection is",
+  "                         made as the runtime role and refused if it is over-privileged.",
+  "  --dsn-env <VAR>        (postgres) the NAME of the environment variable holding the connection",
+  "                         string. Never the string itself; it is written into the manifest as ${VAR}.",
+  "  --identity-map <file>  (postgres, with --probe) principal -> session claims, as for `verify`.",
+  "                         A contract is recorded only for a lookup, replayed as two principals from",
+  "                         this file; `init` reads it and never copies it into the manifest.",
   "  --out <dir>            where the manifest goes (required)",
   "  --domain <name>        the domain half of every capability id (e.g. 'framing')",
   "  --company <id>         company id, lowercase kebab (e.g. 'acme')",
@@ -114,6 +148,49 @@ export function loadSource(adapter: SourceAdapter, specFile: string): { input: S
     }
   }
   return { input, unresolved };
+}
+
+/**
+ * The host half of a database source (ADR-0012 D-10): read the catalog as the runtime role, so the
+ * adapter stays pure. The connection string is read from the environment variable `--dsn-env` names
+ * and goes nowhere but `introspectCatalog`; an over-privileged role is refused there with D-9's own
+ * message and nothing is read. Returns the adapter's input, or the refusal to print.
+ */
+export async function loadCatalogSource(
+  dsnEnvVar: string,
+  env: NodeJS.ProcessEnv,
+  sql: SqlInvokeOptions = {},
+): Promise<{ ok: true; input: SourceInput } | { ok: false; error: string; code: number }> {
+  const dsn = env[dsnEnvVar];
+  if (dsn === undefined || dsn === "") {
+    return { ok: false, error: `the environment variable ${dsnEnvVar} is not set`, code: 2 };
+  }
+  const read = await introspectCatalog(dsnEnvVar, dsn, { ...sql, env });
+  if (!read.ok) {
+    return { ok: false, error: read.incomplete ? `could not read the catalog: ${read.error}` : read.error, code: 1 };
+  }
+  const catalog: InitCatalogSnapshot = read.snapshot;
+  return { ok: true, input: { origin: `postgres catalog via ${dsnEnvVar}`, catalog, dsnEnvVar } };
+}
+
+/** `--identity-map`: the same file `verify` and `serve` take. `init` reads it for the principals
+ *  and the claims, and never writes either into the manifest. */
+export function readIdentityMap(path: string): { ok: true; map: Record<string, Record<string, string>> } | { ok: false; error: string } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf8"));
+  } catch (err) {
+    return { ok: false, error: `--identity-map '${path}' could not be read/parsed: ${(err as Error).message}` };
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return { ok: false, error: `--identity-map '${path}' must be a JSON object mapping a principal to its claims` };
+  }
+  for (const [principal, claims] of Object.entries(parsed)) {
+    if (typeof claims !== "object" || claims === null || Array.isArray(claims) || Object.values(claims).some((v) => typeof v !== "string")) {
+      return { ok: false, error: `--identity-map '${path}': the claims for '${principal}' must be an object of string values` };
+    }
+  }
+  return { ok: true, map: parsed as Record<string, Record<string, string>> };
 }
 
 // ---------------------------------------------------------------------------------------
@@ -338,7 +415,9 @@ export async function runGate(draft: DraftModel, ask: Ask, args: InitArgs): Prom
   // as every other question here. Asked once per run, not per capability, and only for auth
   // when the source actually declared a scheme, so a public API costs zero extra keystrokes.
   const envPrefix = companyId.replace(/-/g, "_").toUpperCase();
-  const baseUrlEnvVar = (await ask.question("Env var holding the backend base URL ", `${envPrefix}_API_URL`)).trim();
+  // A database has no base URL and no credential header: its connection string is named by
+  // `--dsn-env`, so these two questions have no answer to give.
+  const baseUrlEnvVar = draft.sql ? "" : (await ask.question("Env var holding the backend base URL ", `${envPrefix}_API_URL`)).trim();
   const declaresAuth = draft.auth !== undefined || draft.operations.some((o) => o.auth?.kind === "header");
   const authEnvVar = declaresAuth
     ? (await ask.question("Env var holding the API credential (never its value) ", `${envPrefix}_API_TOKEN`)).trim()
@@ -353,7 +432,7 @@ export async function runGate(draft: DraftModel, ask: Ask, args: InitArgs): Prom
     console.log("");
     console.log(`[${index + 1}/${draft.operations.length}] ${operation.key}`);
     if (summary) console.log(`        ${summary}`);
-    const blocking = operation.notes.filter((n) => n.code.startsWith("unsupported") || n.code === "declined");
+    const blocking = operation.notes.filter((n) => n.code.startsWith("unsupported") || n.code === "declined" || n.code === "no-expressible-columns");
     for (const n of blocking) console.log(`        ! ${n.code}${n.detail ? `: ${n.detail}` : ""}`);
 
     let keep = keepAll;
@@ -381,7 +460,9 @@ export async function runGate(draft: DraftModel, ask: Ask, args: InitArgs): Prom
     // PRE-FILLED ONLY FOR `GET`. `effectHint` exists solely to fill this prompt, and the
     // emitter cannot see it — "no `effect` without human confirmation" is a property of the
     // emission signature, not a runtime check someone can route around.
-    const prefill = operation.method.toUpperCase() === "GET" && operation.effectHint ? operation.effectHint.value : undefined;
+    // A database candidate is the same case as a GET: a SELECT in a READ ONLY transaction. The human
+    // still answers; this only fills the prompt.
+    const prefill = (operation.method.toUpperCase() === "GET" || operation.sql !== undefined) && operation.effectHint ? operation.effectHint.value : undefined;
     const effect = await askUntil<Effect>(
       ask,
       "        effect (read | write | irreversible) ",
@@ -443,6 +524,27 @@ export async function runGate(draft: DraftModel, ask: Ask, args: InitArgs): Prom
       responseLocus = census.candidates[picked - 1]!.id;
     }
 
+    // ADR-0012 D-10: one candidate per relation, and what it DOES is the human's answer — a lookup
+    // by one named column, or a list bounded by a literal LIMIT. The catalog's single-column key is
+    // offered as the default and applied only if the answer is given; a view has none to offer.
+    let lookupColumn: string | undefined;
+    if (operation.sql) {
+      const offered = operation.sql.lookupColumns.map((c) => c.field.name);
+      console.log(`        lookup by one column, or a list bounded to 100 rows? columns: ${offered.join(", ") || "(none can be keyed on)"}`);
+      const picked = await askUntil<string>(
+        ask,
+        "        lookup column, or 'list' ",
+        (answer) => (answer === "list" || offered.includes(answer) ? answer : undefined),
+        () => console.error(`        answer with 'list' or one of: ${offered.join(", ")}`),
+        operation.sql.keyColumns[0] ?? "list",
+      );
+      if (picked === undefined) {
+        console.error("archstone init: no lookup column chosen after several attempts — refusing rather than guessing one.");
+        return undefined;
+      }
+      if (picked !== "list") lookupColumn = picked;
+    }
+
     const resourceName = (await ask.question("        resource name (blank = derive from the source) ")).trim();
 
     const decision: Extract<CapabilityDecision, { keep: true }> = {
@@ -452,13 +554,22 @@ export async function runGate(draft: DraftModel, ask: Ask, args: InitArgs): Prom
       effect: effect as Effect,
       ...(responseLocus !== undefined ? { responseLocus } : {}),
       ...(resourceName !== "" ? { resourceName } : {}),
+      ...(lookupColumn !== undefined ? { lookupColumn } : {}),
     };
 
-    if (args.probe && decision.effect === "read") {
-      decision.probe = await confirm(ask, `        record a golden fixture with ONE live ${operation.method} to the real backend?`, false);
+    if (operation.sql && lookupColumn === undefined && args.probe) {
+      console.log("        a list cannot carry a contract (its isolation replay returns the other identity's own rows) — no probe offered.");
+    } else if (args.probe && decision.effect === "read") {
+      decision.probe = await confirm(
+        ask,
+        operation.sql
+          ? "        record a golden fixture with ONE read-only SELECT against the database?"
+          : `        record a golden fixture with ONE live ${operation.method} to the real backend?`,
+        false,
+      );
       if (decision.probe) {
         const method = operation.method.toUpperCase();
-        if (method !== "GET" && method !== "HEAD") {
+        if (!operation.sql && method !== "GET" && method !== "HEAD") {
           // R-8's second, SEPARATE confirmation. Worded so the thing being confirmed is the
           // method and not the effect again — a re-phrasing of the same question is not a
           // second condition.
@@ -488,7 +599,10 @@ export async function runGate(draft: DraftModel, ask: Ask, args: InitArgs): Prom
         // locator used to be printed here, which is not the same thing: it is long enough to
         // skim past and it never says "somebody else wrote this".
         const sample: Record<string, unknown> = {};
-        for (const field of operation.input) {
+        // A lookup's input is chosen above, so it is the lookup column's field; a REST operation's is
+        // whatever the source declared.
+        const sampleFields = operation.sql ? operation.sql.lookupColumns.filter((c) => c.field.name === lookupColumn).map((c) => c.field) : operation.input;
+        for (const field of sampleFields) {
           const suggested = isKnown(field.example) ? String(field.example.value) : undefined;
           const origin = suggested === undefined ? "" : " (from the API description)";
           const required = valueOrUndefined(field.required) === true || field.in === "path";
@@ -501,11 +615,24 @@ export async function runGate(draft: DraftModel, ask: Ask, args: InitArgs): Prom
     decisions.push(decision);
   }
 
+  // The two principals a recorded contract is replayed as (ADR-0012 D-8), asked once per run and
+  // only when some lookup consented to a probe. Blank is allowed: the probe is then refused with the
+  // reason, and the manifest is still written.
+  let identities: DecisionRecord["identities"];
+  if (draft.sql && decisions.some((d) => d.keep && d.probe === true)) {
+    const principal = (await ask.question("Principal that owns the sample row (a key in --identity-map) ", args.principals?.[0])).trim();
+    const negativePrincipal = (await ask.question("A DIFFERENT principal, who must see none of it ", args.principals?.[1])).trim();
+    if (principal !== "" || negativePrincipal !== "") {
+      identities = { ...(principal !== "" ? { principal } : {}), ...(negativePrincipal !== "" ? { negativePrincipal } : {}) };
+    }
+  }
+
   return {
     version: "0",
     company: { id: companyId, ...(companyName !== "" ? { name: companyName } : {}) },
     ...(baseUrlEnvVar !== "" ? { baseUrlEnvVar } : {}),
     ...(authEnvVar !== "" ? { authEnvVar } : {}),
+    ...(identities ? { identities } : {}),
     decisions,
   };
 }
@@ -529,7 +656,7 @@ export function parseInitArgs(argv: string[]): InitArgs | { error: string } {
     const idx = argv.indexOf(name);
     return idx === -1 ? undefined : argv[idx + 1];
   };
-  const valued = ["--out", "--domain", "--company", "--decisions", "--report"];
+  const valued = ["--out", "--domain", "--company", "--decisions", "--report", "--source", "--dsn-env", "--identity-map"];
   const consumed = new Set<number>();
   for (const name of valued) {
     const idx = argv.indexOf(name);
@@ -540,12 +667,36 @@ export function parseInitArgs(argv: string[]): InitArgs | { error: string } {
   }
   const positional = argv.filter((a, i) => !consumed.has(i) && !a.startsWith("--"));
   const spec = positional[1]; // positional[0] is the verb itself
-  if (spec === undefined) return { error: "a spec file is required" };
+  const sourceFlag = flag("--source");
+  if (sourceFlag !== undefined && sourceFlag !== "openapi" && sourceFlag !== "postgres") {
+    return { error: `--source '${sourceFlag}' is not a source (openapi, postgres)` };
+  }
+  const source = sourceFlag ?? "openapi";
+  const dsnEnv = flag("--dsn-env");
+  const identityMap = flag("--identity-map");
+  if (source === "postgres") {
+    if (spec !== undefined) return { error: "--source postgres reads a database and takes no <spec-file>" };
+    if (dsnEnv === undefined) return { error: "--source postgres requires --dsn-env <VAR>, the name of the environment variable holding the connection string" };
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(dsnEnv)) {
+      // Never echoed: a value that is not a variable name may well be a connection string.
+      return { error: "--dsn-env takes the NAME of an environment variable, never a connection string" };
+    }
+    if (identityMap !== undefined && !argv.includes("--probe")) return { error: "--identity-map is used only with --probe: it names the identities a recorded contract is replayed as" };
+  } else {
+    if (spec === undefined) return { error: "a spec file is required" };
+    if (dsnEnv !== undefined) return { error: "--dsn-env is used only with --source postgres" };
+    if (identityMap !== undefined) return { error: "--identity-map is used only with --source postgres" };
+  }
   const out = flag("--out");
   if (out === undefined) return { error: "--out <dir> is required" };
 
   return {
-    spec,
+    spec: spec ?? "",
+    // Only when `--source` was given: an invocation that never mentions it parses to exactly what it
+    // parsed to before the flag existed.
+    ...(sourceFlag !== undefined ? { source } : {}),
+    ...(dsnEnv !== undefined ? { dsnEnv } : {}),
+    ...(identityMap !== undefined ? { identityMap } : {}),
     out,
     ...(flag("--domain") !== undefined ? { domain: flag("--domain")! } : {}),
     ...(flag("--company") !== undefined ? { company: flag("--company")! } : {}),
@@ -561,7 +712,15 @@ export function parseInitArgs(argv: string[]): InitArgs | { error: string } {
 // The verb
 // ---------------------------------------------------------------------------------------
 
-export async function runInitCmd(argv: string[]): Promise<number> {
+/** What a test may substitute. Nothing here is reachable from the command line. */
+export interface InitDeps {
+  /** Pool factory and connection registry for the database source, so a test owns its pools. */
+  sql?: SqlInvokeOptions;
+  /** The environment the DSN variable is read from. Defaults to `process.env`. */
+  env?: NodeJS.ProcessEnv;
+}
+
+export async function runInitCmd(argv: string[], deps: InitDeps = {}): Promise<number> {
   if (argv.includes("--help") || argv.includes("-h")) {
     console.log(INIT_USAGE);
     return 0;
@@ -572,22 +731,49 @@ export async function runInitCmd(argv: string[]): Promise<number> {
     return 2;
   }
   const args = parsed;
+  const env = deps.env ?? process.env;
 
-  const specFile = resolve(process.cwd(), args.spec);
-  if (!existsSync(specFile)) {
-    console.error(`archstone init: no such file: ${specFile}`);
-    return 2;
-  }
+  let adapter: SourceAdapter;
+  let input: SourceInput;
+  let invoke: RecordContractOptions | undefined;
+  if (args.source === "postgres") {
+    adapter = postgresAdapter;
+    // The identity map is read before the database is touched: a bad path should cost nothing.
+    let identityAdapter: ((principal: string | undefined) => Record<string, string> | undefined) | undefined;
+    if (args.identityMap !== undefined) {
+      const loaded = readIdentityMap(resolve(process.cwd(), args.identityMap));
+      if (!loaded.ok) {
+        console.error(`archstone init: ${loaded.error}`);
+        return 2;
+      }
+      args.principals = Object.keys(loaded.map);
+      identityAdapter = (principal) => (principal !== undefined && Object.hasOwn(loaded.map, principal) ? loaded.map[principal] : undefined);
+    }
+    const source = await loadCatalogSource(args.dsnEnv!, env, deps.sql);
+    if (!source.ok) {
+      console.error(`archstone init: ${source.error}`);
+      return source.code;
+    }
+    input = source.input;
+    invoke = { ...deps.sql, env, ...(identityAdapter ? { identityAdapter } : {}) };
+  } else {
+    const specFile = resolve(process.cwd(), args.spec);
+    if (!existsSync(specFile)) {
+      console.error(`archstone init: no such file: ${specFile}`);
+      return 2;
+    }
 
-  const adapter = openApiAdapter;
-  const { input, unresolved } = loadSource(adapter, specFile);
-  for (const key of unresolved) {
-    console.error(`archstone init: referenced document '${key}' could not be read from the spec's own directory — operations that need it will be skipped.`);
+    adapter = openApiAdapter;
+    const loaded = loadSource(adapter, specFile);
+    input = loaded.input;
+    for (const key of loaded.unresolved) {
+      console.error(`archstone init: referenced document '${key}' could not be read from the spec's own directory — operations that need it will be skipped.`);
+    }
   }
   const draft = adapter.adapt(input);
 
   if (draft.operations.length === 0) {
-    console.error(`archstone init: ${adapter.id} found no candidate operations in ${args.spec}.`);
+    console.error(`archstone init: ${adapter.id} found no candidate operations in ${args.source === "postgres" ? input.origin : args.spec}.`);
     for (const n of draft.notes) console.error(`  - ${n.code}${n.detail ? `: ${n.detail}` : ""}`);
     return 1;
   }
@@ -673,6 +859,7 @@ export async function runInitCmd(argv: string[]): Promise<number> {
     // confirmation is a human act performed AT THE MOMENT OF THE CALL; that is the whole
     // reason it is separate from `effect`, which a file may legitimately carry.
     interactive: args.interactive && args.decisionsFile === undefined,
+    ...(invoke ? { invoke } : {}),
   });
 
   const report = formatReport({
