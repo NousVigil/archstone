@@ -5,6 +5,11 @@ D-1–D-9 have partly shipped ahead of acceptance (`providers/sql`, `IRSqlConnec
 `invokeConnector`); where shipped code and this text disagreed, the amendments below say which
 one moved.
 
+**Amended (2026-10-11),** by the `boolean` semantic type (#212). **D-10's named gap is closed for
+`boolean`:** a Postgres `boolean` column now maps to `boolean`, declared from the catalog, and
+`init` no longer skips it with `column-type-not-expressible`. `json`, `jsonb` and array columns
+remain gaps and are still skipped and reported. Decision text is edited in place.
+
 **Amended (2026-10-02),** from the design for #87 (`archstone init` from a Postgres catalog).
 Decision text is edited in place; this list is what moved:
 
@@ -799,10 +804,10 @@ its machinery rather than duplicating it:
   `data_type`) rather than a spec's possibly-stale declaration — actually *more* reliable than
   the OpenAPI adapter's declared/observed distinction, since this is the catalog itself. Required
   vs. optional is `is_nullable = 'NO'` directly, no probing needed. **Named gap, not built
-  around:** Postgres `boolean`/`json`/`jsonb`/array column types have no faithful `SemanticType`
+  around:** Postgres `json`/`jsonb`/array column types have no faithful `SemanticType`
   in `cdl.schema.json`'s closed set (`location`, `date-range`, `party`, `preference-set`,
-  `money`, `identifier`, `string`, `text`, `time-slot`, `quantity`, `enum`, `date`, `datetime` —
-  no boolean, no raw JSON). Per-column skip-and-report with a new reason code
+  `money`, `identifier`, `string`, `text`, `time-slot`, `quantity`, `enum`, `date`, `datetime`,
+  `boolean` — no raw JSON). A `boolean` column maps to `boolean` (amended 2026-10-11). Per-column skip-and-report with a new reason code
   (`column-type-not-expressible`), mirroring ADD-37's own precedent for an unmappable OpenAPI
   construct (`field-path-not-expressible`) — a tool limitation, not a CDL gap, and not proposed
   as a new semantic type here.

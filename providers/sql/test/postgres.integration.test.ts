@@ -449,8 +449,7 @@ describePostgres("invokeSql against a real Postgres", () => {
       { name: "qty", required: true, type: { kind: "scalar", semantic: "quantity" } },
       { name: "as_of", required: true, type: { kind: "scalar", semantic: "datetime" } },
       { name: "trade_date", required: true, type: { kind: "scalar", semantic: "date" } },
-      // CDL has no boolean semantic type; `string` is the closest an author can declare.
-      { name: "active", required: true, type: { kind: "scalar", semantic: "string" } },
+      { name: "active", required: true, type: { kind: "scalar", semantic: "boolean" } },
       { name: "note", required: false, type: { kind: "scalar", semantic: "text" } },
     ],
   };
@@ -530,11 +529,63 @@ describePostgres("invokeSql against a real Postgres", () => {
     }
   });
 
-  it("D-7 finding: boolean arrives as a boolean, and CDL has no boolean semantic type to declare it truthfully", async () => {
-    const { raw, wire } = await mappedRow(3, "tenant-b");
+  it("D-7 / #212: a boolean column arrives as a JSON boolean in a `boolean` field, and satisfies its lowered schema", async () => {
+    const { raw, mapped, wire } = await mappedRow(3, "tenant-b");
     expect(raw.active).toBe(true);
-    expect(itemSchema.active.type).toBe("string");
-    expect(typeof wire.active).toBe("boolean");
+    expect(itemSchema.active.type).toBe("boolean");
+    expect(mapped.status).toBe("ok");
+    expect(wire.active).toBe(true);
+    const falseRow = await mappedRow(4, "tenant-b");
+    expect(falseRow.raw.active).toBe(false);
+    expect(falseRow.mapped.status).toBe("ok");
+    expect(falseRow.wire.active).toBe(false); // false is present, not absent
+  });
+
+  it("#212: a boolean input binds to WHERE active = $1, true and false returning the right rows", async () => {
+    const byActive = sqlTool("SELECT id FROM app.holdings WHERE active = $1 ORDER BY id", ["active"], DSN_VARS.runtime, {
+      input: [{ name: "active", required: true, type: { kind: "scalar", semantic: "boolean" } }],
+    });
+    expect((await invokeSql(byActive, { active: true }, opts("tenant-b"))).data).toEqual([{ id: 3 }, { id: 5 }]);
+    expect((await invokeSql(byActive, { active: false }, opts("tenant-b"))).data).toEqual([{ id: 4 }]);
+    expect((await invokeSql(byActive, { active: false }, opts("tenant-a"))).data).toEqual([{ id: 2 }]);
+  });
+
+  /** One row of `SELECT id, <expr> AS flag`, mapped against a resource whose `flag` is a boolean. */
+  async function flagResult(expr: string, required: boolean) {
+    const t = sqlTool(`SELECT id, ${expr} AS flag FROM app.holdings WHERE id = $1`, ["id"], DSN_VARS.runtime, {
+      output: [{ name: "rows", required: true, type: { kind: "collection", of: "Flag" } }],
+      response: { resource: "Flag", field: "rows", collection: "$[*]", fields: ["id", "flag"].map((name) => ({ name, path: `$.${name}` })) },
+    });
+    const reg: IRResourceRegistry = {
+      Flag: [
+        { name: "id", required: true, type: { kind: "scalar", semantic: "identifier" } },
+        { name: "flag", required, type: { kind: "scalar", semantic: "boolean" } },
+      ],
+    };
+    const result = await invokeSql(t, { id: 3 }, opts("tenant-b"));
+    expect(result.ok).toBe(true);
+    return applyResponseMapping(t, result.data, reg);
+  }
+
+  it("#212: a NULL boolean in an optional column degrades (field omitted), and is not invalid", async () => {
+    const r = await flagResult("NULL::boolean", false);
+    expect(r.status).toBe("degraded");
+    expect(r.degraded).toEqual(["flag"]);
+    expect(r.invalid).toBeUndefined();
+  });
+
+  it("#212: an int 0/1 or a text 't' column declared boolean is a contract violation naming boolean", async () => {
+    for (const expr of ["qty", "(qty - qty)", "'t'::text", "label"]) {
+      const r = await flagResult(expr, true);
+      expect(r.status, expr).toBe("violation");
+      expect(r.invalid, expr).toEqual([{ field: "flag", expected: "boolean" }]);
+    }
+  });
+
+  it("#212: ... and as an optional column it is omitted and degraded", async () => {
+    const r = await flagResult("qty", false);
+    expect(r.status).toBe("degraded");
+    expect(r.invalid).toEqual([{ field: "flag", expected: "boolean" }]);
   });
 
   it("D-7: a NULL in an optional column degrades (field omitted) — mapping treats null as absent", async () => {
@@ -552,5 +603,4 @@ describePostgres("invokeSql against a real Postgres", () => {
   });
 
   it.todo("D-7 fix (#157): numeric/bigint reach a `quantity` field as a JSON number (or the lowering admits the string form) — needs a decision: pg type parsers vs. mapping-time coercion");
-  it.todo("D-7 fix (#157): CDL can declare a boolean column (no boolean semantic type exists)");
 });

@@ -188,7 +188,7 @@ whose name is neither a registered semantic type nor a defined Resource.
 
 The registered set is `location`, `date-range`, `party`, `preference-set`, `money`,
 `identifier`, `string`, `text`, `time-slot`, `quantity`, `enum`, `date`, `datetime`,
-`web-page` and `image`.
+`web-page`, `image` and `boolean`.
 
 A `money` value in an output is an object with a finite numeric `amount` and a `currency` of
 three uppercase letters (the ISO 4217 form; the code list is not checked). Any other value,
@@ -323,6 +323,48 @@ Limits — what the type does *not* guarantee:
 
 `image` is Experimental: its meaning may still change before it is frozen with the rest of
 the semantic type system.
+
+#### `boolean` — *Experimental*
+
+**Definition.** A JSON `true` or `false`, and nothing else. Examples: whether a room is available,
+whether breakfast is included, whether an account is active. Not a `boolean`: a count that happens
+to be 0 or 1 (`quantity`), a status that has more than two values (`enum`), or a flag a backend
+spells `"Y"`/`"N"` (declare an `enum` of the strings it sends, or have the source send a boolean).
+
+**Lowering.** A `boolean` field lowers to JSON Schema `{"type": "boolean"}` in an input schema, an
+output schema and an extraction schema alike. The lowering adds no description of its own, so the
+one the author wrote is the one shown. A processor lowers `list: boolean` to an array of that.
+
+**Normative.**
+
+- `boolean` **MAY** be used as a `type` and as a **List** item type (`list: boolean`), in `input`
+  and in `output`, and as a field of a Resource. It is not bound to an origin, so none of the rules
+  of `web-page` and `image` apply to it.
+- **No value is coerced, on input or on output.** Only the JSON literals `true` and `false` are
+  booleans. The numbers `0` and `1`, the strings `"true"`, `"false"`, `"t"`, `"f"`, `"yes"` and
+  `""`, an object and an array are **not**.
+- On **input**, a value that is not `true` or `false` is refused as `input_invalid` (§4.3) naming
+  the field, and **MUST NOT** reach the provider. Inside a list the failing item is named by its
+  index (`flags[1]`). `null` on an optional field is absent; on a required field it is refused as
+  `required`.
+- On **output**, a present value that is not `true` or `false` is a value of the wrong shape for
+  its field: when the field is optional it is omitted and the result is degraded, and when the field
+  is required it is a contract violation. Either way the field is listed as `{field, expected:
+  "boolean"}` among the wrong-shape fields, and the provider's value is never echoed. A list is
+  all or nothing: one item that is not a boolean makes the whole list the wrong shape.
+- `false` is a value. It satisfies `required`, and it is never treated as absent.
+- In an extraction (ADR-0011) a model may produce `true` or `false`; anything else is reported as
+  invalid and the document is a violation, since extraction does not repair.
+
+A provider that returns `0`/`1` or text for a flag therefore fails loudly rather than being
+guessed at. The honest declarations are `quantity` for a 0/1 count, an `enum` of the exact strings
+the provider sends, or a fix at the source. Moving a field already declared as `string` to
+`boolean` changes the capability's contract, and `archstone diff` reports it as breaking.
+
+`boolean` is Experimental: its meaning may still change before it is frozen with the rest of the
+semantic type system. The rule most likely to be reviewed is the one above that nothing is
+coerced; it graduates once it has been through at least one release unchanged and a real manifest
+uses it.
 
 ---
 

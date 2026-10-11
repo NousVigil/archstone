@@ -3,7 +3,7 @@
 
 import { describe, it, expect } from "vitest";
 import type { IR, IRTool } from "@archstone/compiler";
-import { fromIR, type FetchLike } from "../src/index";
+import { fromIR, type AnthropicToolDef, type OpenAIChatToolDef, type FetchLike } from "../src/index";
 
 function ir(required: boolean): IR {
   const tool: IRTool = {
@@ -27,12 +27,12 @@ function spy(body: unknown): { fetchImpl: FetchLike; urls: string[] } {
 }
 
 describe("tools() carries {type: boolean}", () => {
-  it("in the input schema of every format, and (MCP) in the output schema", () => {
+  it("in the input schema of the anthropic and openai-chat formats", () => {
     const a = fromIR(ir(true));
-    const anthropic = a.tools("anthropic") as { input_schema: { properties: Record<string, unknown> } }[];
-    expect(anthropic[0]!.input_schema.properties.flag).toEqual({ type: "boolean" });
-    const openai = a.tools("openai-chat") as { function: { parameters: { properties: Record<string, unknown> } } }[];
-    expect(openai[0]!.function.parameters.properties.flag).toEqual({ type: "boolean" });
+    const anthropic = a.tools("anthropic") as AnthropicToolDef[];
+    expect((anthropic[0]!.input_schema as { properties: Record<string, unknown> }).properties.flag).toEqual({ type: "boolean" });
+    const openai = a.tools("openai-chat") as OpenAIChatToolDef[];
+    expect((openai[0]!.function.parameters as { properties: Record<string, unknown> }).properties.flag).toEqual({ type: "boolean" });
   });
 });
 
