@@ -78,6 +78,38 @@ good one, and the difference is entirely in the names and descriptions an agent 
 
 Then continue with Steps 1–6 to understand and refine what it wrote.
 
+### Backed by a Postgres database? `archstone init --source postgres`
+
+If the data lives in Postgres (see [ADR-0012](adr/0012-sql-provider-database-as-first-class-backend.md)),
+`init` can propose capabilities from the database itself:
+
+```bash
+export REPORTING_DSN='postgres://reporting_runtime:…@db.internal/app'
+archstone init --source postgres --dsn-env REPORTING_DSN --out my-manifest
+```
+
+- **The connection string is named, never passed.** `--dsn-env` takes the *name* of an environment
+  variable; the manifest it writes carries `dsn: "${REPORTING_DSN}"`. A literal connection string on
+  the command line is refused (it would be in your shell history and the process list).
+- **It connects as the runtime role and sees what that role sees.** One candidate per table,
+  partitioned table, view or materialized view the role may `SELECT`, with only the columns it may
+  select. A schema the role has no `USAGE` on proposes nothing, and nothing it cannot read is named
+  anywhere, including the report. Foreign tables are reported and left out. If the role is a
+  superuser, has `BYPASSRLS`, or owns a relation it can read, `init` refuses with the same message
+  `serve` and `verify` give and writes nothing.
+- **You decide what a relation does.** At the gate you pick a *lookup* by one column (the table's
+  single-column primary key is offered as the default; a view has none, so you name one) or a *list*
+  bounded by a literal `LIMIT 100` that you can read in the binding. `json`, `jsonb` and array
+  columns have no CDL type and are left out of the `SELECT` with a note; `boolean` maps to
+  `boolean`.
+- **Contracts need two identities.** Without `--probe`, no tenant row is read at all. With
+  `--probe --identity-map identity-map.json`, a *lookup* is read once as a first principal and the
+  recording is replayed as a second, which must see no rows; the fixture records both principals
+  and that the first leg returned a row. A list cannot carry a contract (it would return the second
+  principal's own rows), so lists, a missing or unresolvable second principal, and an empty first leg
+  all end the same way: a compiling manifest with no `contract:`, and a report line saying which.
+
+
 ### Try it now (no writing required)
 
 Before writing a line of CDL, run the shipped example and watch the whole pipeline work
