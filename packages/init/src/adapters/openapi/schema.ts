@@ -481,12 +481,10 @@ function semanticTypeOf(m: Merged, ctx: LowerContext, where: string): { type: Fa
   }
   if (m.types.has("number") || m.types.has("integer")) return { type: declared<SemanticType>("quantity", source) };
   if (m.types.has("boolean")) {
-    // CDL HAS NO BOOLEAN SEMANTIC TYPE. Verified against `SEMANTIC_TYPES` in the compiler's
-    // ir.ts, not assumed. Adding one is a Rule #10/#11 decision (a shipped primitive is
-    // permanent) and is emphatically not this increment's to take, so a boolean degrades to
-    // `string` and says so. Named in the report as a real gap, not absorbed here.
-    ctx.notes.push(note("semantic-type-degraded", "field", ctx.target, `${where}: CDL has no boolean primitive — emitted as \`string\``));
-    return { type: declared<SemanticType>("string", source) };
+    // A spec that says `type: boolean` states exactly what `boolean` means (a JSON true or false),
+    // with the same standing as `number` -> `quantity`. A union that also names `string` is settled
+    // by the `string` branch above, which runs first; that precedence is unchanged.
+    return { type: declared<SemanticType>("boolean", source) };
   }
 
   ctx.notes.push(note("semantic-type-degraded", "field", ctx.target, `${where}: the schema states no usable type`));

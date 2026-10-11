@@ -3,8 +3,8 @@
 // Pure, mechanical mapping from `information_schema.columns.data_type` ground truth to CDL's
 // closed `SemanticType` set — no guessing, no LLM. `cdl.schema.json`'s semantic types
 // (`location`, `date-range`, `party`, `preference-set`, `money`, `identifier`, `string`, `text`,
-// `time-slot`, `quantity`, `enum`, `date`, `datetime`) have no faithful member for a Postgres
-// `boolean`, `json`/`jsonb`, or array column — this is a TOOL limitation, not a CDL gap (D-10),
+// `time-slot`, `quantity`, `enum`, `date`, `datetime`, `boolean`) have no faithful member for a
+// Postgres `json`/`jsonb` or array column (a `boolean` column maps to `boolean`) — this is a TOOL limitation, not a CDL gap (D-10),
 // and is reported with the reason code `column-type-not-expressible` rather than guessed around,
 // mirroring internal ADD-37's own precedent for an unmappable OpenAPI construct
 // (`field-path-not-expressible`).
@@ -33,10 +33,10 @@ export interface ColumnSkipped {
 export type ColumnMapping = ColumnMapped | ColumnSkipped;
 
 /** Postgres `information_schema.columns.data_type` values with no expressible CDL semantic
- *  type (D-10) — boolean, raw JSON, and every array form (`data_type` is literally `"ARRAY"`
+ *  type (D-10) — raw JSON, and every array form (`data_type` is literally `"ARRAY"`
  *  for any array column; the element type lives in a separate catalog column this function
  *  never needs, because the whole column is skipped regardless of its element type). */
-const INEXPRESSIBLE = new Set(["boolean", "json", "jsonb", "array"]);
+const INEXPRESSIBLE = new Set(["json", "jsonb", "array"]);
 
 /**
  * Map one Postgres column's declared type to a CDL semantic type, from `information_schema`
@@ -59,6 +59,7 @@ export function mapColumnType(pgDataType: string, columnName: string): ColumnMap
     return { ok: true, type: "quantity" };
   }
   if (normalized === "uuid") return { ok: true, type: "identifier" };
+  if (normalized === "boolean") return { ok: true, type: "boolean" };
   // Every remaining textual type (`text`, `character varying`, `character`, `citext`, …)
   // defaults to CDL `string` — the same defensive default `compiler/src/compile.ts`'s
   // `lowerType` already applies for an unrecognized shape.

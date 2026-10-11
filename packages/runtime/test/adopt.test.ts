@@ -67,10 +67,21 @@ describe("planAdoption — what can be declared (ADD-117 D-5, §3)", () => {
     expect(adoptable(plan)[0].semantic).toBe("quantity");
   });
 
-  it("refuses a boolean, because CDL has no boolean semantic type", () => {
+  it("offers an observed JSON boolean as boolean: the shape records the type, not a value", () => {
     const plan = planAdoption(tool(), drift([{ path: "$.stays[].refundable", type: "boolean" }]), resources);
-    expect(plan.candidates[0]).toMatchObject({ adoptable: false, reason: "no-boolean-type" });
-    expect(adoptable(plan)).toEqual([]);
+    expect(adoptable(plan)).toHaveLength(1);
+    expect(adoptable(plan)[0]).toMatchObject({ field: "refundable", observed: "boolean", semantic: "boolean", kind: "resource-field" });
+  });
+
+  it("offers an observed array of booleans as list: boolean", () => {
+    const plan = planAdoption(
+      tool(),
+      drift([{ path: "$.flags", type: "array" }, { path: "$.flags[]", type: "boolean" }]),
+      resources,
+    );
+    expect(adoptable(plan).map((c) => ({ field: c.field, semantic: c.semantic, kind: c.kind }))).toEqual([
+      { field: "flags", semantic: "boolean", kind: "output-array" },
+    ]);
   });
 
   it("refuses a structure rather than declaring it", () => {
@@ -116,7 +127,7 @@ describe("planAdoption — what can be declared (ADD-117 D-5, §3)", () => {
     const plan = planAdoption(
       tool(),
       drift([
-        { path: "$.stays[].refundable", type: "boolean" },
+        { path: "$.stays[].amenities", type: "array" },
         { path: "$.total", type: "number" },
       ]),
       resources,
