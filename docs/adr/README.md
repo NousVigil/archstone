@@ -17,6 +17,7 @@ considered and refused, which is the part that distinguishes a decision from a s
 | [0006](0006-marketplace-neutrality.md) | Selection is never for sale | ✅ Accepted |
 | [0008](0008-undeclared-provider-data-never-reaches-a-model.md) | Undeclared provider data never reaches a model | ✅ Accepted |
 | [0011](0011-undeclared-model-output-never-reaches-a-business-system.md) | Undeclared model output never reaches a business system | ✅ Accepted |
+| [0021](0021-html-is-passed-through-unmodified-or-withheld-whole.md) | Provider HTML is passed through unmodified or withheld whole | ✅ Accepted |
 
 ## What a published ADR is
 
