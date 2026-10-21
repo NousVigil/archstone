@@ -37,7 +37,8 @@ Every ecosystem has one file developers recognize:
 
 - **`sql-reporting/`** — the same shape on a `sql` binding: a capability backed by Postgres, with
   isolation enforced by the database and checked by `archstone verify`. Needs a Postgres container
-  to run end to end ([README](sql-reporting/README.md)); `apply` is offline.
+  to run end to end ([README](sql-reporting/README.md), and the
+  [SQL connector guide](../../docs/guides/sql-connector.md) for each part); `apply` is offline.
 
 All manifests validate against the [schemas](../../packages/schema/schemas/) — 17/17, both valid-accept and invalid-reject checks pass.
 

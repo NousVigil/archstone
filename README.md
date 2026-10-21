@@ -119,7 +119,8 @@ capabilities.yaml   →   *.capability.yaml   →   bindings/*.binding.yaml
 ```
 
 - **CDL** (Capability Definition Language) describes *what* you offer — business terms only.
-- **Bindings** say *how* each capability reaches a backend (REST or SQL).
+- **Bindings** say *how* each capability reaches a backend (REST or SQL). The
+  [SQL connector guide](docs/guides/sql-connector.md) walks through a Postgres one.
 - The **compiler** lowers both to a target-agnostic **IR**; **emitters** turn the IR into tools.
 
 Change the protocol and you regenerate instead of rewriting. Change the backend and the CDL does
@@ -191,6 +192,7 @@ multi-tenant hosting. See [ADR-0005](docs/adr/0005-open-core-boundary-artifact-g
 | Glossary | [`docs/glossary.md`](docs/glossary.md) |
 | Identity and principals | [`docs/IDENTITY.md`](docs/IDENTITY.md) |
 | Architecture decisions | [`docs/adr/`](docs/adr/) |
+| A Postgres database as a backend (`sql` connector) | [`docs/guides/sql-connector.md`](docs/guides/sql-connector.md) |
 | End-to-end demo with Claude | [`examples/demo/README.md`](examples/demo/README.md) |
 | Supported versions | [`SUPPORT.md`](SUPPORT.md) |
 | Reporting a vulnerability | [`SECURITY.md`](SECURITY.md) — never a public issue |
