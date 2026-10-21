@@ -5,6 +5,9 @@ Postgres database, there is no REST service in front of it, and the manifest is 
 manifest as [`booking/`](../booking/) and [`bank/`](../bank/): a `capabilities.yaml`, one
 capability, one resource, one binding. Only the binding's `connector.type` differs.
 
+This page runs the example. The [SQL connector guide](../../../docs/guides/sql-connector.md) explains
+each piece: the database side, the binding, the isolation test, and the privilege checks.
+
 ```
 sql-reporting/
 ├── capabilities.yaml                       the company's contract — no mention of a database
@@ -85,8 +88,8 @@ pnpm verify examples/manifests/sql-reporting --identity-map examples/manifests/s
 
 Replacing the policy with `USING (true)`, or dropping `FORCE ROW LEVEL SECURITY` (the view's owner is
 then exempt), goes red the same way. Dropping the policy while RLS stays forced is default-deny, so it
-leaks nothing; `verify` reports it yellow instead, because tenant A's own replay is empty too and no
-longer matches the recorded contract.
+leaks nothing; `verify` still reports it red, with a different reason
+(`expected a non-empty 'positions' collection; got none`), because tenant A's own replay is empty too.
 
 Clean up with `docker stop archstone-sql-demo`.
 
