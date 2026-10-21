@@ -80,8 +80,9 @@ Then continue with Steps 1–6 to understand and refine what it wrote.
 
 ### Backed by a Postgres database? `archstone init --source postgres`
 
-If the data lives in Postgres (see [ADR-0012](adr/0012-sql-provider-database-as-first-class-backend.md)),
-`init` can propose capabilities from the database itself:
+If the data lives in Postgres (see [ADR-0012](adr/0012-sql-provider-database-as-first-class-backend.md),
+the design record), `init` can propose capabilities from the database itself. The step-by-step guide,
+from the database role to a passing `verify`, is [`guides/sql-connector.md`](guides/sql-connector.md):
 
 ```bash
 export REPORTING_DSN='postgres://reporting_runtime:…@db.internal/app'
@@ -1847,9 +1848,11 @@ flowchart TD
     PKG --> EMITTER["emitter-support/<br/>IR indexing, semantic-type → JSON-Schema, response mapping"]
     PKG --> RUNTIME["runtime/<br/>registry + MCP emitter (stdio) + HTTP handler"]
     PKG --> AGENT["agent/<br/>embedded SDK: fromIR, tools(format), execute, /mcp handler"]
-    PKG --> CLI["cli/<br/>archstone apply / build / serve / verify — wires the pipeline"]
+    PKG --> INIT["init/<br/>OpenAPI or Postgres catalog → draft manifest, checked by the compiler"]
+    PKG --> CLI["cli/<br/>archstone apply / build / serve / verify / init — wires the pipeline"]
     ROOT --> PROVIDERS["providers/"]
     PROVIDERS --> REST["rest/<br/>REST adapter (providers = adapters)"]
+    PROVIDERS --> SQL["sql/<br/>Postgres connector, Node only, read-only (ADR-0012)"]
     ROOT --> EXAMPLES["examples/<br/>manifests + the Claude demo"]
     ROOT --> DOCS["docs/<br/>ONBOARDING.md (this guide)"]
 ```
