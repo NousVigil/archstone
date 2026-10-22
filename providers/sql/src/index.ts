@@ -616,6 +616,10 @@ export async function introspectCatalog(dsnEnvVar: string, resolvedDsn: string, 
   }
 }
 
+/** #218: whether an identity GUC still holds the value `invokeSql` set. `IS NOT DISTINCT FROM`
+ *  so a setting cleared to NULL (or never set: `missing_ok`) reads as changed, not as unknown. */
+const IDENTITY_READBACK = "SELECT current_setting($1, true) IS NOT DISTINCT FROM $2::text AS intact";
+
 /** D-3: `${claim key} -> app.<claim key>` by default. Deployer-configured, never CDL content. */
 function gucName(prefix: string, claim: string): string {
   return `${prefix}${claim}`;
@@ -625,8 +629,9 @@ function gucName(prefix: string, claim: string): string {
  * Invoke a compiled capability against its Postgres backend.
  *
  * One invocation = exactly one transaction: `BEGIN; SET TRANSACTION READ ONLY; <D-9 read>;
- * [<D-9 layer 4>]; set_config(...) per identity claim; <declared query>; COMMIT` (or `ROLLBACK`
- * on a refusal or any error, D-4). Performs NO AUTHORIZATION beyond the identity-adapter fail-closed gate below (D-3) —
+ * [<D-9 layer 4>]; set_config(...) per identity claim; <declared query>; <identity readback per
+ * claim, #218>; COMMIT` (or `ROLLBACK` on a refusal or any error, D-4). Performs NO
+ * AUTHORIZATION beyond the identity-adapter fail-closed gate below (D-3) —
  * `policies:[authenticated]`/rate-limiting/lifecycle gating all live upstream, exactly as they
  * do for `invokeRest`.
  */
@@ -714,6 +719,25 @@ export async function invokeSql(tool: IRTool, input: Record<string, unknown>, op
     }
     const values = sql.params.map((name) => input[name]);
     const result = await client.query(sql.query, values);
+    // #218: the declared query runs in the same transaction as the claims, so it can call
+    // set_config on an identity GUC itself (a `WITH s AS MATERIALIZED (SELECT set_config(...))`
+    // CTE) and RLS keyed on that GUC then answers for someone else. `apply` refuses such a query
+    // (D-9 layer 1); this is the runtime half, for an IR that never went through it. Every claim
+    // is read back before COMMIT, and one that no longer holds the value set above — NULL
+    // included — rolls the transaction back and returns no rows. Its limit: a statement that
+    // changes the setting and restores it before it ends leaves nothing to read back, so only
+    // the `apply` check stands against that, and it sees the query text, not a function it calls.
+    for (const [key, value] of Object.entries(claims)) {
+      const readback = await client.query(IDENTITY_READBACK, [gucName(gucPrefix, key), value]);
+      if ((readback.rows[0] as { intact?: unknown } | undefined)?.intact !== true) {
+        await rollbackQuietly(client);
+        return {
+          ok: false,
+          status: 0,
+          error: `capability '${tool.id}': the declared query changed the session identity the provider set for this caller; refusing and returning no rows`,
+        };
+      }
+    }
     await client.query("COMMIT");
     return { ok: true, status: 200, data: jsonSafeRows(result.rows) };
   } catch (err) {

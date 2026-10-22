@@ -58,6 +58,7 @@ function fakePool(rows: Array<Record<string, unknown>>): PgPool {
       if (text.includes("rolsuper")) return { rows: [{ rolsuper: false, rolbypassrls: false, server_started: "2026-10-05T08:00:00.123456", database_oid: 16384 }] };
       if (text.includes("role_table_grants")) return { rows: [] };
       if (text.includes("FROM reporting.portfolio_summary_v")) return { rows };
+      if (text.startsWith("SELECT current_setting(")) return { rows: [{ intact: true }] }; // #218's readback
       return { rows: [] };
     }),
     release: vi.fn(),

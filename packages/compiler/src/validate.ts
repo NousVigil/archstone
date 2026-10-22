@@ -164,6 +164,11 @@ export function validateSemantics(model: LoadResult): Diagnostic[] {
   // network call — `apply` stays fully offline for `sql` exactly as it already is for `rest`.
   const SQL_LEADING_KEYWORD_RE = /^\s*(?:--[^\n]*\n\s*|\/\*[\s\S]*?\*\/\s*)*(select|with)\b/i;
   const POSITIONAL_PARAM_RE = /\$(\d+)/g;
+  // #218, matched against `sqlCodeOnly(query)`: a set_config call, schema-qualified or not; a
+  // SET or RESET statement; SET LOCAL / SET SESSION wherever it appears.
+  const SQL_SET_CONFIG_CALL_RE = /(?<![\w$])set_config\s*\(/i;
+  const SQL_SET_STATEMENT_RE = /(?:^|;)\s*(?:set|reset)(?![\w$])/i;
+  const SQL_SET_SCOPE_RE = /(?<![\w$])set\s+(?:local|session)(?![\w$])/i;
   for (const b of bindings) {
     const connector = b.binding.connector as { type?: unknown; sql?: Record<string, unknown> } | undefined;
     if (connector?.type !== "sql" || !connector.sql) continue;
@@ -188,6 +193,22 @@ export function validateSemantics(model: LoadResult): Diagnostic[] {
         severity: "error",
         code: "sql-statement-not-read-only",
         message: `${at}: connector.sql.query begins with WITH but contains no SELECT — a CTE must terminate in a read-only SELECT`,
+      });
+    }
+
+    // #218 — the query may not change a session setting. `invokeSql` sets the caller's identity
+    // as transaction-scoped settings in the same transaction the query runs in, so a query that
+    // calls set_config itself (a `WITH s AS MATERIALIZED (SELECT set_config(...))` CTE) runs as
+    // whoever it names, and RLS keyed on that setting answers for them. Checked on the query with
+    // comments and literals blanked out: a 'set_config' in a string is text, a "set_config"(
+    // quoted identifier is still the function. A wrapper function that calls set_config is out
+    // of reach here; the provider's readback after the query is the other half (#218).
+    const code = sqlCodeOnly(query);
+    if (SQL_SET_CONFIG_CALL_RE.test(code) || SQL_SET_STATEMENT_RE.test(code) || SQL_SET_SCOPE_RE.test(code)) {
+      diags.push({
+        severity: "error",
+        code: "sql-query-changes-session",
+        message: `${at}: connector.sql.query may not change session settings (set_config, SET, RESET) — the provider sets the caller's identity there, and a query that changes it could read rows belonging to another caller`,
       });
     }
 
@@ -965,4 +986,80 @@ function checkOriginBound(
     }
   }
   return diags;
+}
+
+/**
+ * #218 — `query` with everything that is not code blanked out, so a keyword check sees only what
+ * Postgres would run: `--` line comments and (nested) block comments become a space; '…', E'…', U&'…' and
+ * $tag$…$tag$ literals become ''; a "quoted identifier" becomes its bare name, because
+ * "set_config"( still calls the function. Not a parser: it only has to agree with Postgres's
+ * lexer on where comments, literals and quoted identifiers start and end.
+ */
+function sqlCodeOnly(query: string): string {
+  let out = "";
+  let i = 0;
+  const n = query.length;
+  while (i < n) {
+    const c = query[i];
+    const next = query[i + 1];
+    if (c === "-" && next === "-") {
+      const end = query.indexOf("\n", i);
+      i = end === -1 ? n : end;
+      out += " ";
+    } else if (c === "/" && next === "*") {
+      let depth = 1;
+      i += 2;
+      while (i < n && depth > 0) {
+        if (query[i] === "/" && query[i + 1] === "*") {
+          depth++;
+          i += 2;
+        } else if (query[i] === "*" && query[i + 1] === "/") {
+          depth--;
+          i += 2;
+        } else {
+          i++;
+        }
+      }
+      out += " ";
+    } else if (c === "'") {
+      // E'…' (the E is already in `out`) honours backslash escapes; every form doubles a quote.
+      const escapes = /(?:^|[^\w$])[eE]$/.test(out);
+      i++;
+      while (i < n) {
+        if (escapes && query[i] === "\\") i += 2;
+        else if (query[i] === "'" && query[i + 1] === "'") i += 2;
+        else if (query[i] === "'") break;
+        else i++;
+      }
+      i++;
+      out += "''";
+    } else if (c === '"') {
+      let name = "";
+      i++;
+      while (i < n) {
+        if (query[i] === '"' && query[i + 1] === '"') {
+          name += '"';
+          i += 2;
+        } else if (query[i] === '"') break;
+        else name += query[i++];
+      }
+      i++;
+      // Spaced, so a name never fuses with the token beside it: "a"set_config( is two tokens.
+      out += ` ${name} `;
+    } else if (c === "$" && !/[\w$]$/.test(out)) {
+      const tag = /^\$(?:[A-Za-z_\u0080-\uffff][\w\u0080-\uffff]*)?\$/.exec(query.slice(i));
+      if (tag) {
+        const end = query.indexOf(tag[0], i + tag[0].length);
+        i = end === -1 ? n : end + tag[0].length;
+        out += "''";
+      } else {
+        out += c;
+        i++;
+      }
+    } else {
+      out += c;
+      i++;
+    }
+  }
+  return out;
 }

@@ -90,6 +90,55 @@ describePostgres("invokeSql against a real Postgres", () => {
     }
   });
 
+  // ------------------------------------------- #218: a declared query that resets the identity
+  // The query runs in the transaction the claims were set in, so it can call set_config on the
+  // identity GUC itself. `apply` refuses such a query (compiler, #218); these call `invokeSql`
+  // with a hand-built IR tool, past that check, to prove the provider's readback on its own.
+
+  const OVERRIDE =
+    "WITH s AS MATERIALIZED (SELECT set_config('app.tenant_id', $1, true) AS t) SELECT h.id, h.label FROM s CROSS JOIN app.holdings h ORDER BY h.id";
+
+  it("#218: the override is real — run as tenant A without the readback, the query returns tenant B's rows", async () => {
+    // The same transaction invokeSql runs, by hand on the runtime role, minus the readback: this
+    // is what the provider returned before the fix.
+    const client = new pg.Client({ connectionString: fx.env[DSN_VARS.runtime] });
+    await client.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SET TRANSACTION READ ONLY");
+      await client.query("SELECT set_config('app.tenant_id', 'acme', true)");
+      const { rows } = await client.query(OVERRIDE, ["beta"]);
+      expect(rows).toEqual(SEED.beta.map((r) => ({ ...r })));
+      await client.query("ROLLBACK");
+    } finally {
+      await client.end();
+    }
+  });
+
+  it("#218: invokeSql refuses that query, rolls back, and returns none of tenant B's rows", async () => {
+    const tool = sqlTool(OVERRIDE, ["target"]);
+    const result = await invokeSql(tool, { target: "beta" }, opts("tenant-a"));
+    expect(result).toEqual({
+      ok: false,
+      status: 0,
+      error: "capability 'reporting.holdings': the declared query changed the session identity the provider set for this caller; refusing and returning no rows",
+    });
+    expect(result.data).toBeUndefined();
+    expect(result.error).not.toContain("acme");
+    expect(result.error).not.toContain("beta");
+  });
+
+  it("#218: clearing the identity is refused the same way — set_config(…, NULL) reads back as '', not the claim", async () => {
+    const cleared = sqlTool("WITH s AS MATERIALIZED (SELECT set_config('app.tenant_id', NULL, true) AS t) SELECT h.id FROM s CROSS JOIN app.holdings h", []);
+    expect((await invokeSql(cleared, {}, opts("tenant-a"))).ok).toBe(false);
+  });
+
+  it("#218: a query that only READS the identity setting is served as before", async () => {
+    const reads = sqlTool("SELECT id, label, current_setting('app.tenant_id', true) AS tenant FROM app.holdings ORDER BY id", []);
+    const result = await invokeSql(reads, {}, opts("tenant-a"));
+    expect(result).toEqual({ ok: true, status: 200, data: SEED.acme.map((r) => ({ ...r, tenant: "acme" })) });
+  });
+
   // -------------------------------------------- D-5: what an idle pooled connection does on death
   //
   // When Postgres terminates a pooled connection — a restart, a failover,

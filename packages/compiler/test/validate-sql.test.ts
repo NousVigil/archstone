@@ -131,6 +131,59 @@ describe("validateSemantics — sql connector (ADR-0012)", () => {
   });
 });
 
+describe("validateSemantics — sql-query-changes-session (#218)", () => {
+  // The query runs in the transaction where the provider set the caller's identity; one that
+  // changes a session setting could run as somebody else. `run` writes the query as a YAML block
+  // scalar on one line, so each case here is a single line.
+  const refused = (query: string) => codes(errors(run({ query }))).includes("sql-query-changes-session");
+
+  it("refuses a set_config call in a CTE (the #218 shape)", () => {
+    expect(refused("WITH s AS MATERIALIZED (SELECT set_config('app.tenant_id', $1, true)) SELECT id FROM reporting.portfolio_summary_v")).toBe(true);
+  });
+
+  it("refuses a schema-qualified, uppercase, or commented-apart set_config call", () => {
+    expect(refused("SELECT pg_catalog.set_config('app.tenant_id', $1, true)")).toBe(true);
+    expect(refused("SELECT PG_CATALOG . SET_CONFIG ('app.tenant_id', $1, true)")).toBe(true);
+    expect(refused("SELECT set_config /* hidden */ ('app.tenant_id', $1, true)")).toBe(true);
+  });
+
+  it('refuses a quoted-identifier call: "set_config"( still calls the function', () => {
+    expect(refused(`SELECT "set_config"('app.tenant_id', $1, true)`)).toBe(true);
+    expect(refused(`SELECT "pg_catalog"."set_config"('app.tenant_id', $1, true)`)).toBe(true);
+  });
+
+  it("refuses a SET LOCAL, SET SESSION, SET or RESET statement after the SELECT", () => {
+    expect(refused("SELECT id FROM t WHERE id = $1; SET LOCAL app.tenant_id = 'other';")).toBe(true);
+    expect(refused("SELECT id FROM t WHERE id = $1; SET SESSION app.tenant_id = 'other'")).toBe(true);
+    expect(refused("SELECT id FROM t WHERE id = $1; set app.tenant_id to 'other'")).toBe(true);
+    expect(refused("SELECT id FROM t WHERE id = $1; RESET app.tenant_id")).toBe(true);
+    expect(refused("SELECT id FROM t WHERE id = $1; /* x */ reset all")).toBe(true);
+  });
+
+  it("accepts set_config inside a string literal, an E'' or dollar-quoted string, or a comment", () => {
+    expect(refused("SELECT id, 'set_config(' AS note FROM t WHERE id = $1")).toBe(false);
+    expect(refused("SELECT id, E'it\\'s set_config(' AS note FROM t WHERE id = $1")).toBe(false);
+    expect(refused("SELECT id, $q$ set_config( ; SET LOCAL x = 1 $q$ AS note FROM t WHERE id = $1")).toBe(false);
+    expect(refused("SELECT id /* set_config('app.tenant_id', 'x', true) */ FROM t WHERE id = $1")).toBe(false);
+  });
+
+  it("accepts reading a setting with current_setting", () => {
+    expect(refused("SELECT id, current_setting('app.tenant_id', true) AS tenant FROM t WHERE id = $1")).toBe(false);
+  });
+
+  it("does not refuse identifiers that merely contain set, reset or set_config", () => {
+    expect(refused("SELECT id, reset_at, settings, offset_config, my_set_config FROM t WHERE id = $1")).toBe(false);
+    expect(refused('SELECT id, "reset", "set" FROM t WHERE id = $1')).toBe(false);
+  });
+
+  it("names neither the query nor any value in its message", () => {
+    const d = errors(run({ query: "SELECT set_config('app.tenant_id', 'tenant-b-secret', true), id FROM t WHERE id = $1" }));
+    const msg = d.find((x) => x.code === "sql-query-changes-session")?.message ?? "";
+    expect(msg).toMatch(/may not change session settings/);
+    expect(msg).not.toContain("tenant-b-secret");
+  });
+});
+
 describe("validateSemantics — sql-dsn-not-env-placeholder (defense-in-depth, BR-2)", () => {
   it("fires against a hand-built model whose dsn is a literal connection string (bypassing schema validation)", () => {
     const model = {

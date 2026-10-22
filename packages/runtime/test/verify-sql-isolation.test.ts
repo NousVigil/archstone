@@ -51,6 +51,7 @@ function fakePool(positiveRows: Array<Record<string, unknown>>, negativeRows: Ar
       if (text === "SELECT set_config($1, $2, true)") {
         return { rows: [] };
       }
+      if (text.startsWith("SELECT current_setting(")) return { rows: [{ intact: true }] }; // #218's readback
       if (text.includes("FROM reporting.portfolio_summary_v")) {
         // Distinguish positive/negative by the LAST set_config call observed via closure below.
         return { rows: lastClaim === "acme" ? positiveRows : negativeRows };

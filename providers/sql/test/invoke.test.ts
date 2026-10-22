@@ -29,6 +29,10 @@ const SERVER_A = { server_started: "2026-10-05T08:00:00.123456", database_oid: 1
 const PASSING_ROW = { rolsuper: false, rolbypassrls: false, ...SERVER_A };
 const isRead = (text: string) => text.includes("pg_postmaster_start_time()");
 const isOwnership = (text: string) => text.includes("role_table_grants");
+/** #218's readback after the declared query: one per claim, each answering whether the identity
+ *  setting still holds what `invokeSql` set. A fake that answers nothing fails the call closed. */
+const isReadback = (text: string) => text.startsWith("SELECT current_setting(");
+const INTACT = { rows: [{ intact: true }] };
 
 /** A fake pool that records every query issued against it — no real Postgres involved. */
 function fakePool(rows: Array<Record<string, unknown>>, roleRow?: Record<string, unknown>) {
@@ -44,6 +48,7 @@ function fakePool(rows: Array<Record<string, unknown>>, roleRow?: Record<string,
       if (text === "SELECT id, headline FROM reporting.portfolio_summary_v WHERE id = $1") {
         return { rows };
       }
+      if (isReadback(text)) return INTACT;
       return { rows: [] };
     }),
     release: released,
@@ -64,7 +69,7 @@ function baseOpts(pool: PgPool, extra: Record<string, unknown> = {}) {
 }
 
 describe("invokeSql — D-4 transaction mechanics", () => {
-  it("runs BEGIN, SET TRANSACTION READ ONLY, the D-9 read, layer 4, set_config per claim, the query, COMMIT, then releases", async () => {
+  it("runs BEGIN, SET TRANSACTION READ ONLY, the D-9 read, layer 4, set_config per claim, the query, the readback, COMMIT, then releases", async () => {
     const { pool, queries, released } = fakePool([{ id: "1", headline: "Q1" }]);
     const result = await invokeSql(tool, { id: "1" }, baseOpts(pool));
     expect(result).toEqual({ ok: true, status: 200, data: [{ id: "1", headline: "Q1" }] });
@@ -81,8 +86,12 @@ describe("invokeSql — D-4 transaction mechanics", () => {
     expect(queries[4].params).toEqual(["app.tenantId", "acme"]);
     expect(texts[5]).toBe("SELECT id, headline FROM reporting.portfolio_summary_v WHERE id = $1");
     expect(queries[5].params).toEqual(["1"]);
-    expect(texts[6]).toBe("COMMIT");
-    expect(texts).toHaveLength(7);
+    // #218: after the query and before COMMIT, the claim it set is read back in the same
+    // transaction and compared with what was set.
+    expect(texts[6]).toBe("SELECT current_setting($1, true) IS NOT DISTINCT FROM $2::text AS intact");
+    expect(queries[6].params).toEqual(["app.tenantId", "acme"]);
+    expect(texts[7]).toBe("COMMIT");
+    expect(texts).toHaveLength(8);
     expect(pool.connect).toHaveBeenCalledTimes(1);
     expect(released).toHaveBeenCalledTimes(1);
   });
@@ -92,6 +101,58 @@ describe("invokeSql — D-4 transaction mechanics", () => {
     await invokeSql(tool, { id: "1" }, baseOpts(pool, { sqlSessionGucPrefix: "custom." }));
     const setConfig = queries.find((q) => q.text === "SELECT set_config($1, $2, true)");
     expect(setConfig?.params).toEqual(["custom.tenantId", "acme"]);
+  });
+
+  it("#218: a claim the declared query changed rolls back and returns no rows — fail closed, no COMMIT", async () => {
+    for (const intact of [false, null]) {
+      const { pool, client, queries, released } = fakePool([{ id: "2", headline: "tenant B's" }]);
+      const query = client.query;
+      client.query = vi.fn(async (text: string, params?: unknown[]) => {
+        if (!isReadback(text)) return query(text, params);
+        queries.push({ text, params });
+        return { rows: [{ intact }] };
+      });
+      const result = await invokeSql(tool, { id: "1" }, baseOpts(pool));
+      expect(result).toEqual({
+        ok: false,
+        status: 0,
+        error: "capability 'reporting.portfolio-summary': the declared query changed the session identity the provider set for this caller; refusing and returning no rows",
+      });
+      expect(result.data).toBeUndefined();
+      const texts = queries.map((q) => q.text);
+      expect(texts.at(-1)).toBe("ROLLBACK");
+      expect(texts).not.toContain("COMMIT");
+      expect(result.error).not.toContain("acme"); // the claim value never reaches the model
+      expect(released).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("#218: a readback that answers no row at all fails closed too", async () => {
+    const { pool, client, queries } = fakePool([{ id: "1", headline: "Q1" }]);
+    const query = client.query;
+    client.query = vi.fn(async (text: string, params?: unknown[]) => {
+      if (!isReadback(text)) return query(text, params);
+      queries.push({ text, params });
+      return { rows: [] };
+    });
+    const result = await invokeSql(tool, { id: "1" }, baseOpts(pool));
+    expect(result.ok).toBe(false);
+    expect(queries.map((q) => q.text)).not.toContain("COMMIT");
+  });
+
+  it("#218: every claim is read back, and one changed claim among several refuses the call", async () => {
+    const { pool, client, queries } = fakePool([{ id: "1", headline: "Q1" }]);
+    const query = client.query;
+    client.query = vi.fn(async (text: string, params?: unknown[]) => {
+      if (!isReadback(text)) return query(text, params);
+      queries.push({ text, params });
+      return { rows: [{ intact: params?.[0] !== "app.region" }] };
+    });
+    const identityAdapter = () => ({ tenantId: "acme", region: "eu" });
+    const result = await invokeSql(tool, { id: "1" }, baseOpts(pool, { identityAdapter }));
+    expect(result.ok).toBe(false);
+    expect(queries.filter((q) => isReadback(q.text)).map((q) => q.params)).toEqual([["app.tenantId", "acme"], ["app.region", "eu"]]);
+    expect(queries.map((q) => q.text)).not.toContain("COMMIT");
   });
 
   it("rolls back and returns a failure on a query error, and still releases the connection", async () => {
@@ -301,6 +362,7 @@ describe("invokeSql — D-9 re-runs after a server change (ADR-0012, amended 202
             return { rows: s.owned };
           }
           if (text.startsWith("SELECT id")) return { rows: [{ id: "1" }] };
+          if (isReadback(text)) return INTACT;
           return { rows: [] };
         }),
         release: vi.fn(() => {
@@ -369,12 +431,12 @@ describe("invokeSql — D-9 re-runs after a server change (ADR-0012, amended 202
     const transactions: string[][] = [];
     for (const { text } of t.log) {
       if (text === "BEGIN") transactions.push([]);
-      transactions.at(-1)!.push(isRead(text) ? "read" : isOwnership(text) ? "layer4" : text.startsWith("SELECT set_config") ? "claim" : text.startsWith("SELECT id") ? "query" : text);
+      transactions.at(-1)!.push(isRead(text) ? "read" : isOwnership(text) ? "layer4" : text.startsWith("SELECT set_config") ? "claim" : text.startsWith("SELECT id") ? "query" : isReadback(text) ? "readback" : text);
     }
     expect(transactions).toEqual([
-      ["BEGIN", "SET TRANSACTION READ ONLY", "read", "layer4", "claim", "query", "COMMIT"],
-      ["BEGIN", "SET TRANSACTION READ ONLY", "read", "claim", "query", "COMMIT"],
-      ["BEGIN", "SET TRANSACTION READ ONLY", "read", "layer4", "claim", "query", "COMMIT"],
+      ["BEGIN", "SET TRANSACTION READ ONLY", "read", "layer4", "claim", "query", "readback", "COMMIT"],
+      ["BEGIN", "SET TRANSACTION READ ONLY", "read", "claim", "query", "readback", "COMMIT"],
+      ["BEGIN", "SET TRANSACTION READ ONLY", "read", "layer4", "claim", "query", "readback", "COMMIT"],
     ]);
   });
 
@@ -393,6 +455,7 @@ describe("invokeSql — D-9 re-runs after a server change (ADR-0012, amended 202
             return { rows: [] };
           }
           if (text.startsWith("SELECT id")) return { rows: [{ id: "1" }] };
+          if (isReadback(text)) return INTACT;
           return { rows: [] };
         }),
         release: vi.fn(),
@@ -892,6 +955,7 @@ describe("invokeSql — driver errors never reach the caller (#120)", () => {
   }
   const healthyCheck: ClientScript = async (text) => {
     if (isRead(text)) return { rows: [PASSING_ROW] };
+    if (isReadback(text)) return INTACT;
     return { rows: [] };
   };
 
