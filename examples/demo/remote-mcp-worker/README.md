@@ -19,6 +19,8 @@ live in [`examples/showcase`](../../showcase/); this Worker only wires them to H
 | `POST /mcp` | The Showcase over remote MCP (Streamable HTTP, stateless, JSON responses). POST only: `GET` and `DELETE` are `405`. No CORS. Adds `x-showcase-backend-calls: <n>`, the number of requests this call made to the synthetic API. |
 | `POST /run/{scenarioId}` | The browser path behind "Run it live". One fixed tool call per live scenario in [`scenarios.json`](../../showcase/scenarios.json). CORS: see below. |
 | `GET /img/...`, `/v1/...` | The synthetic agency's images and API, on the same origin as the tools. No CORS. |
+| `GET /` (and `HEAD`) | `301` to `https://archstone.dev/demo`. The website's demo pages name this host, so crawlers open it. |
+| `GET /robots.txt` | Allows `/img/`, disallows everything else. |
 | anything else | `404` |
 
 `tourism_search` is still there and still answers. It is advertised as **deprecated** for one release
