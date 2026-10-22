@@ -97,7 +97,8 @@ describe("AC-2.10: effects are advertised as MCP annotations", () => {
     for (const d of toolDefinitions(registry())) {
       expect(d.description, d.name).not.toMatch(/archstone[^.]{0,60}(pauses|asks|waits|approves)/i);
     }
+    // What it does say: the agency's approvals system decides, and Archstone refuses without its yes.
     const cancel = toolDefinitions(registry()).find((d) => d.name === "wanderlust_cancel")!;
-    expect(cancel.description).toMatch(/does not enforce that/);
+    expect(cancel.description).toMatch(/Archstone refuses the call unless the agency's approvals system answers/);
   });
 });

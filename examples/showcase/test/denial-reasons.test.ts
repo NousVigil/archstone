@@ -1,4 +1,4 @@
-// AC-2.18: the eight denial reasons are each reached at least once through the real runtime, and
+// AC-2.18: the ten denial reasons are each reached at least once through the real runtime, and
 // this file FAILS if one is unreachable. The set is closed: the observed reasons must equal it
 // exactly, so a reason that stops being reachable fails here, and a new runtime reason fails the type-level check below.
 //
@@ -26,15 +26,17 @@ const CLOSED_SET = [
   "lifecycle_blocked",
   "contract_violation",
   "input_invalid",
+  "approval_pending",
+  "approval_refused",
 ] as const satisfies readonly (ExecutionDenialReason | "contract_violation")[];
 
-/** Type-level exhaustiveness: every runtime reason except the one deliberately excluded must be in
+/** Type-level exhaustiveness: every runtime reason except the ones deliberately excluded must be in
  *  the closed set. A new `ExecutionDenialReason` makes `Unaccounted` non-never and this line fail
- *  to compile (`pnpm typecheck`). */
-// The four decision-gate codes (archstone#165, ADD-393) are excluded until the showcase's S-10
-// scenario reaches them through a gated capability — that is the examples half of #165.
-type NotYetReached = "approval_pending" | "approval_refused" | "consent_pending" | "consent_refused";
-type Unaccounted = Exclude<ExecutionDenialReason, (typeof CLOSED_SET)[number] | "lifecycle_unevaluatable" | NotYetReached>;
+ *  to compile (`pnpm typecheck`). The two consent codes are excluded because no capability of this
+ *  agency declares `consent-required`: there is no data subject here to ask. The core's own tests
+ *  reach them; the approval codes, their mirror, are reached below through cancel and pay. */
+type NoConsentHere = "consent_pending" | "consent_refused";
+type Unaccounted = Exclude<ExecutionDenialReason, (typeof CLOSED_SET)[number] | "lifecycle_unevaluatable" | NoConsentHere>;
 const _exhaustive: [Unaccounted] extends [never] ? true : never = true;
 void _exhaustive;
 
@@ -89,6 +91,30 @@ const cases: Case[] = [
     },
   },
   {
+    // ADD-393: an approval a person has not decided yet. The agency's ask endpoint is asked; the
+    // cancel itself is never sent.
+    reason: "approval_pending",
+    scenario: "S-10",
+    trigger: async (s) => {
+      const asked = await s.call("wanderlust_request-cancellation-approval", { bookingId: "B-0000cafe" }, "A");
+      const approval = (asked.structuredContent as { approval: { id: string } }).approval.id;
+      const r = await s.call("wanderlust_cancel", { bookingId: "B-0000cafe", approval }, "A");
+      return { result: r, reached: s.spy.apiCalls().some((c) => c.endsWith("/cancel")) };
+    },
+  },
+  {
+    // ADD-393: an approval already used up by the agency's endpoint is refused the second time.
+    reason: "approval_refused",
+    scenario: "S-10",
+    trigger: async (s) => {
+      const approval = await s.approve("cancellation", { bookingId: "B-0000cafe" });
+      const first = await s.call("wanderlust_cancel", { bookingId: "B-0000cafe", approval }, "A");
+      if (first.isError) throw new Error(`the first cancel should run: ${JSON.stringify(first)}`);
+      const r = await s.call("wanderlust_cancel", { bookingId: "B-0000cafe", approval }, "A");
+      return { result: r, reached: s.spy.apiCalls().filter((c) => c.endsWith("/cancel")).length > 1 };
+    },
+  },
+  {
     reason: "contract_violation",
     scenario: "S-13",
     trigger: async (s) => {
@@ -102,7 +128,7 @@ const cases: Case[] = [
 
 installGlobalInvariants();
 
-describe("AC-2.18: the eight denial reasons", () => {
+describe("AC-2.18: the ten denial reasons", () => {
   const observed = new Map<string, number>();
 
   for (const c of cases) {
@@ -136,6 +162,9 @@ describe("AC-2.18: the eight denial reasons", () => {
     embedded.rate_limit_exceeded = (await s.execute("wanderlust.availability", row("S-11").arguments!)).denial?.reason;
     embedded.input_invalid = (await s.execute("wanderlust.search", { destination: { $ne: 1 }, dates: "tomorrow", travelers: -1 })).denial?.reason;
     embedded.lifecycle_blocked = (await s.execute("tourism.search-classic", row("S-12").arguments!)).denial?.reason;
+    const pendingId = ((await s.execute("wanderlust.request-cancellation-approval", { bookingId: "B-0000cafe" }, "A")).data as { approval: { id: string } }).approval.id;
+    embedded.approval_pending = (await s.execute("wanderlust.cancel", { bookingId: "B-0000cafe", approval: pendingId }, "A")).denial?.reason;
+    embedded.approval_refused = (await s.execute("wanderlust.cancel", { bookingId: "B-0000cafe", approval: "APR-0-00000000" }, "A")).denial?.reason;
     for (const [reason, got] of Object.entries(embedded)) expect(got, reason).toBe(reason);
     // The violation is a status, not a denial, on this path.
     const violation = await s.execute("wanderlust.room-status", row("S-13").negative!.arguments!);

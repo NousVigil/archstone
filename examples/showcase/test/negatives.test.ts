@@ -14,7 +14,9 @@
 //   - Archstone does not make a real backend safe; it forwards only what the manifest names.
 //   - Effects are MCP annotations (hints a client may use). Nothing here claims Archstone enforces
 //     one, and nothing takes credit for a confirmation a client chose to ask.
-//   - `human-approval` is declared, not enforced (runtime enforcement is a locked, unbuilt step).
+//   - `human-approval` is enforced as ADD-393 words it: the call is refused unless the deployer's
+//     endpoint answers `allowed` for it. That the approval works once is the agency's endpoint
+//     consuming it, which Archstone cannot observe; nothing here credits Archstone with it.
 
 import { describe, it, expect } from "vitest";
 import { execFile } from "node:child_process";
@@ -319,34 +321,81 @@ describe("N-07 / AC-2.9: principal rules deny before the agency is asked", () =>
 
   it("N-07 the allowed principal still cancels and its refund is the booking's total", async () => {
     const s = session();
-    const result = await s.call("wanderlust_cancel", { bookingId: "B-0000cafe" }, "A");
+    const approval = await s.approve("cancellation", { bookingId: "B-0000cafe" });
+    const result = await s.call("wanderlust_cancel", { bookingId: "B-0000cafe", approval }, "A");
     expect(result.isError).toBe(false);
     expect((result.structuredContent as { cancellation: { refund: { amount: number } } }).cancellation.refund.amount).toBe(354);
   });
 });
 
-describe("N-08 / AC-2.10: cancel is advertised as destructive; approval is declared, not enforced", () => {
+describe("N-08 / AC-2.10: cancel is advertised as destructive, and runs only on an approval the agency allows", () => {
   it("N-08 cancel and pay carry destructiveHint true: a hint a client may use, nothing Archstone enforces", () => {
     for (const name of ["wanderlust_cancel", "wanderlust_pay"]) {
       expect(definitions.get(name)!.annotations, name).toEqual({ destructiveHint: true, idempotentHint: false });
     }
   });
 
-  it("N-08 human-approval is declared in the manifest and reported as not enforced by the lint", () => {
+  it("N-08 human-approval is declared, its gate is in the binding, and no check calls it unenforced", () => {
     const model = load(MANIFEST_DIR);
     const cancel = registry().ir.tools.find((t) => t.id === "wanderlust.cancel")!;
     expect(cancel.policies).toEqual(["authenticated", "human-approval"]);
-    const finding = lintIR(compile(model), model).find((f) => f.capability === "wanderlust.cancel");
-    expect(finding).toMatchObject({ code: "irreversible-unenforced-policy", severity: "warning", token: "human-approval" });
-    expect(finding!.message).toMatch(/does not enforce/);
+    expect((cancel as { approval?: { input: string; ask: { path: string } } }).approval).toMatchObject({ input: "approval", ask: { path: "/v1/approvals/consume" } });
+    expect(lintIR(compile(model), model).filter((f) => f.capability === "wanderlust.cancel")).toEqual([]);
   });
 
-  it("N-08 nothing pauses it: with the key, the cancel reaches the agency at once", async () => {
+  it("N-08 the scenario: a person approves, Archstone asks the agency once, and only then is the cancel sent", async () => {
     const s = session();
     const { result } = await s.run(row("S-08"));
     expect(result.isError).toBe(false);
-    expect(s.spy.apiCalls()).toEqual(["POST /v1/bookings/B-0000cafe/cancel"]);
-    expect(definitions.get("wanderlust_cancel")!.description).toMatch(/does not enforce/);
+    expect(s.spy.apiCalls()).toEqual(["POST /v1/approvals/cancellation", "POST /v1/approvals/consume", "POST /v1/bookings/B-0000cafe/cancel"]);
+  });
+
+  it("N-08 without an approval id the cancel is input_invalid, and nothing is sent", async () => {
+    const s = session();
+    const result = await s.call("wanderlust_cancel", { bookingId: "B-0000cafe" }, "A");
+    expect(reasonOf(result._meta)).toBe("input_invalid");
+    expect(s.spy.apiCalls()).toEqual([]);
+  });
+
+  it("N-08 an approval nobody granted is refused before the agency is asked: approval_refused", async () => {
+    const s = session();
+    const result = await s.call("wanderlust_cancel", { bookingId: "B-0000cafe", approval: "APR-0-00000000" }, "A");
+    expect(reasonOf(result._meta)).toBe("approval_refused");
+    expect(s.spy.apiCalls()).toEqual(["POST /v1/approvals/consume"]);
+  });
+
+  it("N-08 a pending approval is refused approval_pending; the agent waits by reading its status", async () => {
+    const s = session();
+    const requested = await s.call("wanderlust_request-cancellation-approval", { bookingId: "B-0000cafe" }, "A");
+    const id = (requested.structuredContent as { approval: { id: string; status: string } }).approval.id;
+    const pending = await s.call("wanderlust_cancel", { bookingId: "B-0000cafe", approval: id }, "A");
+    expect(reasonOf(pending._meta)).toBe("approval_pending");
+    const status = await s.call("wanderlust_approval-status", { approval: id }, "A");
+    expect(status.structuredContent).toMatchObject({ approval: { id, status: "pending" } });
+    expect(s.spy.apiCalls().filter((c) => c.endsWith("/cancel"))).toEqual([]);
+  });
+
+  it("N-08 the agency uses the approval up: the same approval cannot cancel twice", async () => {
+    const s = session();
+    const approval = await s.approve("cancellation", { bookingId: "B-0000cafe" });
+    expect((await s.call("wanderlust_cancel", { bookingId: "B-0000cafe", approval }, "A")).isError).toBe(false);
+    const again = await s.call("wanderlust_cancel", { bookingId: "B-0000cafe", approval }, "A");
+    expect(reasonOf(again._meta)).toBe("approval_refused");
+    expect(s.spy.apiCalls().filter((c) => c.endsWith("/cancel"))).toHaveLength(1);
+    const status = await s.call("wanderlust_approval-status", { approval }, "A");
+    expect(status.structuredContent).toMatchObject({ approval: { status: "used" } });
+  });
+
+  it("N-08 an approval for another booking, or a rejected one, is refused", async () => {
+    const s = session();
+    const other = await s.approve("cancellation", { bookingId: "B-0000cafe" });
+    const q = await s.call("wanderlust_quote", { stayId: "ws-1001", dates: { from: "2027-05-12", to: "2027-05-15" }, travelers: { adults: 2 } });
+    const booked = await s.call("wanderlust_book", { quoteId: (q.structuredContent as { quote: { quoteId: string } }).quote.quoteId, stayId: "ws-1001", dates: { from: "2027-05-12", to: "2027-05-15" }, travelers: { adults: 2 }, guestName: "Ana Pop" }, "A");
+    const bookingId = (booked.structuredContent as { booking: { bookingId: string } }).booking.bookingId;
+    expect(reasonOf((await s.call("wanderlust_cancel", { bookingId, approval: other }, "A"))._meta)).toBe("approval_refused");
+    const rejected = await s.approve("cancellation", { bookingId }, "A", "reject");
+    expect(reasonOf((await s.call("wanderlust_cancel", { bookingId, approval: rejected }, "A"))._meta)).toBe("approval_refused");
+    expect(s.spy.apiCalls().filter((c) => c.endsWith("/cancel"))).toEqual([]);
   });
 
   it("N-08 no sentence in the example claims Archstone pauses, asks or approves", () => {
@@ -357,18 +406,20 @@ describe("N-08 / AC-2.10: cancel is advertised as destructive; approval is decla
 });
 
 describe("N-09 / AC-2.11: the mis-declared payment warns and does not block; the agency, not Archstone, refuses a wrong quote", () => {
-  it("N-09 `archstone apply` on the variant exits 0 with the three irreversible-* warnings", async () => {
+  it("N-09 `archstone apply` on the variant exits 0 with three warnings: the missing gate and two irreversible-* lints", async () => {
     const r = await cliRun(["apply", VARIANT_DIR]);
     expect(r.code).toBe(0);
     const warnings = r.stdout.split("\n").filter((l) => l.includes("⚠"));
     expect(warnings).toHaveLength(3);
+    expect(warnings[0]).toContain("capability 'wanderlust.pay'");
+    expect(warnings[0]).toMatch(/declares no `approval:` gate — every call is refused/);
     const model = load(VARIANT_DIR);
     const findings = lintIR(compile(model), model);
-    expect(findings.map((f) => f.code)).toEqual(["irreversible-no-failures", "irreversible-unauthenticated", "irreversible-unenforced-policy"]);
-    // Each reported line is one lint finding, naming the capability, in the same order.
+    expect(findings.map((f) => f.code)).toEqual(["irreversible-no-failures", "irreversible-unauthenticated"]);
+    // Each lint line is one lint finding, naming the capability, in the same order, after the gate warning.
     findings.forEach((f, i) => {
-      expect(warnings[i]).toContain(`capability '${f.capability}'`);
-      expect(warnings[i]).toContain(f.message);
+      expect(warnings[i + 1]).toContain(`capability '${f.capability}'`);
+      expect(warnings[i + 1]).toContain(f.message);
       expect(f.capability).toBe("wanderlust.pay");
       expect(f.severity).toBe("warning");
     });
@@ -380,8 +431,11 @@ describe("N-09 / AC-2.11: the mis-declared payment warns and does not block; the
     const { captured } = await s.run(row("S-09"));
     const c = captured as { bookingId: string; total: unknown; paymentQuote: string };
     s.clock.t += advanceMinutes * 60_000;
+    // A person approves exactly the payment about to be sent, so what follows is the agency's judgement.
+    const args = arguments_(c);
+    const approval = args.paymentQuote === undefined ? undefined : await s.approve("payment", args);
     const before = s.spy.apiCalls().length;
-    const result = await s.call("wanderlust_pay", arguments_(c), "A");
+    const result = await s.call("wanderlust_pay", { ...args, ...(approval ? { approval } : {}) }, "A");
     return { s, result, payCalls: s.spy.apiCalls().slice(before) };
   }
 
@@ -394,7 +448,10 @@ describe("N-09 / AC-2.11: the mis-declared payment warns and does not block; the
     expect(result._meta?.["dev.archstone/input_invalid"]).toEqual({
       error: "input_invalid",
       capability: "wanderlust.pay",
-      problems: [{ path: "paymentQuote", expected: "required" }],
+      problems: [
+        { path: "paymentQuote", expected: "required" },
+        { path: "approval", expected: "required" },
+      ],
     });
     expect(payCalls).toEqual([]);
   });
@@ -403,7 +460,7 @@ describe("N-09 / AC-2.11: the mis-declared payment warns and does not block; the
     const { result, payCalls } = await payWith((c) => ({ bookingId: c.bookingId, amount: c.total, paymentQuote: c.paymentQuote }), 16);
     expect(result.isError).toBe(true);
     expect(textOf(result)).toContain("backend returned 422");
-    expect(payCalls).toEqual(["POST /v1/payments"]);
+    expect(payCalls).toEqual(["POST /v1/approvals/consume", "POST /v1/payments"]);
     expect(result._meta).toBeUndefined();
   });
 
@@ -411,7 +468,7 @@ describe("N-09 / AC-2.11: the mis-declared payment warns and does not block; the
     const { result, payCalls } = await payWith((c) => ({ bookingId: "B-0000cafe", amount: c.total, paymentQuote: c.paymentQuote }));
     expect(result.isError).toBe(true);
     expect(textOf(result)).toContain("backend returned 422");
-    expect(payCalls).toEqual(["POST /v1/payments"]);
+    expect(payCalls).toEqual(["POST /v1/approvals/consume", "POST /v1/payments"]);
     expect(result._meta).toBeUndefined();
   });
 
@@ -424,7 +481,7 @@ describe("N-09 / AC-2.11: the mis-declared payment warns and does not block; the
     const asAgency = async (body: Record<string, unknown>, at = 0) => {
       const s = session();
       s.clock.t += at;
-      const res = await s.spy.fetchImpl(`http://api.showcase.example/v1/payments`, {
+      const res = await s.spy.fetchImpl(`https://api.showcase.example/v1/payments`, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: "Bearer demo-public-key-visitor-0000" },
         body: JSON.stringify(body),
@@ -660,12 +717,14 @@ describe("AC-2.17: the list of negative ids covered is complete", () => {
     const live = rows.filter((r) => r.mode === "live").map((r) => r.negative!.id);
     const upToFourteen = Array.from({ length: 14 }, (_, i) => `N-${String(i + 1).padStart(2, "0")}`).filter((id) => id !== "N-10");
     expect(live).toEqual([...upToFourteen, "N-23"]);
-    // N-10 does not exist (S-10 is the locked approval row); the other fourteen are covered here.
+    // N-10 does not exist (S-10 is the recorded approval story, whose refusals are its own claims); the other fourteen are covered here.
     expect([...covered].sort()).toEqual(live.slice().sort());
   });
 
   it("the recorded scenarios (fifteen to twenty-one) are deferred to the recorded-scenarios increment, and nothing else is missing", () => {
-    const recorded = rows.filter((r) => r.mode === "recorded").map((r) => r.negative!.id);
+    // S-10 is recorded too and carries no N-xx: its negatives are claims in its own transcript.
+    expect(rows.filter((r) => r.mode === "recorded" && r.negative === null).map((r) => r.id)).toEqual(["S-10"]);
+    const recorded = rows.filter((r) => r.mode === "recorded" && r.negative !== null).map((r) => r.negative!.id);
     expect(recorded).toEqual(["N-15", "N-16", "N-17", "N-18", "N-19", "N-20", "N-21"]);
     const accounted = new Set([...covered, ...recorded]);
     expect([...accounted].sort()).toEqual(declared.slice().sort());
@@ -722,7 +781,7 @@ describe("AC-2.19: the positive control: a raw passthrough leaks what the runtim
 });
 
 function rawDelete(name: string): Promise<Response> {
-  return handle(new Request(`http://api.showcase.example/v1/guests/${encodeURIComponent(name)}/bookings`, { method: "DELETE", headers: { authorization: `Bearer ${DEMO_KEY_A}` } }), { now: Date.now() });
+  return handle(new Request(`https://api.showcase.example/v1/guests/${encodeURIComponent(name)}/bookings`, { method: "DELETE", headers: { authorization: `Bearer ${DEMO_KEY_A}` } }), { now: Date.now() });
 }
 
 describe("AC-2.20: hygiene of this increment's own files", () => {

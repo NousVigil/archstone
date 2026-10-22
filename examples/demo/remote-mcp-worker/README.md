@@ -55,6 +55,12 @@ scenarios add one field each:
 - S-23: a fixed malformed argument set. `result` carries the `input_invalid` refusal and its problems,
   and `backendCalls` is `0`: the agency was never called.
 
+S-08 and S-09 (cancel and pay) run the approval flow in their setup: the approval is requested with
+the visitor key, a person at the agency approves it (a request straight to the agency's approvals
+system with the published approver key, not a tool call, and not counted in `backendCalls`), and the
+main call presents the approval. `backendCalls` counts the request, Archstone's ask to the agency
+(`POST /v1/approvals/consume`) and the call itself.
+
 For the rate-limited capability (S-11) the body also has a top-level `rateLimit` string saying the
 limit is approximate; no other scenario has it.
 
@@ -76,7 +82,7 @@ a model's answer**; it shows the call an AI would make and what came back.
 
 | Key | Principal | Effect |
 |---|---|---|
-| `demo-public-key-visitor-0000` | `demo:visitor` | accepted by the agency, allowed to book, pay and cancel |
+| `demo-public-key-visitor-0000` | `demo:visitor` | accepted by the agency, allowed to book, and to pay and cancel once a person has approved |
 | `demo-public-key-blocked-0000` | `demo:blocked` | accepted by the agency, denied by Archstone's policy on book, pay and cancel (`principal_denied`), before the agency is asked |
 
 They are published here, in [`credentials.mjs`](../../showcase/credentials.mjs) and on the site, on
@@ -90,7 +96,22 @@ Send one as `Authorization: Bearer <key>` on `/mcp`:
   `policy_unevaluatable`.
 
 The principal is asserted by this Worker from a two-entry table lookup. The Worker verifies nothing
-else, and Archstone treats the principal as an opaque string.
+else, and Archstone treats the principal as an opaque string. That `resolveCaller` is why this Worker
+can serve cancel and pay at all. Their `human-approval` gate needs an identified caller, and
+`archstone serve` supplies none.
+
+## Approvals (approximate)
+
+Cancel and pay need an approval a person granted. An agent connected over `/mcp` can request one
+(`wanderlust_request-cancellation-approval`, `wanderlust_request-payment-approval`) and read it
+(`wanderlust_approval-status`), but no tool decides one. A person decides with the published approver
+key: `POST /v1/approvals/{id}/decision` with `{ "decision": "approve" }` or `"reject"`. Because that
+key is public, this proves nothing about who decided; it only shows the flow.
+
+The agency keeps approvals in the isolate's memory, like the rate-limit counter: **another isolate, a
+restart or another location forgets them**. An approval requested in one request may then be unknown
+to the next, which the agency answers as `refused`, and the agent requests a new one. `/run/S-08`
+and `/run/S-09` make the whole flow in one request, so they do not depend on it.
 
 ## Rate limit (approximate)
 
@@ -112,7 +133,8 @@ The hosted demo is rate-limited per IP at the edge (POST requests, answered with
 ## No per-visitor state
 
 `wrangler.jsonc` declares no storage, queue or object binding. Nothing a visitor does is kept, apart
-from the in-memory rate-limit counter above.
+from the in-memory rate-limit counter and approvals above. The agency stores at most 1000 approvals
+per isolate and forgets the oldest first.
 
 The synthetic API is deliberately unsafe: it returns more than a contract should allow, and it has a
 `DELETE` route no capability exposes (it deletes nothing, because nothing is stored). All of it is

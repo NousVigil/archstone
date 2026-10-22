@@ -1151,9 +1151,11 @@ binding:
       timeoutSeconds: 10                 # optional, 1–50, default 10
 ```
 
-The method is always `POST`. `apply` rejects a templated path, a non-loopback `http:` literal, an
-`input` that names an undeclared, optional or non-id field, and an `Authorization` header with no
-`${VAR}` in it. At runtime every `${VAR}` in that header must resolve to a non-empty value. A
+The method is always `POST`. `apply` rejects, as errors: a gate block on a capability that does not
+declare its token (`approval-gate-without-token`), an `input` that names an undeclared, optional or
+non-id field (`approval-gate-input-invalid`), a templated path (`approval-gate-path-templated`), an
+`Authorization` header with no `${VAR}` in it (`approval-gate-no-secret`), and a non-loopback
+`http:` literal (`approval-gate-insecure-url`). The `consent-*` codes mirror them. At runtime every `${VAR}` in that header must resolve to a non-empty value. A
 `${caller.NAME}` header may be added so the endpoint can also authenticate the end user, but it
 never replaces the runtime's own secret.
 
@@ -1220,7 +1222,7 @@ approval id must be 1–256 visible ASCII characters, or the call is `input_inva
 is sent.
 
 A capability that declares a token and whose binding has **no** gate block is refused at runtime
-with `policy_unevaluatable`, and `apply` warns `approval-gate-missing`. Declaring the token without
+with `policy_unevaluatable`, and `apply` warns `approval-gate-missing` (`consent-gate-missing`). Declaring the token without
 wiring the gate makes the capability unavailable. It never makes it unprotected.
 
 When a capability declares both tokens, consent is asked first: an operator is not asked to stand
@@ -1244,8 +1246,8 @@ conforming endpoint. Serve gated capabilities through:
   [`examples/demo/remote-mcp-worker`](../examples/demo/remote-mcp-worker) does;
 - `serveStdio`, embedded in your own process with a static `caller`.
 
-`archstone doctor` advises `approval-without-principal` on a gated capability, as it does
-`authenticated-needs-principal`.
+`archstone doctor` advises `approval-without-principal` (`consent-without-principal`) on a gated
+capability, as it does `authenticated-needs-principal`.
 
 #### Embedded: `approvalResolver`
 

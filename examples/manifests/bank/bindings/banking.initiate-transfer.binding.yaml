@@ -8,3 +8,15 @@ binding:
       baseUrl: "${CORE_BANKING_URL}"
       method: POST
       path: /v2/transfers
+
+  # The human-approval gate (ADD-393). Before the transfer is sent, Archstone POSTs a fixed body
+  # (capability, effect, principal, approval id, the full input) to the bank's approvals endpoint,
+  # and sends the transfer only if it answers `allowed`. The endpoint matches the approval to this
+  # transfer and caller, and marks it used in the same step. Archstone keeps no approval state.
+  approval:
+    input: approval
+    ask:
+      baseUrl: "${APPROVALS_URL}"
+      path: /approvals/consume
+      headers:
+        Authorization: "Bearer ${APPROVALS_TOKEN}"
