@@ -1,0 +1,20 @@
+# Implementation binding - how wanderlust.approval-status reaches the agency's approvals system. NOT CDL.
+# There is deliberately no capability for deciding an approval: a person decides, in the agency's
+# own system (POST /v1/approvals/{id}/decision, with the approver's key), never the agent.
+binding:
+  capabilityId: wanderlust.approval-status
+  connector:
+    type: rest
+    rest:
+      baseUrl: "${SHOWCASE_API_URL}"
+      method: GET
+      path: /v1/approvals/{approval}
+      headers:
+        Authorization: "Bearer ${caller.accessToken}"
+
+  response:
+    resource: Approval
+    map:
+      id: "$.id"
+      status: "$.status"
+      expiresAt: "$.expiresAt"

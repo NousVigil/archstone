@@ -6,7 +6,7 @@
 // per-invocation caller credential via ${caller.NAME} placeholders. HTTP lives HERE
 // and nowhere else — the compiler/IR/emitter never touch it.
 
-import type { IRTool } from "@archstone/compiler";
+import type { IRDecisionGate, IRTool } from "@archstone/compiler";
 // #44: TYPE-ONLY. `invokeRest` never reads the audit sink — see `InvokeOptions.auditSink`
 // below. The type is owned by the layer that acts on it (beside the policy evaluator and the
 // record builder), and this package merely carries the field so a deployer keeps ONE options
@@ -17,7 +17,8 @@ import type { IRTool } from "@archstone/compiler";
 // `import type { CallerContext } from "@archstone/provider-rest"` call site keeps working
 // unchanged (internal ADD-32 D-2 explicitly deferred this move to "the first non-REST
 // connector" — this is that connector).
-import type { CallerContext, FetchLike, InvokeOptions as BaseInvokeOptions } from "@archstone/emitter-support";
+import type { CallerContext, FetchLike, InvokeOptions as BaseInvokeOptions, ApprovalRequest, ApprovalAskResult } from "@archstone/emitter-support";
+import { APPROVAL_ANSWER_MAX_BYTES, APPROVAL_TIMEOUT_DEFAULT_SECONDS, APPROVAL_TIMEOUT_MAX_SECONDS } from "@archstone/emitter-support";
 
 export type { CallerContext, FetchLike } from "@archstone/emitter-support";
 
@@ -578,5 +579,154 @@ export async function invokeRest(
     // A fetch or body-read failure: the code only to the caller, the message to stderr — the
     // same rule `providers/sql`'s `driverFailure` follows. onResponse never fires here (BR-4).
     return { ok: false, status: 0, error: fetchFailure(tool.id, url, headers, opts.caller, err) };
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// ADD-393 — the decision gate's ask (`human-approval`, `consent-required`)
+// ---------------------------------------------------------------------------------------------
+
+/** What the ask reads from an invocation's options: the same `env`, `fetchImpl` and `caller`
+ *  the connector call uses. Nothing else — no `onResponse` (an ask is not reaching the connector,
+ *  ADD-44 D-13), no `allowedHosts` (the ask's `baseUrl` takes no caller value). */
+export type AskApprovalOptions = Pick<InvokeOptions, "env" | "fetchImpl" | "caller">;
+
+/** `http:` is accepted only on these hosts (ADD-393 §4). */
+function isLoopback(hostname: string): boolean {
+  const h = hostname.toLowerCase();
+  return h === "localhost" || h === "127.0.0.1" || h === "[::1]" || h === "::1";
+}
+
+/** Read at most `max` bytes of a response body. `undefined` when it is longer — the stream is
+ *  cancelled rather than drained, so an endpoint cannot make the runtime buffer an unbounded
+ *  answer. A `fetchImpl` whose response has no stream falls back to `arrayBuffer()`. */
+async function readCapped(response: Response, max: number): Promise<Uint8Array | undefined> {
+  const stream = response.body;
+  if (!stream) {
+    const buf = new Uint8Array(await response.arrayBuffer());
+    return buf.byteLength > max ? undefined : buf;
+  }
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > max) {
+      reader.cancel().catch(() => undefined);
+      return undefined;
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const c of chunks) {
+    out.set(c, offset);
+    offset += c.byteLength;
+  }
+  return out;
+}
+
+/**
+ * Send ONE decision-gate ask (ADD-393 §2–§5) and return the parsed body of a 2xx answer — or,
+ * for every other result, Archstone's own wording of why there is none. The classification of
+ * the body (echo, outcome, reference) is NOT here: it is `classifyAnswer`, pure, in
+ * `@archstone/emitter-support`, shared with the embedder's `ApprovalResolver` path.
+ *
+ * Every failure is a non-answer, which the caller turns into `policy_unevaluatable` — never a
+ * refusal:
+ *  - a `${VAR}` in `baseUrl` or a header unset, or a `${caller.NAME}` the caller lacks;
+ *  - no `Authorization` header carrying a `${VAR}`, or any `${VAR}` in it resolving EMPTY —
+ *    stricter than the connector, where an empty env value is valid (ADD-393 §5);
+ *  - a resolved `baseUrl` that is not `https:`, or `http:` off loopback, or carries a caller value;
+ *  - a network error, or the timeout (`timeoutSeconds`, default 10, 1–50) — bounded here even
+ *    for a `fetchImpl` that ignores the signal;
+ *  - any 3xx: `redirect: "manual"`, never followed — a redirect would carry the principal and the
+ *    input to a host nobody configured;
+ *  - any other non-2xx status, 404 included (an unknown id is the endpoint's to answer `refused`);
+ *  - a body over 64 KiB (read with a cap), or one that is not JSON.
+ *
+ * The method is always `POST`, the path is static, and the body is exactly `request` — there is
+ * no template, so nothing the binding author writes can drop the id from it. The endpoint's text
+ * never reaches the result; a transport failure's detail goes to stderr scrubbed, exactly as
+ * `invokeRest`'s does. `invokeRest` itself is untouched by this function.
+ */
+export async function askApproval(
+  gate: IRDecisionGate,
+  request: ApprovalRequest,
+  opts: AskApprovalOptions = {},
+): Promise<ApprovalAskResult> {
+  const env = opts.env ?? process.env;
+  const doFetch: FetchLike = opts.fetchImpl ?? fetch;
+  const ask = gate.ask;
+
+  if (ask.baseUrl.includes("${caller.")) {
+    return { ok: false, sent: false, detail: "the ask's baseUrl may not carry a caller value" };
+  }
+  const missingEnv = new Set<string>();
+  const missingCaller = new Set<string>();
+  const baseUrl = resolveEnv(ask.baseUrl, env, missingEnv);
+  const headers: Record<string, string> = {};
+  let secretConfigured = false;
+  for (const [k, v] of Object.entries(ask.headers ?? {})) {
+    if (k.toLowerCase() === "authorization") {
+      const names = [...v.matchAll(ENV_RE)].map((m) => m[1]);
+      if (names.length > 0 && names.every((n) => typeof env[n] === "string" && env[n] !== "")) secretConfigured = true;
+      else if (names.some((n) => env[n] === "")) return { ok: false, sent: false, detail: "the ask's Authorization secret is empty" };
+    }
+    headers[k] = resolveCaller(resolveEnv(v, env, missingEnv), opts.caller, missingCaller);
+  }
+  if (missingEnv.size > 0) return { ok: false, sent: false, detail: `missing env var(s): ${[...missingEnv].join(", ")}` };
+  if (missingCaller.size > 0) return { ok: false, sent: false, detail: `missing caller credential(s): ${[...missingCaller].join(", ")}` };
+  if (!secretConfigured) return { ok: false, sent: false, detail: "the ask carries no Authorization secret" };
+
+  let parsed: URL;
+  try {
+    parsed = new URL(baseUrl);
+  } catch {
+    return { ok: false, sent: false, detail: "the ask's baseUrl is not a valid URL" };
+  }
+  if (!(parsed.protocol === "https:" || (parsed.protocol === "http:" && isLoopback(parsed.hostname)))) {
+    return { ok: false, sent: false, detail: "the ask's baseUrl is not https" };
+  }
+
+  const url = joinUrl(baseUrl, ask.path);
+  if (!Object.keys(headers).some((k) => k.toLowerCase() === "content-type")) headers["content-type"] = "application/json";
+  const seconds = Math.min(Math.max(ask.timeoutSeconds ?? APPROVAL_TIMEOUT_DEFAULT_SECONDS, 1), APPROVAL_TIMEOUT_MAX_SECONDS);
+  const signal = AbortSignal.timeout(seconds * 1000);
+  // The signal bounds a conforming fetch; this race bounds one that ignores it (a custom
+  // `fetchImpl`), and the body read too.
+  const timedOut = new Promise<never>((_resolve, reject) => {
+    if (signal.aborted) reject(signal.reason);
+    signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+  });
+  timedOut.catch(() => undefined);
+
+  try {
+    return await Promise.race([
+      (async (): Promise<ApprovalAskResult> => {
+        const response = await doFetch(url, { method: "POST", headers, body: JSON.stringify(request), redirect: "manual", signal });
+        // `type` widened to string: Workers' `Response` types omit "opaqueredirect", which undici sets.
+        if ((response.type as string) === "opaqueredirect" || (response.status >= 300 && response.status < 400)) {
+          response.body?.cancel().catch(() => undefined);
+          return { ok: false, sent: true, detail: "the endpoint answered with a redirect, which is never followed" };
+        }
+        if (response.status < 200 || response.status >= 300) {
+          response.body?.cancel().catch(() => undefined);
+          return { ok: false, sent: true, detail: `the endpoint answered HTTP ${response.status}` };
+        }
+        const bytes = await readCapped(response, APPROVAL_ANSWER_MAX_BYTES);
+        if (bytes === undefined) return { ok: false, sent: true, detail: "the answer is over 64 KiB" };
+        try {
+          return { ok: true, body: JSON.parse(new TextDecoder().decode(bytes)) as unknown };
+        } catch {
+          return { ok: false, sent: true, detail: "the answer is not JSON" };
+        }
+      })(),
+      timedOut,
+    ]);
+  } catch (err) {
+    return { ok: false, sent: true, detail: fetchFailure(request.capabilityId, url, headers, opts.caller, err) };
   }
 }

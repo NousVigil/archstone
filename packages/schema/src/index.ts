@@ -133,6 +133,8 @@ export interface BindingDoc {
     extract?: Record<string, unknown>; // optional scalar output extraction (extends ADD-12); resolution/lowering is the compiler's
     contract?: Record<string, unknown>; // optional contract snapshot (ADD-18); lowering is the compiler's
     origins?: { pages?: string[]; images?: string[] }; // optional origin lists for origin-bound output types; entry syntax is the semantic pass's
+    approval?: Record<string, unknown>; // optional decision gate for `human-approval` (ADD-393); rules are the semantic pass's, lowering is the compiler's
+    consent?: Record<string, unknown>; // the same grammar for `consent-required` (ADD-393)
   };
 }
 

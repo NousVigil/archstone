@@ -33,14 +33,14 @@ describe("load — valid fixtures", () => {
   it("loads the bank manifest clean", () => {
     const r = load(join(manifests, "bank"));
     expect(r.ok).toBe(true);
-    expect(r.capabilityDocs).toHaveLength(4);
+    expect(r.capabilityDocs).toHaveLength(6);
     // effect enum is honoured (bank has an irreversible transfer)
     expect(r.capabilityDocs.map((d) => d.capability.effect)).toContain("irreversible");
   });
 
-  it("loads *.resource.yaml into resourceDocs (bank has 5)", () => {
+  it("loads *.resource.yaml into resourceDocs (bank has 6)", () => {
     const r = load(join(manifests, "bank"));
-    expect(r.resourceDocs).toHaveLength(5);
+    expect(r.resourceDocs).toHaveLength(6);
     const account = r.resourceDocs.find((d) => d.resource.name === "banking.Account");
     expect(account).toBeDefined();
     expect(account!.file).toBe("banking.Account.resource.yaml");

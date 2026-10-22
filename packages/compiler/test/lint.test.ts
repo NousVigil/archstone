@@ -26,6 +26,16 @@ function bankWith(edit: (cap: Cap) => void, policyDocs: PolicyDoc[] = []): LoadR
   return model;
 }
 
+/** The same model with the transfer binding's `approval:` gate removed: the fixture for the
+ *  missing-gate path, which the shipped bank (gated since ADD-393) no longer exercises. */
+function ungated(model: LoadResult): LoadResult {
+  const copy = structuredClone(model);
+  const binding = copy.bindings.find((b) => b.binding.capabilityId === TRANSFER)!.binding as { approval?: unknown };
+  expect(binding.approval).toBeDefined();
+  delete binding.approval;
+  return copy;
+}
+
 const lint = (model: LoadResult): LintFinding[] => lintIR(compile(model), model);
 const forCap = (fs: LintFinding[], code?: string) => fs.filter((f) => f.capability === TRANSFER && (!code || f.code === code));
 
@@ -42,19 +52,24 @@ function policy(id: string, spec: PolicyDoc["spec"]): PolicyDoc {
 describe("lintIR — bank (S-US1.4, S-US3.4, S-US4.1/4.2)", () => {
   const findings = lint(bank);
 
-  it("reports exactly the two unenforced tokens of banking.initiate-transfer, human-approval then rate-limited", () => {
-    expect(findings).toHaveLength(2);
+  it("reports exactly the one unenforced token of banking.initiate-transfer, rate-limited — human-approval is enforced by a gate (ADD-393)", () => {
+    expect(findings).toHaveLength(1);
     expect(findings.map((f) => [f.code, f.severity, f.capability, f.token])).toEqual([
-      ["irreversible-unenforced-policy", "warning", TRANSFER, "human-approval"],
       ["irreversible-unenforced-policy", "warning", TRANSFER, "rate-limited"],
     ]);
+    // Bank's transfer binding declares the gate, so validateSemantics reports nothing for the token either.
+    expect(validateSemantics(bank).filter((d) => d.capability === TRANSFER && d.token === "human-approval")).toEqual([]);
+  });
+
+  it("ungated, the lint is unchanged and the missing gate is validateSemantics' to report, not the lint's", () => {
+    const model = ungated(bank);
+    expect(lint(model)).toEqual(findings);
+    const gate = validateSemantics(model).filter((d) => d.capability === TRANSFER && d.token === "human-approval");
+    expect(gate.map((d) => [d.code, d.severity])).toEqual([["approval-gate-missing", "warning"]]);
   });
 
   it("carries the AC copy, split into message and because", () => {
     expect(`${findings[0]!.message} ${findings[0]!.because}`).toBe(
-      "is irreversible and declares policies:[human-approval], which this version does not enforce: no approval mechanism exists. An agent can run it without anyone approving. Put the approval step in the provider, or do not serve this capability to an agent unattended.",
-    );
-    expect(`${findings[1]!.message} ${findings[1]!.because}`).toBe(
       "is irreversible and declares policies:[rate-limited], which this version does not enforce: enforcing it needs invocation counting and therefore state — tracked as issue #45. An agent can run it as often as it is called. Attach a Policy document with spec.rateLimit, which is enforced, or limit it in the provider.",
     );
   });
@@ -88,7 +103,7 @@ describe("lintIR — row 1, irreversible-no-failures (S-US2.x)", () => {
 
   it("comes before the capability's other findings", () => {
     const codes = forCap(lint(bankWith((c) => delete c.failures))).map((f) => f.code);
-    expect(codes).toEqual(["irreversible-no-failures", "irreversible-unenforced-policy", "irreversible-unenforced-policy"]);
+    expect(codes).toEqual(["irreversible-no-failures", "irreversible-unenforced-policy"]);
   });
 
   it("does not fire for a write that declares no failures (booking's tourism.invoice)", () => {
@@ -133,50 +148,68 @@ describe("lintIR — row 4, irreversible-unauthenticated (S-US3.x)", () => {
 });
 
 describe("lintIR — row 6, irreversible-unenforced-policy (S-US4.x)", () => {
-  it("reports four findings, one per unenforced token, and none for authenticated", () => {
-    const model = bankWith((c) => {
-      c.policies = ["authenticated", "human-approval", "consent-required", "tenant-scoped", "rate-limited"];
-    });
+  it("reports two findings, one per unenforced token, and none for authenticated or the gated tokens", () => {
+    // Ungated, so both gated tokens are reported as missing gates below.
+    const model = ungated(
+      bankWith((c) => {
+        c.policies = ["authenticated", "human-approval", "consent-required", "tenant-scoped", "rate-limited"];
+      }),
+    );
     const fs = forCap(lint(model));
     expect(fs.map((f) => [f.code, f.token])).toEqual([
-      ["irreversible-unenforced-policy", "human-approval"],
-      ["irreversible-unenforced-policy", "consent-required"],
       ["irreversible-unenforced-policy", "tenant-scoped"],
       ["irreversible-unenforced-policy", "rate-limited"],
     ]);
-    // ...and BR-40 still emits all four for the renderer to replace, keyed on structure.
+    // ...and BR-40 still emits both for the renderer to replace, keyed on structure.
     const br40 = validateSemantics(model).filter((d) => d.code === "unenforced-policy-token" && d.capability === TRANSFER);
     expect(br40.map((d) => d.token)).toEqual(fs.map((f) => f.token));
+    // The two gated tokens are reported as missing gates instead (ADD-393), consent first.
+    const gates = validateSemantics(model).filter((d) => d.code.endsWith("-gate-missing") && d.capability === TRANSFER);
+    expect(gates.map((d) => [d.code, d.severity, d.token])).toEqual([
+      ["consent-gate-missing", "warning", "consent-required"],
+      ["approval-gate-missing", "warning", "human-approval"],
+    ]);
   });
 
   it("states each token's own consequence and action", () => {
     const model = bankWith((c) => {
-      c.policies = ["authenticated", "consent-required", "tenant-scoped"];
+      c.policies = ["authenticated", "tenant-scoped", "rate-limited"];
     });
-    const [consent, tenant] = forCap(lint(model));
-    expect(consent!.because).toBe(
-      "An agent can run it without anyone recording consent. Collect consent in the provider, or do not serve this capability to an agent unattended.",
-    );
+    const [tenant, rate] = forCap(lint(model));
     expect(tenant!.because).toBe("Archstone does not confine a call to one tenant's data. Confine it in the provider.");
+    expect(rate!.because).toBe(
+      "An agent can run it as often as it is called. Attach a Policy document with spec.rateLimit, which is enforced, or limit it in the provider.",
+    );
   });
 
   it("reports a token listed twice once (EC-2)", () => {
-    const fs = forCap(lint(bankWith((c) => (c.policies = ["authenticated", "human-approval", "human-approval"]))));
-    expect(fs.map((f) => f.token)).toEqual(["human-approval"]);
+    const fs = forCap(lint(bankWith((c) => (c.policies = ["authenticated", "tenant-scoped", "tenant-scoped"]))));
+    expect(fs.map((f) => f.token)).toEqual(["tenant-scoped"]);
   });
 
   it("does not report rate-limited where an attached rule carries rateLimit (D-12); the other token still is", () => {
-    const fs = forCap(lint(bankWith(() => {}, [policy("cap", { rateLimit: { maxInvocations: 10, windowSeconds: 60 } })])));
-    expect(fs.map((f) => f.token)).toEqual(["human-approval"]);
+    const fs = forCap(
+      lint(bankWith((c) => (c.policies = ["authenticated", "tenant-scoped", "rate-limited"]), [policy("cap", { rateLimit: { maxInvocations: 10, windowSeconds: 60 } })])),
+    );
+    expect(fs.map((f) => f.token)).toEqual(["tenant-scoped"]);
   });
 
   it("still reports rate-limited when the attached rule has no rateLimit", () => {
     const fs = forCap(lint(bankWith(() => {}, [policy("ops-only", { allow: ["role:ops"] })])));
-    expect(fs.map((f) => f.token)).toEqual(["human-approval", "rate-limited"]);
+    expect(fs.map((f) => f.token)).toEqual(["rate-limited"]);
+  });
+
+  it("does not report human-approval or consent-required, gate or no gate (ADD-393)", () => {
+    for (const token of ["human-approval", "consent-required"]) {
+      expect(UNENFORCED_POLICY_TOKENS[token], token).toBeUndefined();
+      const model = bankWith((c) => (c.policies = ["authenticated", token]));
+      expect(forCap(lint(model)), token).toEqual([]);
+      expect(validateSemantics(model).filter((d) => d.code === "unenforced-policy-token" && d.capability === TRANSFER), token).toEqual([]);
+    }
   });
 
   it("covers every listed token with all three clauses (R-4)", () => {
-    expect(Object.keys(UNENFORCED_POLICY_TOKENS).sort()).toEqual(["consent-required", "human-approval", "rate-limited", "tenant-scoped"]);
+    expect(Object.keys(UNENFORCED_POLICY_TOKENS).sort()).toEqual(["rate-limited", "tenant-scoped"]);
     for (const [token, e] of Object.entries(UNENFORCED_POLICY_TOKENS)) {
       expect(e.why, token).not.toBe("");
       expect(e.consequence, token).not.toBe("");
@@ -190,7 +223,7 @@ describe("lintIR — row 6, irreversible-unenforced-policy (S-US4.x)", () => {
     const saved = UNENFORCED_POLICY_TOKENS["rate-limited"]!;
     delete (UNENFORCED_POLICY_TOKENS as Record<string, unknown>)["rate-limited"];
     try {
-      expect(lint(bank).map((f) => f.token)).toEqual(["human-approval"]);
+      expect(lint(bank).map((f) => f.token)).toEqual([]);
       expect(validateSemantics(bank).filter((d) => d.token === "rate-limited")).toEqual([]);
     } finally {
       (UNENFORCED_POLICY_TOKENS as Record<string, unknown>)["rate-limited"] = saved;
@@ -201,7 +234,7 @@ describe("lintIR — row 6, irreversible-unenforced-policy (S-US4.x)", () => {
 describe("lintIR — lifecycle (S-US4.7, EC-3/4)", () => {
   const flawed = (c: Cap) => {
     delete c.failures;
-    c.policies = ["human-approval", "rate-limited"];
+    c.policies = ["tenant-scoped", "rate-limited"];
   };
 
   it("does not lint a retired capability; BR-40 still reports its tokens", () => {
@@ -210,7 +243,10 @@ describe("lintIR — lifecycle (S-US4.7, EC-3/4)", () => {
       c.lifecycle = "retired";
     });
     expect(forCap(lint(model))).toEqual([]);
-    expect(validateSemantics(model).filter((d) => d.capability === TRANSFER).map((d) => d.token)).toEqual(["human-approval", "rate-limited"]);
+    expect(validateSemantics(model).filter((d) => d.capability === TRANSFER).map((d) => [d.code, d.token])).toEqual([
+      ["unenforced-policy-token", "tenant-scoped"],
+      ["unenforced-policy-token", "rate-limited"],
+    ]);
   });
 
   for (const lifecycle of ["experimental", "beta", "stable", "deprecated"]) {

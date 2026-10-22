@@ -1,0 +1,19 @@
+# Implementation binding - how wanderlust.request-payment-approval reaches the agency's approvals system. NOT CDL.
+# The caller's key goes with the request, so the approval is recorded against the principal who asked.
+binding:
+  capabilityId: wanderlust.request-payment-approval
+  connector:
+    type: rest
+    rest:
+      baseUrl: "${SHOWCASE_API_URL}"
+      method: POST
+      path: /v1/approvals/payment
+      headers:
+        Authorization: "Bearer ${caller.accessToken}"
+
+  response:
+    resource: Approval
+    map:
+      id: "$.id"
+      status: "$.status"
+      expiresAt: "$.expiresAt"

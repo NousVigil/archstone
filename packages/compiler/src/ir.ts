@@ -233,6 +233,26 @@ export interface IRPolicyRule {
   rateLimit?: { maxInvocations: number; windowSeconds: number };
 }
 
+/**
+ * ADD-393: a decision gate — the one `POST` a binding declares for `human-approval`
+ * (`approval:`) or `consent-required` (`consent:`), asked after the rate limit and strictly before
+ * the connector. Copied from the binding, never interpreted here: `${VAR}`/`${caller.NAME}` in
+ * `baseUrl` and `headers` resolve at invoke time in `providers/rest`'s `askApproval`, the only
+ * place the ask's HTTP lives. There is deliberately no `method` (always `POST`), no body template
+ * (the body is fixed and built by `@archstone/emitter-support`'s `buildApprovalRequest`) and no
+ * answer mapping (ADD-393 D-4): one request shape, one answer shape.
+ */
+export interface IRDecisionGate {
+  /** The declared, required input field carrying the id the agent presents. */
+  input: string;
+  ask: {
+    baseUrl: string;
+    path: string; // static — no {placeholders} (an `apply` error)
+    headers: Record<string, string>;
+    timeoutSeconds?: number; // 1–50; absent means the default, 10
+  };
+}
+
 export interface IRTool {
   id: string; // e.g. tourism.search
   description: string;
@@ -264,6 +284,13 @@ export interface IRTool {
   /** Present iff the binding declares `origins:`. Absent otherwise, so every IR produced for a
    *  manifest without origin-bound types is unchanged. */
   origins?: IROrigins;
+  /** ADD-393: present iff the binding declares `approval:` — the gate for `human-approval`.
+   *  Absent on a capability that declares the token is NOT an open door: the call is refused,
+   *  fail-closed (`policy_unevaluatable`), and `apply` warns `approval-gate-missing`. */
+  approval?: IRDecisionGate;
+  /** ADD-393: present iff the binding declares `consent:` — the gate for `consent-required`,
+   *  asked before `approval`. Same absent-means-refused rule. */
+  consent?: IRDecisionGate;
 }
 
 /**

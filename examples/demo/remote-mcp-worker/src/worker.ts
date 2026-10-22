@@ -1,15 +1,16 @@
 // Demo Worker: a prop for the website's "try it live" sections, not product hosting. It serves
 // the Showcase over remote MCP (`POST /mcp`), a browser path that makes one fixed tool call per
 // published scenario (`POST /run/{scenarioId}`), and the synthetic agency API and its images on the
-// same origin. It holds no storage and no per-visitor state beyond an in-memory rate-limit counter
-// that lives and dies with the isolate. See README.md.
+// same origin. It holds no storage. Two things live in memory and die with the isolate: a rate-limit
+// counter, and the synthetic agency's approvals (an approval has to be remembered to be used up; a
+// different isolate or a restart forgets it, and the agent then requests a new one). See README.md.
 import { Registry, createMcpServer, callTool, toolDefinitions, type CallResult } from "@archstone/runtime";
 import { InMemoryRateLimitCounter, type RateLimitCounter } from "@archstone/emitter-support";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import type { IR } from "@archstone/compiler";
 import ir from "./ir.generated.json";
 import scenarioDoc from "../../../showcase/scenarios.json";
-import { handle as handleApi } from "../../../showcase/api/wanderlust-api.mjs";
+import { DEMO_APPROVER_KEY, DEMO_ASK_KEY, handle as handleApi } from "../../../showcase/api/wanderlust-api.mjs";
 import { allowedOrigins, corsHeaders } from "./cors";
 import { callerName, resolveCaller, scenarioCaller, type KeyLabel } from "./callers";
 
@@ -28,7 +29,11 @@ interface ScenarioRow {
   tool: string | null;
   arguments: Record<string, unknown> | null;
   key: KeyLabel;
-  setup?: { tool: string; key: KeyLabel; arguments: Record<string, unknown>; capture?: Record<string, string> }[];
+  /** Calls made before the main one; an `approve` step is a person deciding an approval (see `run`). */
+  setup?: (
+    | { tool: string; key: KeyLabel; arguments: Record<string, unknown>; capture?: Record<string, string>; approve?: undefined }
+    | { approve: string; decision: "approve" | "reject"; tool?: undefined }
+  )[];
   /** More fixed calls made after the main one, each reported on its own (S-13's wrong-format price). */
   alsoRun?: { label: string; tool: string; key: KeyLabel; arguments: Record<string, unknown> }[];
   /** A fact the card relies on that lives in the tool list, not in a result (S-12's deprecation note). */
@@ -128,7 +133,7 @@ export function createWorker(options: WorkerOptions = {}) {
       callerResolutionFailed = true;
     }
     const server = createMcpServer(registry, {
-      env: { SHOWCASE_API_URL: url.origin },
+      env: { SHOWCASE_API_URL: url.origin, SHOWCASE_ASK_TOKEN: DEMO_ASK_KEY },
       fetchImpl,
       ...(caller ? { caller } : {}),
       ...(callerResolutionFailed ? { callerResolutionFailed } : {}),
@@ -188,7 +193,7 @@ export function createWorker(options: WorkerOptions = {}) {
     // Availability has no allow list, so the principal cannot affect any policy.
     if (row.id === "S-11") caller = { principal: await visitorKey(request, clock()) };
     const invoke = {
-      env: { SHOWCASE_API_URL: url.origin },
+      env: { SHOWCASE_API_URL: url.origin, SHOWCASE_ASK_TOKEN: DEMO_ASK_KEY },
       fetchImpl,
       ...(caller ? { caller } : {}),
       rateLimitCounter: counter,
@@ -196,6 +201,20 @@ export function createWorker(options: WorkerOptions = {}) {
 
     const captured: Record<string, unknown> = {};
     for (const step of row.setup ?? []) {
+      if (step.approve !== undefined) {
+        // A person at the agency decides, in the agency's own approvals system: a request straight to
+        // the synthetic API with the approver's key, never a tool call and never through Archstone.
+        const id = String(fill(step.approve, captured));
+        const decided = await api(
+          new Request(`${url.origin}/v1/approvals/${encodeURIComponent(id)}/decision`, {
+            method: "POST",
+            headers: { "content-type": "application/json", authorization: `Bearer ${DEMO_APPROVER_KEY}` },
+            body: JSON.stringify({ decision: step.decision }),
+          }),
+        );
+        if (!decided.ok) return finish(plain(502, "archstone demo: a setup step of this scenario failed"));
+        continue;
+      }
       const stepCaller = scenarioCaller(step.key);
       const r = await callTool(registry, step.tool, fill(step.arguments, captured) as Record<string, unknown>, {
         ...invoke,

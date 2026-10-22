@@ -28,6 +28,14 @@
         "contract": {
           "$ref": "contract.schema.json"
         },
+        "approval": {
+          "$ref": "#/$defs/decisionGate",
+          "description": "ADD-393: the gate for a capability that declares policies:[human-approval] — one POST to the deployer's endpoint, after the rate limit and before the connector, with a fixed body Archstone builds. The call is refused unless the deployer's endpoint answers `allowed` for it."
+        },
+        "consent": {
+          "$ref": "#/$defs/decisionGate",
+          "description": "ADD-393: the gate for a capability that declares policies:[consent-required] — the same grammar as `approval`, asked first."
+        },
         "origins": {
           "type": "object",
           "additionalProperties": false,
@@ -45,6 +53,50 @@
               "minItems": 1,
               "items": { "type": "string" },
               "description": "Origins an `image` output value (scalar or list item) may live on, e.g. https://img.example.com. Never shared with `pages`. A value on any other origin is withheld."
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "decisionGate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["input", "ask"],
+      "properties": {
+        "input": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The declared, required input field carrying the id the agent presents — a `ref:` or `identifier` field. The semantic pass checks it."
+        },
+        "ask": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["baseUrl", "path", "headers"],
+          "description": "The deployer's endpoint. The method is always POST and is not authorable; the body is fixed and built by Archstone ({version, token, capabilityId, effect, principal, approvalId, input}), never from a template.",
+          "properties": {
+            "baseUrl": {
+              "type": "string",
+              "minLength": 1,
+              "description": "https, or http on localhost/127.0.0.1/[::1]. ${VAR} placeholders resolve from the environment."
+            },
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Static: no {placeholders}. The id is never put in the URL."
+            },
+            "headers": {
+              "type": "object",
+              "minProperties": 1,
+              "additionalProperties": { "type": "string" },
+              "description": "Resolved as a REST binding's headers are (${VAR}, ${caller.NAME}). Must include an Authorization header carrying a ${VAR} secret — the semantic pass refuses it otherwise."
+            },
+            "timeoutSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 50,
+              "description": "How long the one round trip may take. Default 10."
             }
           }
         }

@@ -18,7 +18,9 @@ export interface UnenforcedToken {
 /**
  * CDL policy tokens (`cdl.schema.json`'s closed enum) that Archstone does NOT enforce in this
  * version. `authenticated` is deliberately absent — it is enforced, at the one evaluation point
- * (#43 / ADD-43 D-4), so it must not be warned about.
+ * (#43 / ADD-43 D-4), so it must not be warned about. So are `human-approval` and
+ * `consent-required` since ADD-393: each is enforced by its binding's decision gate, and a
+ * declared token with no gate is refused at runtime and reported as `*-gate-missing`.
  */
 export const UNENFORCED_POLICY_TOKENS: Readonly<Record<string, UnenforcedToken>> = {
   "rate-limited": {
@@ -30,15 +32,5 @@ export const UNENFORCED_POLICY_TOKENS: Readonly<Record<string, UnenforcedToken>>
     why: "which tenant's data a call may touch is a separate axis from identity, and is deliberately not implemented yet",
     consequence: "Archstone does not confine a call to one tenant's data.",
     action: "Confine it in the provider.",
-  },
-  "human-approval": {
-    why: "no approval mechanism exists",
-    consequence: "An agent can run it without anyone approving.",
-    action: "Put the approval step in the provider, or do not serve this capability to an agent unattended.",
-  },
-  "consent-required": {
-    why: "no consent mechanism exists",
-    consequence: "An agent can run it without anyone recording consent.",
-    action: "Collect consent in the provider, or do not serve this capability to an agent unattended.",
   },
 };

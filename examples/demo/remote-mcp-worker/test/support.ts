@@ -2,7 +2,9 @@ import { InMemoryRateLimitCounter } from "@archstone/emitter-support";
 import { handle } from "../../../showcase/api/wanderlust-api.mjs";
 import { createWorker, type Env } from "../src/worker";
 
-export const ORIGIN = "http://demo.local";
+// https: a gated capability's ask goes only to https or a loopback address, and the ask shares the
+// agency's origin.
+export const ORIGIN = "https://demo.local";
 export const SITE = "https://archstone.dev";
 export const KEY_A = "demo-public-key-visitor-0000";
 export const KEY_B = "demo-public-key-blocked-0000";

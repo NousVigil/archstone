@@ -90,13 +90,43 @@
             "lifecycle_blocked",
             "lifecycle_unevaluatable",
             "rate_limit_exceeded",
-            "input_invalid"
+            "input_invalid",
+            "approval_pending",
+            "approval_refused",
+            "consent_pending",
+            "consent_refused"
           ],
-          "description": "Why the attempt was refused when phase is denied. A CLOSED set, enforced here and not only in a TypeScript union — this file is the product contract a non-TypeScript consumer of the audit log reads. The first four are exactly the policy evaluator's PolicyDenialReason, copied verbatim. The next two are both produced by the exposure gate (never by the policy evaluator), which runs BEFORE policy is consulted, and are deliberately distinct from each other: `lifecycle_blocked` is a GOVERNANCE refusal (the capability's declared `retired` lifecycle — a business withdrew it, remedied only by a business decision to un-retire it); `lifecycle_unevaluatable` (ADD-56) is a COMPATIBILITY refusal (the declared `lifecycle` value is not one this build recognizes at all — an unrecognized string, a non-string, or an absent field on a hand-written or forward-versioned artifact — remedied only by upgrading the runtime or recompiling with a compatible builder, never by a business decision). The last, `rate_limit_exceeded` (ADD-45), is produced by the rate-limit evaluator's counter-exceeded branch, checked at the same point as policy — immediately after policy allows and strictly before the connector is invoked (that evaluator's other fail-closed branch, a declared rate limit with no counter supplied, deliberately reuses `policy_unevaluatable` instead of adding a further code, because it is the same meaning wearing a different name). The last, `input_invalid` (#195), is produced by the input-contract gate: the call's arguments did not match the capability's declared input fields (a wrong type, a missing required field, a value outside an enum, a malformed date-range, party or money, or an undeclared key). It is checked after policy and strictly before the rate limiter and the connector, so nothing reached a backend and no rate-limit quota was spent; the record's `message` names declared field paths and expectations, never an argument value. Standing rule: every member has exactly one enumerated producer, and the set grows only by an architecture decision naming the new producer."
+          "description": "Why the attempt was refused when phase is denied. A CLOSED set, enforced here and not only in a TypeScript union — this file is the product contract a non-TypeScript consumer of the audit log reads. The first four are exactly the policy evaluator's PolicyDenialReason, copied verbatim. The next two are both produced by the exposure gate (never by the policy evaluator), which runs BEFORE policy is consulted, and are deliberately distinct from each other: `lifecycle_blocked` is a GOVERNANCE refusal (the capability's declared `retired` lifecycle — a business withdrew it, remedied only by a business decision to un-retire it); `lifecycle_unevaluatable` (ADD-56) is a COMPATIBILITY refusal (the declared `lifecycle` value is not one this build recognizes at all — an unrecognized string, a non-string, or an absent field on a hand-written or forward-versioned artifact — remedied only by upgrading the runtime or recompiling with a compatible builder, never by a business decision). The last, `rate_limit_exceeded` (ADD-45), is produced by the rate-limit evaluator's counter-exceeded branch, checked at the same point as policy — immediately after policy allows and strictly before the connector is invoked (that evaluator's other fail-closed branch, a declared rate limit with no counter supplied, deliberately reuses `policy_unevaluatable` instead of adding a further code, because it is the same meaning wearing a different name). The last, `input_invalid` (#195), is produced by the input-contract gate: the call's arguments did not match the capability's declared input fields (a wrong type, a missing required field, a value outside an enum, a malformed date-range, party or money, or an undeclared key). It is checked after policy and strictly before the rate limiter and the connector, so nothing reached a backend and no rate-limit quota was spent; the record's `message` names declared field paths and expectations, never an argument value. The last four (ADD-393) are produced by the decision-gate step — the binding-declared ask to the deployer's endpoint, run after the rate limiter and strictly before the connector: `approval_pending`/`approval_refused` when the endpoint answered `pending`/`refused` for a `human-approval` gate, `consent_pending`/`consent_refused` for a `consent-required` gate. Any failure to obtain a valid answer (no gate, a non-2xx status, a timeout, a redirect, an oversize or malformed body, a wrong echo) is `policy_unevaluatable`, never one of these four. Standing rule: every member has exactly one enumerated producer, and the set grows only by an architecture decision naming the new producer."
+        },
+        "decisionReferences": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "ADD-393 D-7: what the decision-gate step established, per CDL token — written whenever an ask was SENT (on every phase), so an unevaluatable ask is still traceable to the id presented. Not scrubbed: both values are restricted to visible ASCII before they are sent or accepted.",
+          "properties": {
+            "human-approval": { "$ref": "#/$defs/decisionReference" },
+            "consent-required": { "$ref": "#/$defs/decisionReference" }
+          }
         },
         "reachedConnector": {
           "type": "boolean",
           "description": "Present only when `phase` is `failed`. `true` when the connector returned a response (a non-2xx status, or a declared response mapping the backend's reply did not satisfy); `false` when the attempt never received one — a missing binding prerequisite (env var, caller credential, baseUrl, allowlist, path parameter) or a network-level failure before any response arrived. Absent on `succeeded` (always reached) and `denied` (never attempted) — a value that never varies there is not one this record states. Reflects Doc 6 §3's billing boundary: a metering consumer treats `phase === 'succeeded'` or (`phase === 'failed'` and `reachedConnector === true`) as billable, everything else as not. See ADD-44 Amendment 2 (archstone#34)."
+        }
+      }
+    }
+  },
+  "$defs": {
+    "decisionReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["approvalId"],
+      "properties": {
+        "approvalId": {
+          "type": "string",
+          "description": "The id the agent presented, exactly as sent to the deployer's endpoint (1–256 visible ASCII characters)."
+        },
+        "reference": {
+          "type": "string",
+          "description": "The reference the endpoint returned with a valid answer (1–512 visible ASCII characters). Absent when no valid answer came back."
         }
       }
     }

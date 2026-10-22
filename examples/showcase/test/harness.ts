@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { buildRegistry, callTool, type CallResult } from "@archstone/runtime";
 import { InMemoryRateLimitCounter, type Registry, type RateLimitCounter } from "@archstone/emitter-support";
 import type { CallerContext } from "@archstone/emitter-support";
-import { handle } from "../api/wanderlust-api.mjs";
+import { DEMO_APPROVER_KEY, DEMO_ASK_KEY, createApprovalStore, handle, type ApprovalStore } from "../api/wanderlust-api.mjs";
 import { DEMO_KEY_A, callerFor } from "../credentials.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -21,12 +21,17 @@ export const VARIANT_DIR = resolve(SHOWCASE_DIR, "manifest-variants/misdeclared-
 
 export type KeyLabel = "none" | "A" | "B" | "other";
 
-export interface Step {
-  tool: string;
-  key: KeyLabel;
-  arguments: Record<string, unknown>;
-  capture?: Record<string, string>;
-}
+/** A tool call the scenario makes before its own, or (with `approve`) a person deciding an approval.
+ *  The person's decision goes straight to the agency's approvals system: it is not an agent's call
+ *  and never passes through Archstone. */
+export type Step =
+  | { tool: string; key: KeyLabel; arguments: Record<string, unknown>; capture?: Record<string, string>; approve?: undefined }
+  | { approve: string; decision: "approve" | "reject"; tool?: undefined };
+
+/** The origin tests point the manifest at. https, because a gate's ask goes only to https or loopback. */
+export const API_ORIGIN = "https://api.showcase.example";
+/** The env every in-process run uses: the agency's origin, and the runtime's secret toward the ask endpoint. */
+export const SHOWCASE_ENV = { SHOWCASE_API_URL: API_ORIGIN, SHOWCASE_ASK_TOKEN: DEMO_ASK_KEY };
 
 export interface ScenarioRow {
   id: string;
@@ -72,20 +77,34 @@ export function loadScenarios(): ScenarioDoc {
 export const CLOCK_MS = Date.parse(loadScenarios().clock);
 
 export interface BackendSpy {
-  /** `METHOD /path` of every request the synthetic API received, in order. */
+  /** `METHOD /path` of every request the synthetic API received from Archstone, in order. */
   calls: string[];
   fetchImpl: typeof fetch;
+  /** This backend's own approvals: each spy gets a fresh store, so no test sees another's approvals. */
+  approvals: ApprovalStore;
+  /** A person decides an approval, in the agency's approvals system. Not recorded in `calls`. */
+  decide: (approvalId: string, decision?: "approve" | "reject") => Promise<Response>;
 }
 
 /** A `fetch` that answers from the synthetic API in-process and records what it was asked. */
 export function backend(now: number | (() => number) = CLOCK_MS): BackendSpy {
   const calls: string[] = [];
+  const approvals = createApprovalStore();
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
     const request = new Request(input as string | URL, init);
     calls.push(`${request.method} ${new URL(request.url).pathname}`);
-    return handle(request, { now });
+    return handle(request, { now, approvals });
   }) as typeof fetch;
-  return { calls, fetchImpl };
+  const decide = (approvalId: string, decision: "approve" | "reject" = "approve") =>
+    handle(
+      new Request(`${API_ORIGIN}/v1/approvals/${encodeURIComponent(approvalId)}/decision`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${DEMO_APPROVER_KEY}` },
+        body: JSON.stringify({ decision }),
+      }),
+      { now, approvals },
+    );
+  return { calls, fetchImpl, approvals, decide };
 }
 
 export function openRegistry(dir: string = MANIFEST_DIR): Registry {
@@ -121,11 +140,31 @@ export function newContext(opts: { now?: number | (() => number); registry?: Reg
 
 export function call(ctx: RunContext, tool: string, args: Record<string, unknown>, key: KeyLabel = "none"): Promise<CallResult> {
   return callTool(ctx.registry, tool, args, {
-    env: { SHOWCASE_API_URL: "http://api.showcase.example" },
+    env: SHOWCASE_ENV,
     fetchImpl: ctx.spy.fetchImpl,
     caller: callerForLabel(key),
     rateLimitCounter: ctx.counter,
   });
+}
+
+/**
+ * The approval flow a gated call needs, done the way an agent and a person do it: the agent requests
+ * an approval for exactly `input` (through Archstone), and a person decides it in the agency's own
+ * system (not through Archstone). Returns the approval id to pass as the gated call's `approval`.
+ */
+export async function approve(
+  ctx: RunContext,
+  kind: "payment" | "cancellation",
+  input: Record<string, unknown>,
+  key: KeyLabel = "A",
+  decision: "approve" | "reject" = "approve",
+): Promise<string> {
+  const requested = await call(ctx, `wanderlust_request-${kind}-approval`, input, key);
+  if (requested.isError) throw new Error(`requesting a ${kind} approval failed: ${JSON.stringify(requested)}`);
+  const id = (requested.structuredContent as { approval: { id: string } }).approval.id;
+  const decided = await ctx.spy.decide(id, decision);
+  if (!decided.ok) throw new Error(`deciding ${id} failed: ${decided.status}`);
+  return id;
 }
 
 function atPath(value: unknown, path: string): unknown {
@@ -153,6 +192,11 @@ export async function runRow(
 ): Promise<{ result: CallResult; captured: Record<string, unknown>; arguments: Record<string, unknown> }> {
   const captured: Record<string, unknown> = {};
   for (const step of row.setup ?? []) {
+    if (step.approve !== undefined) {
+      const decided = await ctx.spy.decide(String(fill(step.approve, captured)), step.decision);
+      if (!decided.ok) throw new Error(`setup decision of ${row.id} failed: ${decided.status} ${await decided.text()}`);
+      continue;
+    }
     const r = await call(ctx, step.tool, fill(step.arguments, captured) as Record<string, unknown>, step.key);
     if (r.isError) throw new Error(`setup step ${step.tool} of ${row.id} failed: ${JSON.stringify(r)}`);
     for (const [name, path] of Object.entries(step.capture ?? {})) captured[name] = atPath(r.structuredContent, path);

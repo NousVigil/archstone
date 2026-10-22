@@ -1,5 +1,5 @@
 # CDL 0.2 — the hardest case: money moves, irreversibly
-# Showcases: effect: irreversible, failures, human-approval intent, lifecycle, ref inputs
+# Showcases: effect: irreversible, failures, an enforced human-approval gate, lifecycle, ref inputs
 
 capability:
   id: banking.initiate-transfer
@@ -17,6 +17,9 @@ capability:
     reference:
       type: text
       required: false
+    approval:
+      ref: Approval
+      description: The approved approval from banking.request-transfer-approval, for this same transfer.
 
   output:
     transfer:

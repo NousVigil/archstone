@@ -7,13 +7,15 @@
 /* global Request, Buffer */
 import { createServer } from "node:http";
 import { pathToFileURL } from "node:url";
-import { handle } from "./wanderlust-api.mjs";
+import { createApprovalStore, handle } from "./wanderlust-api.mjs";
 
 /**
- * @param {{ port?: number, now?: number | (() => number), imageBase?: string }} [options]
+ * @param {{ port?: number, now?: number | (() => number), imageBase?: string, approvals?: ReturnType<typeof createApprovalStore> }} [options]
  * @returns {import("node:http").Server}
  */
 export function createApiServer(options = {}) {
+  // One approvals store per server: approvals are the only state the agency keeps.
+  const approvals = options.approvals ?? createApprovalStore();
   return createServer((req, res) => {
     const chunks = [];
     req.on("data", (c) => chunks.push(c));
@@ -33,7 +35,7 @@ export function createApiServer(options = {}) {
         res.end(JSON.stringify({ error: "bad_request", message: "Malformed request." }));
         return;
       }
-      handle(request, { now: options.now, imageBase: options.imageBase })
+      handle(request, { now: options.now, imageBase: options.imageBase, approvals })
         .then(async (response) => {
           res.writeHead(response.status, Object.fromEntries(response.headers));
           res.end(Buffer.from(await response.arrayBuffer()));

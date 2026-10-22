@@ -192,6 +192,20 @@ describe("diagnose — what it makes you look at", () => {
     expect(r.findings.find((f) => f.code === "authenticated-needs-principal")?.because).toMatch(/stdio/);
   });
 
+  // ADD-393 D-8 — the decision gates.
+  it("warns when human-approval or consent-required has no gate, and advises a principal when one exists", () => {
+    const gate = { input: "accountId", ask: { baseUrl: "https://approvals.example.test", path: "/ask", headers: { Authorization: "Bearer ${APPROVAL_TOKEN}" } } };
+    const bare = diagnose(ir([tool({ effect: "irreversible", policies: ["human-approval", "consent-required"] })]), dir);
+    expect(bare.findings.filter((f) => f.code.endsWith("-gate-missing")).map((f) => [f.code, f.severity, f.token])).toEqual([
+      ["consent-gate-missing", "warning", "consent-required"],
+      ["approval-gate-missing", "warning", "human-approval"],
+    ]);
+    expect(bare.ok).toBe(true);
+    const gated = diagnose(ir([tool({ effect: "irreversible", policies: ["human-approval"], approval: gate })]), dir);
+    expect(codes(gated)).not.toContain("approval-gate-missing");
+    expect(gated.findings.find((f) => f.code === "approval-without-principal")).toMatchObject({ severity: "advisory", token: "human-approval" });
+  });
+
   it("notes that experimental capabilities stay invocable by id", () => {
     expect(codes(diagnose(ir([tool({ lifecycle: "experimental" })]), dir))).toContain("experimental-capability");
   });
@@ -290,9 +304,15 @@ describe("archstone doctor — lint", () => {
     expect(got.map((f) => [f.code, f.capability, f.token, f.severity, f.message, f.because])).toEqual(
       expected.map((f) => [f.code, f.capability, f.token, "warning", f.message, f.because]),
     );
-    expect(got.map((f) => f.token)).toEqual(["human-approval", "rate-limited"]);
-    // `token` appears on no other finding.
-    expect(r.findings.filter((f) => !lintCodes.has(f.code) && "token" in f)).toEqual([]);
+    // human-approval is enforced by a gate since ADD-393, and bank's transfer declares one: no lint
+    // finding and no missing gate (the missing-gate path is the ungated copy below).
+    expect(got.map((f) => f.token)).toEqual(["rate-limited"]);
+    expect(r.findings.filter((f) => f.code === "approval-gate-missing")).toEqual([]);
+    // The gated transfer's advisory names its token; `token` appears on no other finding.
+    expect(r.findings.filter((f) => f.code === "approval-without-principal").map((f) => [f.capability, f.token, f.severity])).toEqual([
+      ["banking.initiate-transfer", "human-approval", "advisory"],
+    ]);
+    expect(r.findings.filter((f) => !lintCodes.has(f.code) && f.code !== "approval-gate-missing" && f.code !== "approval-without-principal" && "token" in f)).toEqual([]);
     expect(r.ok).toBe(true);
     expect(code).toBe(0);
   }, 20000);
@@ -300,8 +320,11 @@ describe("archstone doctor — lint", () => {
   it("bank still renders irreversible-effect beside them, and counts 5 warnings", async () => {
     const { stdout, code } = await doctor("examples/manifests/bank");
     expect(stdout).toContain("(irreversible-effect)");
-    expect(stdout.match(/\(irreversible-unenforced-policy\)/g)).toHaveLength(2);
-    expect(stdout).toContain("4 capabilities checked — 0 error · 5 warning · 8 advisory.");
+    expect(stdout.match(/\(irreversible-unenforced-policy\)/g)).toHaveLength(1);
+    // The transfer is gated: no missing gate, and the advisory that its surface needs a principal.
+    expect(stdout.match(/\(approval-gate-missing\)/g)).toBeNull();
+    expect(stdout.match(/\(approval-without-principal\)/g)).toHaveLength(1);
+    expect(stdout).toContain("6 capabilities checked — 0 error · 5 warning · 14 advisory.");
     expect(code).toBe(0);
   }, 20000);
 
@@ -319,13 +342,32 @@ describe("archstone doctor — lint", () => {
       "irreversible-no-failures",
       "irreversible-unauthenticated",
       "irreversible-unenforced-policy",
-      "irreversible-unenforced-policy",
     ]);
+    expect(codes(r)).not.toContain("approval-gate-missing");
+    expect(r.ok).toBe(true);
+    expect(code).toBe(0);
+  }, 20000);
+
+  it("an ungated copy of bank reports human-approval as approval-gate-missing, a warning that leaves ok true", async () => {
+    const copy = join(dir, "bank-ungated");
+    cpSync(join(root, "examples/manifests/bank"), copy, { recursive: true });
+    const binding = join(copy, "bindings", "banking.initiate-transfer.binding.yaml");
+    const gate = /\n {2}# The human-approval gate[\s\S]*$/;
+    expect(readFileSync(binding, "utf8")).toMatch(gate);
+    writeFileSync(binding, readFileSync(binding, "utf8").replace(gate, "\n"));
+    const { stdout, code } = await doctor(copy, "--json");
+    const r = JSON.parse(stdout) as DoctorReport;
+    expect(r.findings.filter((f) => f.code === "approval-gate-missing").map((f) => [f.capability, f.token, f.severity])).toEqual([
+      ["banking.initiate-transfer", "human-approval", "warning"],
+    ]);
+    expect(r.findings.filter((f) => f.code === "irreversible-unenforced-policy").map((f) => f.token)).toEqual(["rate-limited"]);
     expect(r.ok).toBe(true);
     expect(code).toBe(0);
   }, 20000);
 
   for (const name of ["booking", "tourism"]) {
+    // Re-recorded once for ADD-393 §8: booking's `authenticated-needs-principal` text was wrong
+    // about stdio serve. Nothing else in either recording changed.
     it(`${name}: doctor and doctor --json are byte-identical to the pre-lint recordings`, async () => {
       expect((await doctor(`examples/manifests/${name}`)).stdout).toBe(report(`doctor-${name}.txt`));
       expect((await doctor(`examples/manifests/${name}`, "--json")).stdout).toBe(report(`doctor-${name}.json`));
