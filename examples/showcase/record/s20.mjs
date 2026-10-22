@@ -1,6 +1,6 @@
 // S-20: `archstone init <openapi>` - start from the description of an existing system.
 //
-// `init` proposes one candidate per operation in the document (16 here) and emits only the ones a
+// `init` proposes one candidate per operation in the document (21 here) and emits only the ones a
 // person confirms, each with an effect the person chose; it never defaults one. The decisions are the
 // person's answers in a file (s20-decisions.json): three operations kept, the DELETE declined.
 //
@@ -36,7 +36,7 @@ export async function run(ctx) {
 
   const init = await ctx.cli(["init", SPEC, "--out", draft, "--decisions", DECISIONS, "--non-interactive"], { offline: true, netLog });
   ctx.check("`init` exits 0", init.exit === 0);
-  ctx.check("it proposed 16 candidates, one per operation in the document", /Candidates: 16 proposed/.test(init.stdout));
+  ctx.check("it proposed 21 candidates, one per operation in the document", /Candidates: 21 proposed/.test(init.stdout));
   ctx.check(`it emitted exactly the ${kept.length} confirmed capabilities`, new RegExp(`${kept.length} emitted`).test(init.stdout));
 
   // Without a decisions file there is no person to confirm an effect, and `init` never defaults one.

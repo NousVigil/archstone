@@ -24,7 +24,7 @@ export async function run(ctx) {
   const json = await ctx.cli(["apply", MANIFEST_REL, "--exposure", "--json"], { ...offline, record: false });
   ctx.check("the same report as JSON exits 0", json.exit === 0);
   const report = JSON.parse(json.stdout).exposure;
-  ctx.check("the report covers all 13 capabilities", report.length === 13);
+  ctx.check("the report covers all 16 capabilities", report.length === 16);
 
   const exposed = report.flatMap((c) => c.exposes.map((f) => f.path));
   ctx.check("the exposed list is not empty (the check below is not vacuous)", exposed.length > 40);

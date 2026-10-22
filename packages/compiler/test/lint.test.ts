@@ -26,6 +26,16 @@ function bankWith(edit: (cap: Cap) => void, policyDocs: PolicyDoc[] = []): LoadR
   return model;
 }
 
+/** The same model with the transfer binding's `approval:` gate removed: the fixture for the
+ *  missing-gate path, which the shipped bank (gated since ADD-393) no longer exercises. */
+function ungated(model: LoadResult): LoadResult {
+  const copy = structuredClone(model);
+  const binding = copy.bindings.find((b) => b.binding.capabilityId === TRANSFER)!.binding as { approval?: unknown };
+  expect(binding.approval).toBeDefined();
+  delete binding.approval;
+  return copy;
+}
+
 const lint = (model: LoadResult): LintFinding[] => lintIR(compile(model), model);
 const forCap = (fs: LintFinding[], code?: string) => fs.filter((f) => f.capability === TRANSFER && (!code || f.code === code));
 
@@ -47,8 +57,14 @@ describe("lintIR — bank (S-US1.4, S-US3.4, S-US4.1/4.2)", () => {
     expect(findings.map((f) => [f.code, f.severity, f.capability, f.token])).toEqual([
       ["irreversible-unenforced-policy", "warning", TRANSFER, "rate-limited"],
     ]);
-    // The missing gate is validateSemantics' to report, not the lint's.
-    const gate = validateSemantics(bank).filter((d) => d.capability === TRANSFER && d.token === "human-approval");
+    // Bank's transfer binding declares the gate, so validateSemantics reports nothing for the token either.
+    expect(validateSemantics(bank).filter((d) => d.capability === TRANSFER && d.token === "human-approval")).toEqual([]);
+  });
+
+  it("ungated, the lint is unchanged and the missing gate is validateSemantics' to report, not the lint's", () => {
+    const model = ungated(bank);
+    expect(lint(model)).toEqual(findings);
+    const gate = validateSemantics(model).filter((d) => d.capability === TRANSFER && d.token === "human-approval");
     expect(gate.map((d) => [d.code, d.severity])).toEqual([["approval-gate-missing", "warning"]]);
   });
 
@@ -133,9 +149,12 @@ describe("lintIR — row 4, irreversible-unauthenticated (S-US3.x)", () => {
 
 describe("lintIR — row 6, irreversible-unenforced-policy (S-US4.x)", () => {
   it("reports two findings, one per unenforced token, and none for authenticated or the gated tokens", () => {
-    const model = bankWith((c) => {
-      c.policies = ["authenticated", "human-approval", "consent-required", "tenant-scoped", "rate-limited"];
-    });
+    // Ungated, so both gated tokens are reported as missing gates below.
+    const model = ungated(
+      bankWith((c) => {
+        c.policies = ["authenticated", "human-approval", "consent-required", "tenant-scoped", "rate-limited"];
+      }),
+    );
     const fs = forCap(lint(model));
     expect(fs.map((f) => [f.code, f.token])).toEqual([
       ["irreversible-unenforced-policy", "tenant-scoped"],

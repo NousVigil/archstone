@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import defaultWorker from "../src/index";
 import { mockStaysResponse } from "../src/mock-backend";
-import { IMAGE_BASE } from "../../../showcase/api/wanderlust-api.mjs";
+import { DEMO_APPROVER_KEY, IMAGE_BASE } from "../../../showcase/api/wanderlust-api.mjs";
 import { runBattery } from "../scripts/battery";
 import { KEY_A, KEY_B, ORIGIN, POLICY_META, newWorker } from "./support";
 
@@ -121,9 +121,19 @@ describe("AC-3.3 / AC-3.4 the published keys and the policy", () => {
     const cancel = await w.call("wanderlust_cancel", { bookingId: "B-0000cafe" }, `Bearer ${KEY_B}`);
     expect([reason(pay), reason(cancel)]).toEqual(["principal_denied", "principal_denied"]);
     expect(w.apiCalls).toEqual([]);
-    const ok = await w.call("wanderlust_cancel", { bookingId: "B-0000cafe" }, `Bearer ${KEY_A}`);
+    // The visitor key, with an approval a person granted: the approval is requested, Archstone asks the
+    // agency's endpoint, and only then is the cancel sent.
+    const asked = await w.call("wanderlust_request-cancellation-approval", { bookingId: "B-0000cafe" }, `Bearer ${KEY_A}`);
+    const approval = (asked.result?.structuredContent as { approval: { id: string } }).approval.id;
+    const decided = await w.fetch(`/v1/approvals/${approval}/decision`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${DEMO_APPROVER_KEY}` },
+      body: JSON.stringify({ decision: "approve" }),
+    });
+    expect(decided.status).toBe(200);
+    const ok = await w.call("wanderlust_cancel", { bookingId: "B-0000cafe", approval }, `Bearer ${KEY_A}`);
     expect(ok.result?.isError).not.toBe(true);
-    expect(w.apiCalls).toEqual(["POST /v1/bookings/B-0000cafe/cancel"]);
+    expect(w.apiCalls).toEqual(["POST /v1/approvals/cancellation", "POST /v1/approvals/" + approval + "/decision", "POST /v1/approvals/consume", "POST /v1/bookings/B-0000cafe/cancel"]);
   });
 
   it("no Authorization header: authenticated_no_credential, backend never called", async () => {

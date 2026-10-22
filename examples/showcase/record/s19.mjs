@@ -16,6 +16,7 @@ import { fromIR } from "@archstone/agent";
 import { readFileSync } from "node:fs";
 import { CLOCK_MS, MANIFEST_REL, emptyNetLog, readNetLog, startApi } from "./lib.mjs";
 import { callerFor } from "../credentials.mjs";
+import { DEMO_APPROVER_KEY, DEMO_ASK_KEY } from "../api/wanderlust-api.mjs";
 
 export const meta = { id: "S-19", file: "s-19.json", kind: "cli", title: "Check my setup (audit and doctor), sending nothing anywhere" };
 
@@ -35,7 +36,7 @@ export async function run(ctx) {
   const sdk = fromIR(JSON.parse(readFileSync(irPath, "utf8")));
   const records = [];
   const caller = callerFor("A");
-  const opts = { env: { SHOWCASE_API_URL: api.url }, caller, auditSink: (r) => records.push(r) };
+  const opts = { env: { SHOWCASE_API_URL: api.url, SHOWCASE_ASK_TOKEN: DEMO_ASK_KEY }, caller, auditSink: (r) => records.push(r) };
   const run1 = async (id, input, label) => {
     const r = await sdk.execute(id, input, opts);
     ctx.callStep(id, input, { status: r.status });
@@ -49,13 +50,31 @@ export async function run(ctx) {
     { quoteId: quote.data.quote.quoteId, stayId: "ws-1001", dates: DATES, travelers: PARTY, guestName: "Ana Pop" },
     "book",
   );
-  await run1("wanderlust.cancel", { bookingId: "B-0000cafe" }, "cancel (irreversible)");
-  await run1(
-    "wanderlust.pay",
-    { bookingId: book.data.booking.bookingId, amount: book.data.booking.total, paymentQuote: book.data.booking.paymentQuote },
-    "pay (irreversible)",
+  // cancel and pay are gated by human-approval: the agent requests an approval, a person at the agency
+  // decides it (an HTTP call straight to the agency's approvals system, not through Archstone), and
+  // the gated call presents it.
+  const approved = async (kind, input) => {
+    const requested = await run1(`wanderlust.request-${kind}-approval`, input, `request a ${kind} approval`);
+    const id = requested.data.approval.id;
+    const decided = await fetch(`${api.url}/v1/approvals/${id}/decision`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${DEMO_APPROVER_KEY}` },
+      body: JSON.stringify({ decision: "approve" }),
+    });
+    ctx.check(`a person approved the ${kind} (outside Archstone)`, decided.ok);
+    return id;
+  };
+  const cancel = { bookingId: "B-0000cafe" };
+  await run1("wanderlust.cancel", { ...cancel, approval: await approved("cancellation", cancel) }, "cancel (irreversible)");
+  const pay = { bookingId: book.data.booking.bookingId, amount: book.data.booking.total, paymentQuote: book.data.booking.paymentQuote };
+  await run1("wanderlust.pay", { ...pay, approval: await approved("payment", pay) }, "pay (irreversible)");
+  ctx.check("the trail holds one record per execution", records.length === 7);
+  const gated = records.filter((r) => ["wanderlust.cancel", "wanderlust.pay"].includes(r.metadata.capabilityId));
+  ctx.check(
+    "each gated execution's record carries the approval it presented and the agency's decision reference",
+    gated.length === 2 &&
+      gated.every((r) => /^APR-/.test(r.status?.decisionReferences?.["human-approval"]?.approvalId ?? "") && /^DEC-/.test(r.status?.decisionReferences?.["human-approval"]?.reference ?? "")),
   );
-  ctx.check("the trail holds one record per execution", records.length === 5);
 
   const trail = join(work, "trail.jsonl");
   const stamped = records.map((r, i) => ({
@@ -72,19 +91,19 @@ export async function run(ctx) {
   // --- the offline window: nothing below may reach the backend, or anything else
   const netLog = emptyNetLog(work);
   const requestsBefore = api.requests.length;
-  const env = { SHOWCASE_API_URL: api.url };
+  const env = { SHOWCASE_API_URL: api.url, SHOWCASE_ASK_TOKEN: DEMO_ASK_KEY };
   const offline = { env, offline: true, netLog };
 
   const doctor = await ctx.cli(["doctor", MANIFEST_REL], offline);
   ctx.check("`doctor` exits 0: it reports health, it found no error", doctor.exit === 0);
-  ctx.check("`doctor` reports a summary of what it checked (13 capabilities, 0 errors)", /13 capabilities checked — 0 error/.test(doctor.stdout));
+  ctx.check("`doctor` reports a summary of what it checked (16 capabilities, 0 errors)", /16 capabilities checked — 0 error/.test(doctor.stdout));
   for (const id of ["wanderlust.cancel", "wanderlust.pay"]) {
-    ctx.check(`\`doctor\` names ${id} as irreversible and its approval token as unenforced`, new RegExp(`${id.replace(".", "\\.")} — is irreversible and declares policies:\\[human-approval\\], which this version does not enforce`).test(doctor.stdout));
+    ctx.check(`\`doctor\` names ${id} as gated by approval and needing an identified caller (approval-without-principal)`, new RegExp(`${id.replace(".", "\\.")} — is gated by \`approval:\`, which needs an identified caller`).test(doctor.stdout) && doctor.stdout.includes("(approval-without-principal)"));
   }
 
   const summary = await ctx.cli(["audit", trail], offline);
   ctx.check("`audit` exits 0", summary.exit === 0);
-  ctx.check("`audit` counts the five executions", /^5 records/m.test(summary.stdout));
+  ctx.check("`audit` counts the seven executions", /^7 records/m.test(summary.stdout));
 
   const csv = await ctx.cli(["audit", trail, "--format", "csv"], offline);
   const rows = csv.stdout.trim().split("\n").slice(1).map((l) => l.split(","));
