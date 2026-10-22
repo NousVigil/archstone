@@ -10,11 +10,14 @@ installGlobalInvariants({ expectTraffic: false });
 
 const EXPECTED_TOOLS = [
   "tourism_search",
+  "wanderlust_approval-status",
   "wanderlust_availability",
   "wanderlust_book",
   "wanderlust_cancel",
   "wanderlust_pay",
   "wanderlust_quote",
+  "wanderlust_request-cancellation-approval",
+  "wanderlust_request-payment-approval",
   "wanderlust_room-status",
   "wanderlust_search",
   "wanderlust_stay-details",
@@ -23,7 +26,7 @@ const EXPECTED_TOOLS = [
 ];
 
 describe("AC-2.16: the exposed tool list has no deletion tool", () => {
-  it("lists exactly the eleven callable tools to a real client; none is for deletion", async () => {
+  it("lists exactly the fourteen callable tools to a real client; none is for deletion", async () => {
     await session().withClient("none", async (client) => {
       const { tools } = await client.listTools();
       expect(tools.map((t) => t.name).sort()).toEqual(EXPECTED_TOOLS);

@@ -26,9 +26,12 @@ Read the example for what it is:
 - **Effects are MCP annotations.** `read`, `write` and `irreversible` become hints that a client may use
   to decide whether to ask a person first. Archstone does not enforce them and does not take credit for
   a confirmation the client chose to ask for.
-- **`human-approval` is declared, not enforced.** The cancel and pay capabilities declare it; this
-  version of Archstone has no approval mechanism, and `archstone apply` says so in a warning. Runtime
-  enforcement is tracked in
+- **`human-approval` is declared, not enforced here yet.** The cancel and pay capabilities declare it,
+  and `archstone apply` warns that it is not enforced. The approval flow itself is already in the
+  example: an agent can ask a person to approve (`wanderlust.request-payment-approval`,
+  `wanderlust.request-cancellation-approval`) and read the decision (`wanderlust.approval-status`),
+  and the agency serves the endpoint Archstone will ask (see [Approvals](#approvals)). Gating cancel
+  and pay on it, and the S-10 scenario, are tracked in
   [#165](https://github.com/NousVigil/archstone/issues/165). HTML output is tracked in
   [#166](https://github.com/NousVigil/archstone/issues/166); until then the raw description is not
   sent at all.
@@ -69,6 +72,40 @@ The name and URL come first: `--header` takes any number of values, so placed be
 Use the second key to see the blocked caller refused. Other clients vary; if yours has no header
 setting, it will see the refusal.
 
+## Approvals
+
+The agency runs its own small approvals system, the one part of the synthetic API that keeps state
+(an approval has to be remembered to be consumed). It has four routes, for three audiences:
+
+| Route | Key | Who | Bound as a capability |
+|---|---|---|---|
+| `POST /v1/approvals/payment`, `/cancellation` | a demo key | the agent asks a person to approve | yes: the two `request-…-approval` capabilities |
+| `GET /v1/approvals/{id}` | a demo key | the agent reads the decision | yes: `wanderlust.approval-status` |
+| `POST /v1/approvals/{id}/decision` | the approver key | a person decides | **never**: the scenario runner plays the person |
+| `POST /v1/approvals/consume` | the ask key | Archstone asks, once per gated call | no: a binding's `approval:` gate names it |
+
+The last route is the **ask endpoint**: `askApproval` in
+[`api/wanderlust-api.mjs`](api/wanderlust-api.mjs), commented as the reference a deployer copies. It
+takes Archstone's fixed ask body (`version`, `token`, `capabilityId`, `effect`, `principal`,
+`approvalId`, `input`) and answers `{ approvalId, outcome, reference }`. It allows only an approval
+granted for that capability, that principal and every field of that input. It refuses a `null`
+principal, and refuses an unknown id rather than answering 404. For an irreversible capability it
+marks the approval used in the same step that answers `allowed`, so a second ask with the same
+approval is refused. Once a capability is gated, Archstone's guarantee is that the call is refused
+unless the deployer's endpoint answers `allowed` for it. That single use holds is this endpoint's
+doing, not Archstone's. See the
+[ONBOARDING section](../../docs/ONBOARDING.md#approval-and-consent-human-approval-consent-required)
+for the whole contract.
+
+Gated `irreversible` capabilities need a principal, and `archstone serve` carries none. The
+showcase therefore serves them through the demo Worker
+([`examples/demo/remote-mcp-worker`](../demo/remote-mcp-worker)), whose `resolveCaller` maps each
+demo key to its principal.
+
+The approver key (`DEMO_APPROVER_KEY`) and the ask key (`DEMO_ASK_KEY`) are published like the demo
+keys. They prove nothing about who decided: in a real deployment the decision is a person's, behind
+the approvals system's own sign-in, and the ask key is a configured secret.
+
 ## Run it
 
 ```bash
@@ -96,11 +133,11 @@ reads `capabilities.yaml` from the directory it is given, and the other folders 
 
 | Path | What |
 |---|---|
-| [`api/wanderlust-api.mjs`](api/wanderlust-api.mjs) | The synthetic API: one plain `handle(request, { now, imageBase }) -> Response`. Web-standard APIs only; no Node and no Workers imports; deterministic and stateless. |
+| [`api/wanderlust-api.mjs`](api/wanderlust-api.mjs) | The synthetic API: one plain `handle(request, { now, imageBase, approvals }) -> Response`. Web-standard APIs only; no Node and no Workers imports; deterministic, and stateless except for approvals (an injectable in-memory store). |
 | [`api/serve.mjs`](api/serve.mjs) | A Node `http` wrapper serving that same handler. |
 | [`api/wanderlust.openapi.yaml`](api/wanderlust.openapi.yaml) | A synthetic OpenAPI document describing every route, over-exposed fields included. |
 | [`credentials.mjs`](credentials.mjs) | The two public demo keys and their principals. |
-| [`manifest/`](manifest/) | The live manifest: 13 capabilities, resources, four policies (principals for book, pay and cancel; the availability rate limit), bindings, golden fixtures for `verify`. |
+| [`manifest/`](manifest/) | The live manifest: 16 capabilities, resources, four policies (principals for book, pay and cancel; the availability rate limit), bindings, golden fixtures for `verify`. |
 | [`manifest-variants/`](manifest-variants/) | Authoring fixtures that are never deployed. Today: the mis-declared payment. |
 | [`scenarios.json`](scenarios.json) | The scenario table, S-01 to S-23. |
 | [`test/`](test/) | `api.test.ts`, `manifests.test.ts`, `scenario-json.test.ts`, the negative-scenario suite (`negatives.test.ts`, `denial-reasons.test.ts`, `tool-list.test.ts`), the shared `harness.ts` and `negatives-support.ts`, and for the recorded scenarios `recorded-s15.test.ts` to `recorded-s21.test.ts`, `recorded-determinism.test.ts` and `recorded.ts`. |
@@ -122,13 +159,17 @@ reads `capabilities.yaml` from the directory it is given, and the other folders 
 | `wanderlust.book` | write | stable | `authenticated`, forwards `${caller.accessToken}`; policy allows `demo:visitor`, denies `demo:blocked`; books at the quoted total |
 | `wanderlust.cancel` | irreversible | stable | `authenticated`, the same principal policy as book, `human-approval` declared, failures declared; the refund is the booking's total |
 | `wanderlust.pay` | irreversible | stable | as cancel (the same principal policy), plus a payment quote the agency checks |
+| `wanderlust.request-payment-approval` | write | stable | `authenticated`; asks a person to approve a payment; takes what pay takes; returns an approval that starts `pending` |
+| `wanderlust.request-cancellation-approval` | write | stable | `authenticated`; the same for a cancellation |
+| `wanderlust.approval-status` | read | stable | `authenticated`; how an agent waits for the person; only the principal who asked can read it |
 | `wanderlust.availability` | read | beta | the only `rateLimit`: 3 calls per 60 seconds |
 | `wanderlust.room-status` | read | stable | `onError` rows; a wrong-typed price is a contract violation (reported as `invalid`) |
 | `wanderlust.neighbourhood` | read | experimental | unlisted, still callable by name |
 | `tourism.search` | read | deprecated | the original `tourism_search` tool; same input and filters as `wanderlust.search`, the old output shape (no ids) |
 | `tourism.search-classic` | read | retired | listed nowhere, refused when called |
 
-There is **no capability** for the DELETE endpoint, for `description_html`, for the margin, or for
+There is **no capability** for deciding an approval: a person decides, never the agent. There is
+also **no capability** for the DELETE endpoint, for `description_html`, for the margin, or for
 passport and phone. Those are the things the backend returns that the manifest never names. The booking
 resource declares no guest field at all.
 

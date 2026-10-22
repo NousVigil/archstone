@@ -1,0 +1,14 @@
+resource:
+  name: wanderlust.Approval
+  description: "A person's decision on one payment or cancellation, requested before it happens."
+  fields:
+    id:
+      type: identifier
+      description: "The approval's id. Read its status with wanderlust.approval-status."
+    status:
+      type: enum
+      values: [pending, approved, rejected, used, expired]
+      description: "Where the decision stands. pending: no one has decided yet. used: it has already authorised the action it was for."
+    expiresAt:
+      type: datetime
+      description: "When an undecided or unused approval lapses."

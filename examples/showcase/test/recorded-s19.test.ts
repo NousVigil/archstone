@@ -23,10 +23,10 @@ describe("recorded S-19: audit and doctor, sending nothing anywhere", () => {
     expect(csv.stdout!.split("\n").filter((l) => /,wanderlust\.(cancel|pay),/.test(l))).toHaveLength(2);
   });
 
-  it("doctor reports health: 13 capabilities, no error, and names the two irreversible ones", () => {
+  it("doctor reports health: 16 capabilities, no error, and names the two irreversible ones", () => {
     const doctor = stepWith(t, "archstone doctor examples/showcase/manifest");
     expect(doctor.exit).toBe(0);
-    expect(doctor.stdout).toMatch(/13 capabilities checked — 0 error/);
+    expect(doctor.stdout).toMatch(/16 capabilities checked — 0 error/);
     expect(doctor.stdout).toContain("wanderlust.cancel — is irreversible and declares policies:[human-approval], which this version does not enforce");
     expect(doctor.stdout).toContain("wanderlust.pay — is irreversible and declares policies:[human-approval], which this version does not enforce");
   });

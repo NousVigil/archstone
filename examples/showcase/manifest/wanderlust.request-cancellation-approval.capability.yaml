@@ -1,0 +1,20 @@
+capability:
+  id: wanderlust.request-cancellation-approval
+  description: "Ask a person at the agency to approve cancelling a booking. Returns an approval that starts pending; read it with wanderlust.approval-status, do not retry. The approval is for this booking and for the caller who asked."
+  effect: write
+
+  input:
+    bookingId:
+      type: identifier
+      description: "The booking reference from wanderlust.book."
+
+  output:
+    approval:
+      type: Approval
+
+  failures:
+    booking-not-found: No booking has that reference.
+
+  policies:
+    - authenticated
+  provider: wanderlust-api

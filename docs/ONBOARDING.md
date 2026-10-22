@@ -717,8 +717,9 @@ indistinguishable, to a client, from a fact.
   annotations from servers they do not trust, and plenty of clients surface none of this at
   all. Archstone does not gate, refuse, delay, or retry anything on `effect`; it discloses,
   it does not enforce. If you need a capability to require approval, an annotation is not the
-  mechanism, and today Archstone has no other: `policies: [human-approval]` is accepted and
-  **unenforced**, which `archstone apply` warns you about by name.
+  mechanism. `policies: [human-approval]` with an `approval:` gate in the binding is: the call is
+  refused unless the deployer's endpoint answers `allowed` for it. See
+  [Approval and consent](#approval-and-consent-human-approval-consent-required).
 - **It is exactly as true as your manifest.** The annotation is a faithful lowering of what
   you wrote, not an audit of what your backend does. A `POST /charges` declared `effect: read`
   is advertised as read-only, and nothing in the pipeline can tell. This is why `archstone
@@ -981,11 +982,15 @@ Two operational notes:
   `serveStdio`, `execute()`).
 
 `archstone apply` also now warns on every declared CDL policy token Archstone does not yet
-enforce — `tenant-scoped`, `human-approval`, `consent-required` — naming the token and the
-capability. (The `rate-limited` CDL *token* is a separate vocabulary from the `spec.rateLimit`
-*document* above — see the next section — and stays on this unenforced list; declaring the token
-alone still does nothing.) The warnings never block anything. They exist so a `policies:` list is
-never mistaken for a list of shipped guarantees by someone reading your manifest as evidence.
+enforce — `tenant-scoped`, and the `rate-limited` token — naming the token and the capability.
+(The `rate-limited` CDL *token* is a separate vocabulary from the `spec.rateLimit` *document*
+above — see the next section — and stays on this unenforced list; declaring the token alone still
+does nothing.) `human-approval` and `consent-required` are enforced through a gate in the binding;
+a capability that declares one without its gate gets the `approval-gate-missing` warning instead
+and is refused at runtime (see
+[Approval and consent](#approval-and-consent-human-approval-consent-required)). The warnings never
+block anything. They exist so a `policies:` list is never mistaken for a list of shipped
+guarantees by someone reading your manifest as evidence.
 
 #### Rate limiting (`spec.rateLimit`, dev-45)
 
@@ -1079,6 +1084,185 @@ there is no per-IP/per-connection seam on the invocation path to distinguish the
 "no principal" as "no limit" would be the opposite of fail-closed.
 
 ---
+
+### Approval and consent (`human-approval`, `consent-required`)
+
+A capability that declares `policies: [human-approval]` (or `consent-required`) runs only when a
+decision exists for that call. Archstone does not hold approvals, decide them or wait for them.
+Your approvals system does all three, and Archstone asks it once, just before the call. The
+guarantee, in full:
+
+> **The call is refused unless the deployer's endpoint answers `allowed` for it**, in the same
+> invocation, after the rate limit and strictly before the provider.
+
+That is all Archstone promises. Whether an approval can be used twice is up to your endpoint, as
+the contract below requires. Archstone cannot see it and does not claim it.
+
+#### Three capabilities and one input
+
+The agent runs the flow itself, through capabilities you write like any other:
+
+| Capability | Effect | What it does |
+|---|---|---|
+| `…request-…-approval` | `write` | Asks a person to approve. Takes the same business input as the gated capability, so the person sees what they approve. Returns an `Approval` (`id`, `status`). |
+| `…approval-status` | `read` | Reads where the decision stands. **This is how an agent waits.** |
+| the gated capability | any | Declares the token and takes the approval id as a **required** input. |
+
+```yaml
+# banking.initiate-transfer.capability.yaml (CDL: business only, no URL, no secret)
+capability:
+  id: banking.initiate-transfer
+  effect: irreversible
+  input:
+    source:      { ref: Account }
+    beneficiary: { ref: Beneficiary }
+    amount:      { type: money }
+    approval:    { ref: Approval }     # required: a call without it is input_invalid
+  policies: [authenticated, human-approval]
+```
+
+None of this needs a language feature. The request and status capabilities work on any version,
+and the `approval` input is an ordinary `ref:` (a bare id string). Every client and model sees it
+in the tool's input schema, and that schema is how the protocol tells them a decision is needed.
+
+**An agent waits by reading the status, never by retrying the gated call.** A retry is a full
+attempt: it spends a rate-limit unit and sends another ask. The `approval_pending` message says so.
+
+**Never put a capability that *decides* approvals in the manifest served to the agent that makes
+the gated call.** An agent that can approve its own request has turned the approval into a
+formality. The decision belongs to a person, in your approvals system.
+
+#### The ask: one `POST` declared in the binding
+
+The gated capability's binding declares where to ask. For `consent-required` the block is called
+`consent:` instead, with the same grammar:
+
+```yaml
+# bindings/banking.initiate-transfer.binding.yaml (not CDL)
+binding:
+  capabilityId: banking.initiate-transfer
+  connector: { type: rest, rest: { baseUrl: "${CORE_BANKING_URL}", method: POST, path: /v2/transfers } }
+  approval:
+    input: approval                      # the declared input that carries the id
+    ask:
+      baseUrl: "${APPROVALS_URL}"        # https, or http on localhost / 127.0.0.1 / [::1]
+      path: /approvals/consume           # static: no {placeholders}
+      headers: { Authorization: "Bearer ${APPROVALS_TOKEN}" }   # required: a ${VAR} secret
+      timeoutSeconds: 10                 # optional, 1–50, default 10
+```
+
+The method is always `POST`. `apply` rejects a templated path, a non-loopback `http:` literal, an
+`input` that names an undeclared, optional or non-id field, and an `Authorization` header with no
+`${VAR}` in it. At runtime every `${VAR}` in that header must resolve to a non-empty value. A
+`${caller.NAME}` header may be added so the endpoint can also authenticate the end user, but it
+never replaces the runtime's own secret.
+
+Archstone builds the body itself, always in this shape, and no binding can reshape it:
+
+```json
+{ "version": 1, "token": "human-approval", "capabilityId": "banking.initiate-transfer",
+  "effect": "irreversible", "principal": "user-17", "approvalId": "APR-2026-0042",
+  "input": { "source": "ACC-1", "beneficiary": "BEN-9",
+             "amount": { "amount": 450, "currency": "EUR" }, "approval": "APR-2026-0042" } }
+```
+
+`input` is the full declared input the call was validated with, optional fields included and
+absent or `null` members left out. `principal` is the caller's, passed through unchanged, or
+`null` when the surface supplies none.
+
+The endpoint answers HTTP 200 with exactly this:
+
+```json
+{ "approvalId": "APR-2026-0042", "outcome": "allowed", "reference": "DEC-7781" }
+```
+
+`approvalId` must echo the id that was sent. `outcome` is `allowed`, `pending` or `refused`.
+`reference` is your system's own reference for the decision, and is **required with `allowed`**.
+Archstone ignores every other member. There is no reason field: the reference is where an auditor
+reads the reason, in your system, and nothing free-text from it reaches a model.
+
+#### The endpoint contract: what your endpoint must do
+
+No existing approvals API accepts that body, so you write a thin endpoint in front of yours. It
+**must**:
+
+1. find the approval by `approvalId`;
+2. answer `allowed` only if the approval was granted for **this** `capabilityId`, **this**
+   `principal` and **this** `input`, by your business's own rule (every field equal, or a payment
+   up to the approved amount, or maker-checker);
+3. for an `irreversible` capability, **mark the approval used in the same atomic operation** that
+   answers `allowed`, for example one conditional `UPDATE … SET status = 'used' WHERE id = ? AND
+   status = 'approved'`, answering `allowed` only if it changed a row;
+4. answer `refused` for an approval that is unknown, used, expired, rejected, or granted for
+   something else, and for any ask with a `null` principal, whatever the capability's effect;
+5. answer `pending` while a person has not decided yet.
+
+For `write` and `read` capabilities, and for consents (which are often long-lived), how long a
+decision lasts is your policy. The ask is sent on every invocation either way, and carries
+`effect` so one endpoint can treat each capability differently.
+
+A complete, commented reference implementation is `askApproval` in
+[`examples/showcase/api/wanderlust-api.mjs`](../examples/showcase/api/wanderlust-api.mjs) (route
+`POST /v1/approvals/consume`), beside the request, status and decision endpoints it serves.
+
+#### What each answer does
+
+| The endpoint… | The call |
+|---|---|
+| answers `allowed` with a valid reference | runs; the execution record carries the id and the reference in `status.decisionReferences` |
+| answers `pending` | is refused: `approval_pending` (`consent_pending`) |
+| answers `refused` | is refused: `approval_refused` (`consent_refused`) |
+| answers 404 or any other non-2xx, redirects, times out, sends more than 64 KiB, sends something that is not JSON, echoes the wrong id, names another outcome, or answers `allowed` without a reference | is refused: `policy_unevaluatable` |
+
+Every refusal reaches the provider zero times. A non-answer is **never** read as a refusal: an
+unknown id is your endpoint's to answer `refused`, and a 404 means the wiring is wrong. The
+approval id must be 1–256 visible ASCII characters, or the call is `input_invalid` before anything
+is sent.
+
+A capability that declares a token and whose binding has **no** gate block is refused at runtime
+with `policy_unevaluatable`, and `apply` warns `approval-gate-missing`. Declaring the token without
+wiring the gate makes the capability unavailable. It never makes it unprotected.
+
+When a capability declares both tokens, consent is asked first: an operator is not asked to stand
+behind a call its data subject has not consented to. An approval consumed before a later failure
+(the consent refused, the provider down) is spent. The agent requests a new one. For an
+irreversible action, "ask again" is the safe direction.
+
+#### The principal, and why `archstone serve` cannot serve these today
+
+Matching an approval to the person who asked needs to know who is calling. **On an `irreversible`
+capability, an ask with no principal is never sent**: the call is `policy_unevaluatable`. On other
+effects the ask is sent with `principal: null`, and the contract says your endpoint refuses it.
+
+**`archstone serve` carries no principal today**, over stdio or over `--http`. So every gated
+`irreversible` capability is refused there, and every other gated capability is refused by a
+conforming endpoint. Serve gated capabilities through:
+
+- the **embedded SDK**: `execute()` with `caller: { principal, … }`;
+- a **host `resolveCaller`**: `createHttpHandler` / `mcpHandler` given a `resolveCaller` that turns
+  each request's credential into a principal, as the demo Worker in
+  [`examples/demo/remote-mcp-worker`](../examples/demo/remote-mcp-worker) does;
+- `serveStdio`, embedded in your own process with a static `caller`.
+
+`archstone doctor` advises `approval-without-principal` on a gated capability, as it does
+`authenticated-needs-principal`.
+
+#### Embedded: `approvalResolver`
+
+An embedder whose approvals live in its own database does not have to stand up an HTTP endpoint to
+talk to itself. `approvalResolver` on `InvokeOptions` / `ExecuteOptions` replaces the transport of
+every gate: it receives exactly the body above and returns exactly the answer above. The answer goes
+through the same checks (echo, outcome, reference), a throw is `policy_unevaluatable`, and the
+null-principal rule applies before it is called. It carries no timeout of its own, so bounding the
+wait is up to you. It does not replace the binding's gate block: a capability without one is still
+refused.
+
+#### Detecting reuse after the fact
+
+With an audit sink wired, `archstone audit` reports a `human-approval` `approvalId` that appears on
+more than one executed record. That **detects** an endpoint that let an approval through twice; it
+does not prevent it. `archstone serve` passes no audit sink today, so on `serve` there are no
+records to check. `verify` never asks: a replay is a probe the deployer starts, not an agent's call.
 
 ### Recording what happened (the `Execution` audit trail)
 
@@ -1191,9 +1375,12 @@ declaration around it and prints one `⚠` line in its `semantic` block for each
   Policy has a non-empty `allow`, so any caller that can reach the server can invoke it. If that is
   intended the line stays, so the decision stays visible.
 - `irreversible-unenforced-policy` — it declares a policy token this version does not enforce
-  (`human-approval`, `consent-required`, `tenant-scoped`, `rate-limited`), one line per token. It
+  (`tenant-scoped`, `rate-limited`), one line per token. It
   takes the place of the general unenforced-token warning for that capability. A `rate-limited`
   token alongside an attached Policy with `spec.rateLimit` keeps the general warning.
+- `approval-gate-missing` — it declares `human-approval` or `consent-required` and its binding has
+  no `approval:` / `consent:` block, so every call to it is refused (`policy_unevaluatable`). This
+  check is not limited to `irreversible`.
 
 These are warnings: they never change the exit code of `apply`, and a `retired` capability is not
 checked. They check what the manifest *declares*, not the backend; `archstone verify` is the check
@@ -1230,6 +1417,12 @@ backend through a `read` capability if one exists — the quote half of a quote 
 a query before you commit — catching drift at zero risk. Not every write has one, and nothing in
 CDL declares the relationship, so Archstone cannot name it for you. Only if the binding genuinely
 points at a sandbox tenant is recording a fixture worthwhile, replayed with `archstone verify --sandbox`.
+
+It also warns `approval-gate-missing` for a gated capability with no gate block, and advises
+`approval-without-principal` for every gated capability: the surface you serve it on must supply a
+principal, which `archstone serve` does not (see
+[Approval and consent](#approval-and-consent-human-approval-consent-required)). `doctor` notes
+that `verify` replays a gated capability without asking.
 
 What it makes you look at: every `irreversible` effect, every capability whose declared rate
 limit needs a counter wired, every capability requiring an authenticated caller (which `serve`

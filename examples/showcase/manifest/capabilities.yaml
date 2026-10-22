@@ -21,6 +21,9 @@ capabilities:
   - wanderlust.book
   - wanderlust.cancel
   - wanderlust.pay
+  - wanderlust.request-payment-approval
+  - wanderlust.request-cancellation-approval
+  - wanderlust.approval-status
   - wanderlust.availability
   - wanderlust.room-status
   - wanderlust.neighbourhood

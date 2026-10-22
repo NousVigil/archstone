@@ -77,7 +77,7 @@ export async function run(ctx) {
 
   const doctor = await ctx.cli(["doctor", MANIFEST_REL], offline);
   ctx.check("`doctor` exits 0: it reports health, it found no error", doctor.exit === 0);
-  ctx.check("`doctor` reports a summary of what it checked (13 capabilities, 0 errors)", /13 capabilities checked — 0 error/.test(doctor.stdout));
+  ctx.check("`doctor` reports a summary of what it checked (16 capabilities, 0 errors)", /16 capabilities checked — 0 error/.test(doctor.stdout));
   for (const id of ["wanderlust.cancel", "wanderlust.pay"]) {
     ctx.check(`\`doctor\` names ${id} as irreversible and its approval token as unenforced`, new RegExp(`${id.replace(".", "\\.")} — is irreversible and declares policies:\\[human-approval\\], which this version does not enforce`).test(doctor.stdout));
   }

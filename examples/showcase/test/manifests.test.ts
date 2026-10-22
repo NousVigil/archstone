@@ -69,10 +69,10 @@ const listed = new Set(toolDefinitions(registry).map((d) => d.name));
 const definitionsOf = (name: string): string => toolDefinitions(registry).find((d) => d.name === name)?.description ?? "";
 
 describe("AC-1.3: `archstone apply` on the manifest", () => {
-  it("exits 0, reports 13 capabilities, and warns only about the two unenforced approval tokens", async () => {
+  it("exits 0, reports 16 capabilities, and warns only about the two unenforced approval tokens", async () => {
     const r = await apply(MANIFEST_DIR);
     expect(r.code).toBe(0);
-    expect(r.stdout).toContain("IR v0 — 13 capabilities, 13 invocable (bound)");
+    expect(r.stdout).toContain("IR v0 — 16 capabilities, 16 invocable (bound)");
     expect(r.stdout).toContain("shapes valid");
     const warnings = r.stdout.split("\n").filter((l) => l.includes("⚠"));
     expect(warnings).toHaveLength(2);
@@ -476,7 +476,7 @@ describe("over the MCP wire: the reference client validates every live answer ag
     await withClient("none", async (client) => {
       const names = (await client.listTools()).tools.map((t) => t.name).sort();
       expect(names).toEqual([...listed].sort());
-      expect(names).toHaveLength(11); // 13 declared, minus one experimental and one retired
+      expect(names).toHaveLength(14); // 16 declared, minus one experimental and one retired
     });
   });
 
