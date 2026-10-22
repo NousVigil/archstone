@@ -61,12 +61,21 @@ SET TRANSACTION READ ONLY;                              -- every call is read-on
 <the role and server checks, see section 6>;
 SELECT set_config('app.tenant_id', $1, true);           -- one per claim the host resolved
 <the declared query, with its $n parameters>;
+SELECT current_setting('app.tenant_id', true) ...;      -- one per claim: still the value set?
 COMMIT;                                                 -- or ROLLBACK on any error
 ```
 
 The claim key `tenant_id` becomes the variable `app.tenant_id`. The `app.` prefix is the default.
 It can be changed with `--sql-guc-prefix` on the CLI, or `sqlSessionGucPrefix` in code. The
 claims come from an identity adapter that the host supplies. The binding cannot set them.
+
+The query may not change them either. `apply` refuses a query that calls `set_config` or contains
+a `SET` or `RESET` statement, because the provider sets the caller's identity in those same session
+settings. Reading one with `current_setting` is fine. At call time the provider reads every claim
+back after the query, and if one no longer holds the value it set, the call is rolled back and
+returns no rows. A query that changes a setting and restores it before it finishes leaves nothing
+to read back, so the `apply` check is the only guard against that, and it sees only the query
+text, not a database function the query calls (#218).
 
 A row-level security policy in the database reads that variable. The example's policy is in
 section 2.
@@ -698,6 +707,7 @@ These come from `archstone apply`, before any database is touched:
 |---|---|
 | A literal connection string | `/binding/connector/sql/dsn must match pattern "^\$\{[A-Za-z_][A-Za-z0-9_]*\}$"` |
 | A write statement | `connector.sql.query must begin with SELECT or WITH … SELECT (after stripping leading whitespace/comments) — statementKind: select does not match the query's own leading keyword` |
+| A query that changes a session setting | `connector.sql.query may not change session settings (set_config, SET, RESET) — the provider sets the caller's identity there, and a query that changes it could read rows belonging to another caller` |
 | A placeholder past the end of `params` | `connector.sql.query references $2, but params has only 1 entry` |
 | A `params` entry with no placeholder | `connector.sql.params[0] ('id') has no corresponding $1 placeholder in the query` |
 | A `params` name that is not a declared input | `connector.sql.params references '<name>', which is not a declared input field of capability '<id>'` (from `packages/compiler/src/validate.ts`) |

@@ -104,6 +104,8 @@ function rlsPool(table = TABLE) {
           if (text.startsWith('SELECT "tenant_id"')) {
             return { rows: table.filter((r) => r.tenant_id === tenant && r.id === params![0]).map((r) => ({ ...r })) };
           }
+          // #218's readback: the claim set above is still the one in force.
+          if (text.startsWith("SELECT current_setting(")) return { rows: [{ intact: params![1] === tenant }] };
           return { rows: [] };
         },
         release() {},
