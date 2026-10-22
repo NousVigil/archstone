@@ -320,7 +320,7 @@ describe("archstone doctor — lint", () => {
     expect(stdout).toContain("(irreversible-effect)");
     expect(stdout.match(/\(irreversible-unenforced-policy\)/g)).toHaveLength(1);
     expect(stdout.match(/\(approval-gate-missing\)/g)).toHaveLength(1);
-    expect(stdout).toContain("4 capabilities checked — 0 error · 5 warning · 8 advisory.");
+    expect(stdout).toContain("6 capabilities checked — 0 error · 5 warning · 14 advisory.");
     expect(code).toBe(0);
   }, 20000);
 
