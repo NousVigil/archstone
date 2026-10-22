@@ -280,18 +280,22 @@ describe("authoring warnings that never block (BR-17/BR-46, EC-5/EC-7, S-US1.8/1
 describe("declared-but-unenforced CDL tokens (BR-40, S-US7.1)", () => {
   // The minimum honest fix for #43's own opening complaint: a `policies:` line must not read as
   // a list of shipped guarantees in a manifest a compliance reviewer treats as evidence.
-  it("emits exactly four warnings for examples/manifests/bank, and none for `authenticated`", () => {
+  it("emits exactly three warnings for examples/manifests/bank, and none for `authenticated` or `human-approval`", () => {
     const d = validateSemantics(load(join(manifests, "bank")));
     const unenforced = warnings(d).filter((w) => w.code === "unenforced-policy-token");
-    expect(unenforced).toHaveLength(4);
+    expect(unenforced).toHaveLength(3);
     expect(unenforced.filter((w) => w.message.includes("tenant-scoped"))).toHaveLength(2);
-    expect(unenforced.filter((w) => w.message.includes("human-approval"))).toHaveLength(1);
+    expect(unenforced.filter((w) => w.message.includes("human-approval"))).toHaveLength(0);
     expect(unenforced.filter((w) => w.message.includes("rate-limited"))).toHaveLength(1);
     expect(unenforced.some((w) => w.message.includes("[authenticated]"))).toBe(false);
+    // human-approval is enforced by a decision gate since ADD-393; bank's binding declares none,
+    // so it is reported as a missing gate instead.
+    const gate = warnings(d).filter((w) => w.code === "approval-gate-missing");
+    expect(gate.map((w) => [w.capability, w.token])).toEqual([["banking.initiate-transfer", "human-approval"]]);
     expect(errors(d)).toHaveLength(0); // S-US7.2 — warnings never block
   });
 
-  it("emits two for examples/manifests/booking and none for tourism (six across the examples)", () => {
+  it("emits two for examples/manifests/booking and none for tourism (five across the examples)", () => {
     const booking = validateSemantics(load(join(manifests, "booking"))).filter(
       (w) => w.code === "unenforced-policy-token",
     );

@@ -31,7 +31,10 @@ const CLOSED_SET = [
 /** Type-level exhaustiveness: every runtime reason except the one deliberately excluded must be in
  *  the closed set. A new `ExecutionDenialReason` makes `Unaccounted` non-never and this line fail
  *  to compile (`pnpm typecheck`). */
-type Unaccounted = Exclude<ExecutionDenialReason, (typeof CLOSED_SET)[number] | "lifecycle_unevaluatable">;
+// The four decision-gate codes (archstone#165, ADD-393) are excluded until the showcase's S-10
+// scenario reaches them through a gated capability — that is the examples half of #165.
+type NotYetReached = "approval_pending" | "approval_refused" | "consent_pending" | "consent_refused";
+type Unaccounted = Exclude<ExecutionDenialReason, (typeof CLOSED_SET)[number] | "lifecycle_unevaluatable" | NotYetReached>;
 const _exhaustive: [Unaccounted] extends [never] ? true : never = true;
 void _exhaustive;
 

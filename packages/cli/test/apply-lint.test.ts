@@ -61,11 +61,15 @@ const NO_FAILURES =
   `    ⚠ capability '${TRANSFER}' is irreversible and declares no failures. When it fails, an agent can say only that it failed, not why, and must not retry. Name the business outcomes that stop it under failures: (for example insufficient-funds, already-refunded).`;
 const UNAUTHENTICATED =
   `    ⚠ capability '${TRANSFER}' is irreversible and does not declare policies:[authenticated]. Any caller that can reach this server can invoke it. If that is intended, nothing to change; this line stays so the decision stays visible. Otherwise add authenticated to policies:.`;
-const HUMAN_APPROVAL =
-  `    ⚠ capability '${TRANSFER}' is irreversible and declares policies:[human-approval], which this version does not enforce: no approval mechanism exists. An agent can run it without anyone approving. Put the approval step in the provider, or do not serve this capability to an agent unattended.`;
+/** ADD-393: human-approval is enforced by a binding's `approval:` gate. Bank declares none, so
+ *  the token is reported as a missing gate (BR-40's place in the order), never as unenforced. */
+const APPROVAL_GATE_MISSING =
+  `    ⚠ capability '${TRANSFER}' (${TRANSFER_FILE}) declares policies:[human-approval] but its binding bindings/${TRANSFER}.binding.yaml declares no \`approval:\` gate — every call is refused (fail-closed) until one is added. With a gate, the call is refused unless the deployer's endpoint answers \`allowed\` for it.`;
 const RATE_LIMITED =
   `    ⚠ capability '${TRANSFER}' is irreversible and declares policies:[rate-limited], which this version does not enforce: enforcing it needs invocation counting and therefore state — tracked as issue #45. An agent can run it as often as it is called. Attach a Policy document with spec.rateLimit, which is enforced, or limit it in the provider.`;
 const BR40_PREFIX = `capability '${TRANSFER}' (${TRANSFER_FILE}) declares policies:[`;
+/** BR-40's own lines for the transfer. The `approval-gate-missing` line shares BR40_PREFIX. */
+const br40 = (out: string) => lines(out, BR40_PREFIX).filter((l) => l.includes("], which is not enforced in this version"));
 
 beforeAll(() => {
   tmp = mkdtempSync(join(tmpdir(), "archstone-apply-lint-"));
@@ -73,19 +77,22 @@ beforeAll(() => {
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 
 describe("apply — bank, as shipped (S-US1.1, S-US2.2, S-US4.x)", () => {
-  it("prints the two unenforced-policy lines last, counted, with no new heading", async () => {
+  it("prints the one unenforced-policy line last, counted, with no new heading", async () => {
     const r = await apply("examples/manifests/bank");
     expect(r.code).toBe(0);
     expect(semantic(r.stdout)).toBe("  semantic   0 error(s), 7 warning(s)");
     const block = r.stdout.split("\n").filter((l) => l.startsWith("    ⚠"));
-    expect(block.slice(-2)).toEqual([HUMAN_APPROVAL, RATE_LIMITED]);
+    expect(block.slice(-1)).toEqual([RATE_LIMITED]);
     expect(block).toHaveLength(7);
+    // human-approval is no longer an unenforced token: it is a missing gate (ADD-393).
+    expect(lines(r.stdout, "policies:[human-approval]")).toEqual([APPROVAL_GATE_MISSING]);
     expect(r.stdout).not.toContain("declares no failures");
   }, 20000);
 
   it("no longer prints BR-40's line for the irreversible capability, and keeps it for the reads", async () => {
     const { stdout } = await apply("examples/manifests/bank");
-    expect(stdout).not.toContain(BR40_PREFIX);
+    expect(br40(stdout)).toEqual([]);
+    expect(lines(stdout, BR40_PREFIX)).toEqual([APPROVAL_GATE_MISSING]);
     expect(lines(stdout, "declares policies:[tenant-scoped], which is not enforced in this version")).toHaveLength(2);
   }, 20000);
 
@@ -117,10 +124,11 @@ describe("apply — rows 1 and 4 (S-US1.2, S-US2.1, S-US3.1, S-US3.3, S-US5.3)",
     }
   }, 40000);
 
-  it("both removed: four lint lines, in order, after every other warning; exit 0", async () => {
+  it("both removed: three lint lines, in order, after every other warning; exit 0", async () => {
     const r = await apply(bankCopy((y) => withoutAuthenticated(withoutFailures(y))));
     const block = r.stdout.split("\n").filter((l) => l.startsWith("    ⚠"));
-    expect(block.slice(-4)).toEqual([NO_FAILURES, UNAUTHENTICATED, HUMAN_APPROVAL, RATE_LIMITED]);
+    expect(block.slice(-3)).toEqual([NO_FAILURES, UNAUTHENTICATED, RATE_LIMITED]);
+    expect(block).toContain(APPROVAL_GATE_MISSING);
     expect(semantic(r.stdout)).toBe("  semantic   0 error(s), 8 warning(s)");
     expect(r.code).toBe(0);
   }, 20000);
@@ -130,11 +138,12 @@ describe("apply — fallbacks to BR-40 (S-US4.7, S-US4.8)", () => {
   it("a retired irreversible capability is not linted and keeps BR-40's lines", async () => {
     const r = await apply(bankCopy((y) => withoutFailures(y).replace("lifecycle: beta", "lifecycle: retired")));
     expect(r.stdout).not.toContain("is irreversible and");
-    expect(lines(r.stdout, BR40_PREFIX)).toHaveLength(2);
+    expect(br40(r.stdout).map((l) => l.includes("policies:[rate-limited]"))).toEqual([true]);
+    expect(lines(r.stdout, "policies:[human-approval]")).toEqual([APPROVAL_GATE_MISSING]);
     expect(r.code).toBe(0);
   }, 20000);
 
-  it("an attached spec.rateLimit keeps BR-40's rate-limited line; human-approval is still replaced", async () => {
+  it("an attached spec.rateLimit keeps BR-40's rate-limited line; human-approval is a missing gate, not BR-40's", async () => {
     const dir = bankCopy((y) => y);
     writeFileSync(
       join(dir, "transfer-rate.policy.yaml"),
@@ -143,8 +152,8 @@ describe("apply — fallbacks to BR-40 (S-US4.7, S-US4.8)", () => {
     const r = await apply(dir);
     expect(r.stdout).not.toContain("which this version does not enforce: enforcing it needs");
     expect(lines(r.stdout, `${BR40_PREFIX}rate-limited], which is not enforced in this version`)).toHaveLength(1);
-    expect(lines(r.stdout, "which this version does not enforce: no approval mechanism exists")).toHaveLength(1);
-    expect(lines(r.stdout, `${BR40_PREFIX}human-approval]`)).toHaveLength(0);
+    expect(r.stdout).not.toContain("which this version does not enforce");
+    expect(lines(r.stdout, `${BR40_PREFIX}human-approval]`)).toEqual([APPROVAL_GATE_MISSING]);
     expect(r.code).toBe(0);
   }, 20000);
 });
@@ -157,7 +166,8 @@ describe("apply — an invalid manifest gets no lint (S-US1.3)", () => {
     const r = await apply(dir);
     expect(r.code).toBe(1);
     expect(r.stdout).not.toContain("is irreversible and");
-    expect(lines(r.stdout, BR40_PREFIX)).toHaveLength(2);
+    expect(br40(r.stdout).map((l) => l.includes("policies:[rate-limited]"))).toEqual([true]);
+    expect(lines(r.stdout, "policies:[human-approval]")).toEqual([APPROVAL_GATE_MISSING]);
     const warnings = r.stdout.split("\n").filter((l) => l.startsWith("    ⚠"));
     expect(semantic(r.stdout)).toMatch(new RegExp(`, ${warnings.length} warning\\(s\\)$`));
   }, 20000);

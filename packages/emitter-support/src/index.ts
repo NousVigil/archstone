@@ -13,6 +13,7 @@ export * from "./origins";
 export * from "./exposure";
 export * from "./policy";
 export * from "./ratelimit";
+export * from "./approval";
 export * from "./audit";
 export * from "./extraction";
 export * from "./caller";

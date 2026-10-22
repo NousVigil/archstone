@@ -24,6 +24,44 @@ export interface Diagnostic {
   token?: string;
 }
 
+/** ADD-393: the two CDL tokens resolved by a binding-declared ask, and the binding block each
+ *  one's gate lives in. Consent first: the order the runtime asks them in. */
+const DECISION_GATES = [
+  { token: "consent-required", block: "consent" },
+  { token: "human-approval", block: "approval" },
+] as const;
+
+/** A `${VAR}` env placeholder — never `${caller.NAME}`, which is the caller's value, not the
+ *  runtime's own secret (ADD-393 §5). */
+const ENV_PLACEHOLDER = /\$\{[A-Za-z_][A-Za-z0-9_]*\}/;
+
+/**
+ * Whether an ask `baseUrl` is acceptable as far as `apply` can tell (ADD-393 §4): `https:`, or
+ * `http:` on a loopback host. A `${…}` placeholder anywhere before the path makes the scheme or
+ * host undecidable here, so it passes — the runtime checks the resolved URL again either way.
+ */
+export function askBaseUrlAcceptable(baseUrl: string): boolean {
+  const lower = baseUrl.toLowerCase();
+  if (lower.startsWith("https://")) return true;
+  const authorityEnd = (() => {
+    const m = /^[a-z][a-z0-9+.-]*:\/\/[^/?#]*/.exec(lower);
+    return m ? m[0].length : lower.length;
+  })();
+  if (baseUrl.slice(0, authorityEnd).includes("${")) return true;
+  if (!lower.startsWith("http://")) return false;
+  try {
+    return isLoopbackHost(new URL(baseUrl).hostname);
+  } catch {
+    return false;
+  }
+}
+
+/** The three loopback spellings ADD-393 §4 accepts over plain `http:`. */
+export function isLoopbackHost(hostname: string): boolean {
+  const h = hostname.toLowerCase();
+  return h === "localhost" || h === "127.0.0.1" || h === "[::1]" || h === "::1";
+}
+
 export function validateSemantics(model: LoadResult): Diagnostic[] {
   const diags: Diagnostic[] = [];
   const { capabilities: caps, capabilityDocs: docs, bindings, resourceDocs } = model;
@@ -139,6 +177,76 @@ export function validateSemantics(model: LoadResult): Diagnostic[] {
         code: "caller-influenced-baseurl-no-allowlist",
         message: `binding ${b.file} (capability '${b.binding.capabilityId}')'s baseUrl references a caller credential (\${caller.…}) — invocation will always fail closed unless the invoker configures InvokeOptions.allowedHosts`,
       });
+    }
+  }
+
+  // 3e. ADD-393 §5/§8 — decision gates (`approval:` for `human-approval`, `consent:` for
+  // `consent-required`). The gate is enforced at invoke time whatever happens here: a token with
+  // no gate refuses fail-closed, so a missing gate is a WARNING (the bank example and the
+  // showcase declare the token without one and must keep validating). Everything that would let
+  // a gate exist but check less than it appears to is an ERROR: a gate the capability's own CDL
+  // does not ask for (a binding may not add governance CDL does not state), an id input that is
+  // not a required `ref:`/`identifier`, a templated path (the id is never put in the URL), an
+  // `Authorization` header with no `${VAR}` secret, and a literal non-loopback `http:` baseUrl.
+  // Pure string checks over the raw binding — nothing is resolved or fetched.
+  for (const d of docs) {
+    const cid = d.capability.id;
+    const policies = d.capability.policies ?? [];
+    const binding = bindings.find((b) => b.binding.capabilityId === cid);
+    for (const { token, block } of DECISION_GATES) {
+      const declared = policies.includes(token);
+      const gate = binding?.binding[block] as Record<string, unknown> | undefined;
+      if (declared && !gate) {
+        diags.push({
+          severity: "warning",
+          code: `${block}-gate-missing`,
+          message: `capability '${cid}' (${d.file}) declares policies:[${token}] but ${binding ? `its binding ${binding.file}` : "it has no binding, so"} declares no \`${block}:\` gate — every call is refused (fail-closed) until one is added. With a gate, the call is refused unless the deployer's endpoint answers \`allowed\` for it.`,
+          capability: cid,
+          token,
+        });
+      }
+      if (!gate || !binding) continue;
+      const at = `binding ${binding.file} (capability '${cid}') \`${block}:\``;
+      if (!declared) {
+        diags.push({
+          severity: "error",
+          code: `${block}-gate-without-token`,
+          message: `${at} gates a capability that does not declare policies:[${token}] — a binding may not add governance its capability does not state. Declare the token in the capability, or remove the block.`,
+        });
+      }
+      const inputName = gate.input;
+      const field = typeof inputName === "string" ? (d.capability.input as Record<string, unknown> | undefined)?.[inputName] : undefined;
+      if (typeof inputName === "string" && (field === undefined || field === null || typeof field !== "object")) {
+        diags.push({ severity: "error", code: `${block}-gate-input-invalid`, message: `${at} input '${inputName}' is not a declared input field of the capability` });
+      } else if (typeof inputName === "string") {
+        const raw = field as Record<string, unknown>;
+        if (raw.required === false) {
+          diags.push({ severity: "error", code: `${block}-gate-input-invalid`, message: `${at} input '${inputName}' is optional — the id the agent presents must be a required input, or a call without one would reach the gate with nothing to ask about` });
+        }
+        if (typeof raw.ref !== "string" && raw.type !== "identifier") {
+          diags.push({ severity: "error", code: `${block}-gate-input-invalid`, message: `${at} input '${inputName}' must be a \`ref:\` or \`identifier\` field — it carries an id, not a value` });
+        }
+      }
+      const ask = (gate.ask ?? {}) as { baseUrl?: unknown; path?: unknown; headers?: Record<string, unknown> };
+      if (typeof ask.path === "string" && /\{[^}]*\}/.test(ask.path.replace(/\$\{[^}]*\}/g, ""))) {
+        diags.push({ severity: "error", code: `${block}-gate-path-templated`, message: `${at} ask.path '${ask.path}' contains a {placeholder} — the path is static; the id travels in the body Archstone builds, never in the URL` });
+      }
+      if (typeof ask.path === "string" && ask.path.includes("${")) {
+        diags.push({ severity: "error", code: `${block}-gate-path-templated`, message: `${at} ask.path '${ask.path}' contains a \${…} placeholder — the path is static` });
+      }
+      const authValues = Object.entries(ask.headers ?? {})
+        .filter(([k, v]) => k.toLowerCase() === "authorization" && typeof v === "string")
+        .map(([, v]) => v as string);
+      if (!authValues.some((v) => ENV_PLACEHOLDER.test(v))) {
+        diags.push({
+          severity: "error",
+          code: `${block}-gate-no-secret`,
+          message: `${at} has no Authorization header carrying a \${VAR} secret — the ask must authenticate to the deployer's endpoint with the runtime's own secret, not a literal in the binding and not only a caller value`,
+        });
+      }
+      if (typeof ask.baseUrl === "string" && !askBaseUrlAcceptable(ask.baseUrl)) {
+        diags.push({ severity: "error", code: `${block}-gate-insecure-url`, message: `${at} ask.baseUrl '${ask.baseUrl}' is not https — only https, or http on localhost/127.0.0.1/[::1], may carry the principal and input to the deployer's endpoint` });
+      }
     }
   }
 
@@ -696,7 +804,9 @@ export function validateSemantics(model: LoadResult): Diagnostic[] {
     }
   }
 
-  // 7. BR-40 — declared-but-unenforced CDL policy tokens. The minimum honest fix for #43's own
+  // 7. BR-40 — declared-but-unenforced CDL policy tokens. (`human-approval` and `consent-required`
+  // left the list with ADD-393: a declared token with no gate is reported by 3e's
+  // `*-gate-missing` instead, and refused at runtime.) The minimum honest fix for #43's own
   // opening complaint, generalized: after this increment and #45, three of the five tokens
   // still have no enforcement and no issue. A warning costs no new primitive (Rule #10) and
   // stops `policies:` reading as a list of shipped guarantees.

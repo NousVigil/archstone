@@ -138,11 +138,15 @@ describe("archstone apply — policy documents (SF-1/SF-6)", () => {
     const unenforced = r.stdout
       .split("\n")
       .filter((l) => l.includes("not enforced in this version") || l.includes("this version does not enforce"));
-    expect(unenforced).toHaveLength(4);
+    expect(unenforced).toHaveLength(3);
     expect(unenforced.filter((l) => l.includes("not enforced in this version"))).toHaveLength(2);
     expect(unenforced.filter((l) => l.includes("policies:[tenant-scoped]"))).toHaveLength(2);
-    expect(unenforced.filter((l) => l.includes("policies:[human-approval]"))).toHaveLength(1);
     expect(unenforced.filter((l) => l.includes("policies:[rate-limited]"))).toHaveLength(1);
+    // ADD-393: `human-approval` is enforced by a binding's `approval:` gate, so it is no longer
+    // unenforced. Bank's binding declares no gate: the token is reported as a missing gate
+    // instead (calls are refused fail-closed), still as a non-blocking warning.
+    expect(unenforced.filter((l) => l.includes("policies:[human-approval]"))).toHaveLength(0);
+    expect(r.stdout.split("\n").filter((l) => l.includes("policies:[human-approval]") && l.includes("declares no `approval:` gate"))).toHaveLength(1);
     // `authenticated` IS enforced now, so it must never appear in this warning class. (It does
     // still appear in the pre-existing ADD-32 "no caller placeholder" advisory — a different
     // warning, which is why this filters by the unenforced-token wording rather than by token.)
