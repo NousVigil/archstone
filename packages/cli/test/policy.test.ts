@@ -3,7 +3,7 @@ import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 
 // #43 end to end through the real CLI: authoring diagnostics (SF-6) and the artifact strip rule
@@ -143,14 +143,32 @@ describe("archstone apply — policy documents (SF-1/SF-6)", () => {
     expect(unenforced.filter((l) => l.includes("policies:[tenant-scoped]"))).toHaveLength(2);
     expect(unenforced.filter((l) => l.includes("policies:[rate-limited]"))).toHaveLength(1);
     // ADD-393: `human-approval` is enforced by a binding's `approval:` gate, so it is no longer
-    // unenforced. Bank's binding declares no gate: the token is reported as a missing gate
-    // instead (calls are refused fail-closed), still as a non-blocking warning.
+    // unenforced, and bank's transfer binding declares the gate: no line for the token at all.
     expect(unenforced.filter((l) => l.includes("policies:[human-approval]"))).toHaveLength(0);
-    expect(r.stdout.split("\n").filter((l) => l.includes("policies:[human-approval]") && l.includes("declares no `approval:` gate"))).toHaveLength(1);
+    expect(r.stdout.split("\n").filter((l) => l.includes("policies:[human-approval]"))).toHaveLength(0);
     // `authenticated` IS enforced now, so it must never appear in this warning class. (It does
     // still appear in the pre-existing ADD-32 "no caller placeholder" advisory — a different
     // warning, which is why this filters by the unenforced-token wording rather than by token.)
     expect(unenforced.some((l) => l.includes("policies:[authenticated]"))).toBe(false);
+  }, 20000);
+
+  it("ungated, bank's human-approval is a missing gate, still a non-blocking warning and never unenforced (ADD-393)", async () => {
+    const copy = mkdtempSync(join(tmpdir(), "archstone-policy-ungated-"));
+    try {
+      cpSync(bank, copy, { recursive: true });
+      const binding = join(copy, "bindings", "banking.initiate-transfer.binding.yaml");
+      const gate = /\n {2}# The human-approval gate[\s\S]*$/;
+      expect(readFileSync(binding, "utf8")).toMatch(gate);
+      writeFileSync(binding, readFileSync(binding, "utf8").replace(gate, "\n"));
+      const r = await run(["apply", copy]);
+      expect(r.code).toBe(0);
+      const approval = r.stdout.split("\n").filter((l) => l.includes("policies:[human-approval]"));
+      expect(approval).toHaveLength(1);
+      expect(approval[0]).toContain("declares no `approval:` gate");
+      expect(approval[0]).not.toMatch(/not enforced in this version|this version does not enforce/);
+    } finally {
+      rmSync(copy, { recursive: true, force: true });
+    }
   }, 20000);
 });
 

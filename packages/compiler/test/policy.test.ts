@@ -288,11 +288,22 @@ describe("declared-but-unenforced CDL tokens (BR-40, S-US7.1)", () => {
     expect(unenforced.filter((w) => w.message.includes("human-approval"))).toHaveLength(0);
     expect(unenforced.filter((w) => w.message.includes("rate-limited"))).toHaveLength(1);
     expect(unenforced.some((w) => w.message.includes("[authenticated]"))).toBe(false);
-    // human-approval is enforced by a decision gate since ADD-393; bank's binding declares none,
-    // so it is reported as a missing gate instead.
+    // human-approval is enforced by a decision gate since ADD-393, and bank's transfer binding
+    // declares one: no missing gate either.
+    expect(warnings(d).filter((w) => w.code === "approval-gate-missing")).toEqual([]);
+    expect(errors(d)).toHaveLength(0); // S-US7.2 — warnings never block
+  });
+
+  it("ungated, bank's human-approval is reported as a missing gate, a warning, never as an unenforced token", () => {
+    const model = load(join(manifests, "bank"));
+    const binding = model.bindings.find((b) => b.binding.capabilityId === "banking.initiate-transfer")!.binding as { approval?: unknown };
+    expect(binding.approval).toBeDefined();
+    delete binding.approval;
+    const d = validateSemantics(model);
     const gate = warnings(d).filter((w) => w.code === "approval-gate-missing");
     expect(gate.map((w) => [w.capability, w.token])).toEqual([["banking.initiate-transfer", "human-approval"]]);
-    expect(errors(d)).toHaveLength(0); // S-US7.2 — warnings never block
+    expect(warnings(d).filter((w) => w.code === "unenforced-policy-token" && w.message.includes("human-approval"))).toHaveLength(0);
+    expect(errors(d)).toHaveLength(0);
   });
 
   it("emits two for examples/manifests/booking and none for tourism (five across the examples)", () => {
