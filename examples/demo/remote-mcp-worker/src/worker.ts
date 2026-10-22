@@ -62,6 +62,12 @@ export interface WorkerOptions {
 const MCP_ONLY_POST =
   "archstone demo: this endpoint is POST-only (stateless MCP, no SSE stream, no sessions)";
 
+/** Where a person (or a crawler) who opens the bare host belongs: the page with the Run-it-live buttons. */
+export const ROOT_REDIRECT = "https://archstone.dev/demo";
+
+/** Crawlers may fetch the agency's images; nothing else here is a page. */
+export const ROBOTS_TXT = "User-agent: *\nAllow: /img/\nDisallow: /\n";
+
 function plain(status: number, body: string, headers: Record<string, string> = {}): Response {
   return new Response(body, { status, headers });
 }
@@ -264,6 +270,14 @@ export function createWorker(options: WorkerOptions = {}) {
       const path = url.pathname;
 
       if (path === "/mcp") return mcp(request, url);
+
+      // The website names this host in its demo pages, so crawlers open `/`: send them to the page
+      // it serves. GET and HEAD only; every other method on `/` stays a 404.
+      const readOnly = request.method === "GET" || request.method === "HEAD";
+      if (path === "/" && readOnly) return plain(301, "", { location: ROOT_REDIRECT });
+      if (path === "/robots.txt" && readOnly) {
+        return plain(200, request.method === "HEAD" ? "" : ROBOTS_TXT, { "content-type": "text/plain; charset=utf-8" });
+      }
 
       const runMatch = /^\/run\/([^/]+)$/.exec(path);
       if (runMatch) {
