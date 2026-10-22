@@ -18,6 +18,41 @@ All notable changes to Archstone are documented here. Format loosely follows
 
 ## [Unreleased]
 
+## [0.35.0]
+
+### Added
+
+- **`archstone init` can now propose a manifest from a Postgres database** (`@archstone/init`,
+  `@archstone/cli`, `@archstone/provider-sql`). `archstone init --source postgres --dsn-env <VAR>
+  --out <dir>` connects as the runtime role, reads the catalog, and proposes one candidate per table,
+  view or materialized view the role can `SELECT` — only the columns it may select. You choose per
+  relation whether it is a list bounded by `LIMIT 100` or a lookup by one column; `json`, `jsonb` and
+  array columns are left out with a note. The connection string is read from the named environment
+  variable and the manifest carries `${VAR}`; a superuser, `BYPASSRLS` or owning role is refused with
+  the same message `serve` and `verify` give, and nothing is written. With `--probe --identity-map`, a
+  lookup can record a contract that is replayed as a second principal and must return nothing; a list,
+  an unresolvable second principal or an empty first leg records none. `@archstone/provider-sql`
+  exports `introspectCatalog`, the catalog read behind it. `init <spec-file>` is unchanged.
+
+- **A guide to the `sql` connector, and a README for `@archstone/provider-sql`.** [`docs/guides/sql-connector.md`](https://github.com/NousVigil/archstone/blob/main/docs/guides/sql-connector.md) takes a Postgres database from the database side to a passing `archstone verify`: the roles, row-level security and view it needs, the `sql` binding, `archstone init --source postgres`, the negative isolation test and what breaks it, the four privilege checks and when they run, and the message each refusal gives. The package page on npm, which was empty, now shows a short summary and links to the guide. Packages: `@archstone/provider-sql`.
+
+### Security
+
+- **A `sql` binding's query could set the caller's identity itself and read another tenant's rows
+  (#218).** `@archstone/provider-sql` sets each identity claim with `set_config(…, true)` and then
+  runs the declared query in the same transaction, so a query such as
+  `WITH s AS MATERIALIZED (SELECT set_config('app.tenant_id', $1, true)) SELECT … FROM some_view`
+  replaced the claim before row-level security read it. `apply` only checked that the query began
+  with `SELECT` or `WITH`. Now `apply` refuses a query that calls `set_config` (in any case,
+  schema-qualified, or as a quoted identifier) or contains a `SET`, `SET LOCAL`, `SET SESSION` or
+  `RESET` statement, judged with comments and string literals blanked out, so `current_setting`
+  and the word in a string or comment still pass. Independently, `invokeSql` reads every claim back
+  after the query and before `COMMIT`; one that no longer holds the value it set rolls the
+  transaction back and returns no rows, with an error that names the capability and no claim
+  value. The limit: a query that changes a setting and restores it before it ends leaves nothing
+  to read back, so only the `apply` check stands against it, and that check sees only the query
+  text — not a database function the query calls that does the same on its behalf.
+
 ## [0.34.0]
 
 ### Added
