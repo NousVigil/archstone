@@ -707,7 +707,8 @@ export async function askApproval(
     return await Promise.race([
       (async (): Promise<ApprovalAskResult> => {
         const response = await doFetch(url, { method: "POST", headers, body: JSON.stringify(request), redirect: "manual", signal });
-        if (response.type === "opaqueredirect" || (response.status >= 300 && response.status < 400)) {
+        // `type` widened to string: Workers' `Response` types omit "opaqueredirect", which undici sets.
+        if ((response.type as string) === "opaqueredirect" || (response.status >= 300 && response.status < 400)) {
           response.body?.cancel().catch(() => undefined);
           return { ok: false, sent: true, detail: "the endpoint answered with a redirect, which is never followed" };
         }
