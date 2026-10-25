@@ -5,7 +5,7 @@
 // pass (validateSemantics); it builds what it can regardless.
 
 import type { LoadResult, CapabilityDoc, PolicyDoc } from "@archstone/schema";
-import { SEMANTIC_TYPES, ORIGIN_LIST_KEYS, LIFECYCLE_STATES, type IR, type IRTool, type IRField, type IRType, type IRConnector, type IRRestConnector, type IRResourceRegistry, type IRResponseMapping, type IRResponseOnError, type IRDiscriminator, type IRFieldMapping, type IRContract, type IRPolicyRule, type IROrigins, type Lifecycle, type SemanticType } from "./ir";
+import { SEMANTIC_TYPES, ORIGIN_LIST_KEYS, LIFECYCLE_STATES, type IR, type IRTool, type IRField, type IRType, type IRConnector, type IRRestConnector, type IRResourceRegistry, type IRResponseMapping, type IRResponseOnError, type IRDiscriminator, type IRFieldMapping, type IRContract, type IRPolicyRule, type IROrigins, type IRDecisionGate, type Lifecycle, type SemanticType } from "./ir";
 import { JSON_TYPES, type JsonType, type ShapeMap } from "./fingerprint";
 import { domainOf, resolveResourceName, resourceIndex } from "./resolve";
 
@@ -277,6 +277,26 @@ function lowerOrigins(raw: unknown): IROrigins | undefined {
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
+/** ADD-393: lower a shape-valid `approval:`/`consent:` block verbatim — no `${VAR}` is resolved
+ *  and nothing is parsed (the semantic pass has already refused what it refuses; the ask resolves
+ *  placeholders at invoke time). Headers are emitted in sorted key order, so the order the author
+ *  wrote them in never changes IR bytes. */
+function lowerDecisionGate(raw: unknown): IRDecisionGate | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const r = raw as { input?: unknown; ask?: Record<string, unknown> };
+  const ask = r.ask;
+  if (typeof r.input !== "string" || !ask || typeof ask.baseUrl !== "string" || typeof ask.path !== "string") return undefined;
+  const headers: Record<string, string> = {};
+  const rawHeaders = ask.headers && typeof ask.headers === "object" ? (ask.headers as Record<string, unknown>) : {};
+  for (const key of Object.keys(rawHeaders).sort()) {
+    const v = rawHeaders[key];
+    if (typeof v === "string") headers[key] = v;
+  }
+  const gate: IRDecisionGate = { input: r.input, ask: { baseUrl: ask.baseUrl, path: ask.path, headers } };
+  if (typeof ask.timeoutSeconds === "number") gate.ask.timeoutSeconds = ask.timeoutSeconds;
+  return gate;
+}
+
 /** Read a capability's authored `lifecycle`, defaulting to "stable" when absent or not a
  *  recognized state (same defensive-default style as `raw.required`, ADD-24 D-4). */
 function lowerLifecycle(raw: unknown): Lifecycle {
@@ -289,7 +309,11 @@ export function compile(model: LoadResult): IR {
   const extractByCap = new Map<string, Record<string, unknown>>();
   const contractByCap = new Map<string, Record<string, unknown>>();
   const originsByCap = new Map<string, unknown>();
+  const approvalByCap = new Map<string, unknown>();
+  const consentByCap = new Map<string, unknown>();
   for (const b of model.bindings) {
+    if (b.binding.approval) approvalByCap.set(b.binding.capabilityId, b.binding.approval);
+    if (b.binding.consent) consentByCap.set(b.binding.capabilityId, b.binding.consent);
     if (b.binding.origins) originsByCap.set(b.binding.capabilityId, b.binding.origins);
     const connector = lowerConnector(b.binding.connector);
     if (connector) connectorByCap.set(b.binding.capabilityId, connector);
@@ -343,6 +367,10 @@ export function compile(model: LoadResult): IR {
     }
     const origins = lowerOrigins(originsByCap.get(c.id));
     if (origins) tool.origins = origins;
+    const approval = lowerDecisionGate(approvalByCap.get(c.id));
+    if (approval) tool.approval = approval;
+    const consent = lowerDecisionGate(consentByCap.get(c.id));
+    if (consent) tool.consent = consent;
     return tool;
   });
 

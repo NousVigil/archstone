@@ -18,6 +18,7 @@ import {
   passThroughRefusal,
   evaluatePolicy,
   evaluateRateLimit,
+  evaluateDecisionGates,
   auditNow,
   buildExecutionRecord,
   emitExecutionRecord,
@@ -28,9 +29,11 @@ import {
   inputInvalidMessage,
   type InputProblem,
   type ExecutionStatus,
+  type DecisionReferences,
+  type ApprovalResolver,
   type ExecutionDenialReason,
 } from "@archstone/emitter-support";
-import type { FetchLike, CallerContext } from "@archstone/provider-rest";
+import { askApproval, type FetchLike, type CallerContext } from "@archstone/provider-rest";
 // ADR-0012 D-5: `@archstone/agent`'s root (this file) is RFC-0008's "pure mapper + fetch +
 // injectable env only" edge-deployable surface — it must never gain a static edge to
 // `@archstone/provider-sql`/`pg`. `invokeConnectorRest` is the edge-safe default; a Node-only
@@ -91,6 +94,10 @@ export interface ExecuteOptions {
    *  function instead (typically `@archstone/runtime/connector`'s `invokeConnector`, imported by
    *  the EMBEDDER'S own Node-only code, never by this package). */
   connector?: InvokeOptions["connector"];
+  /** ADD-393 §9 (OR-2): replaces the transport of every `approval:`/`consent:` gate with an
+   *  in-process resolver. Same validation of its answer; no timeout of its own (bounding the wait
+   *  is the embedder's obligation); does not lift a missing gate. See `ApprovalResolver`. */
+  approvalResolver?: ApprovalResolver;
 }
 
 /** #43 ADD-43 D-11: the embedded rendering of a policy refusal — the `ExecuteResult` sibling of
@@ -169,8 +176,11 @@ export async function executeCapability(
   // record, no allocation.
   const auditSink = opts?.auditSink;
   const startedAt = auditSink ? auditNow() : "";
+  // ADD-393 D-7 — see `callTool`: carried on every record once an ask was sent.
+  const decided: { references?: DecisionReferences } = {};
   const audit = (status: ExecutionStatus): void => {
     if (!auditSink) return;
+    if (decided.references) status = { ...status, decisionReferences: decided.references };
     emitExecutionRecord(
       auditSink,
       buildExecutionRecord({
@@ -278,6 +288,28 @@ export async function executeCapability(
   }
 
   const env = opts?.env ?? {};
+
+  // ADD-393: the decision gates, identical to `callTool`'s step — consent, then approval, after
+  // the rate limit and strictly before the connector.
+  const gateDecision = await evaluateDecisionGates(tool, input, { principal: opts?.caller?.principal }, {
+    transport: (gate, request) => askApproval(gate, request, { env, fetchImpl: opts?.fetchImpl, caller: opts?.caller }),
+    resolver: opts?.approvalResolver,
+  });
+  decided.references = gateDecision.references;
+  if (!gateDecision.allowed) {
+    const { denial } = gateDecision;
+    audit({ phase: "denied", message: denial.message, denialReason: denial.reason });
+    return {
+      status: "error",
+      error: denial.message,
+      denial: {
+        reason: denial.reason,
+        capability: tool.id,
+        ...(denial.problems ? { problems: denial.problems } : {}),
+      },
+    };
+  }
+
   const result = await invokeConnectorRest(tool, input, {
     env,
     fetchImpl: opts?.fetchImpl,

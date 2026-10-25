@@ -12,7 +12,10 @@ import { buildRegistry, toolDefinitions } from "@archstone/runtime";
 // The committed reports under fixtures/reports/ are the point, not a convenience:
 //   - apply-tourism.txt / apply-bank.txt were captured from `apply` BEFORE `--exposure` existed,
 //     so "without the flag, apply is byte-identical to today" is checked against the old output
-//     itself rather than against whatever the new code happens to print;
+//     itself rather than against whatever the new code happens to print. apply-bank.txt was
+//     re-recorded once since, for ADD-393 (#165): its human-approval line moved from the
+//     irreversible-unenforced-policy lint to the `approval-gate-missing` warning — one line
+//     removed, one added, the count unchanged;
 //   - tourism.exposure.{txt,json} are the README's "the model is shown these, never these" claim
 //     for the demo manifest, reproducible by anyone running the same command.
 // They live beside the CLI's tests rather than in examples/manifests/tourism because that

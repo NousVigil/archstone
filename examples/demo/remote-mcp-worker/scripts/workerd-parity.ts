@@ -26,9 +26,9 @@ function freePort(): Promise<number> {
   });
 }
 
-/** Ids derived from the issue time (quotes, payment quotes, and the bookings made from them), and the timestamps the API stamps, are not part of the comparison. */
+/** Ids derived from the issue time (quotes, payment quotes, the bookings made from them, approvals and their decision references), and the timestamps the API stamps, are not part of the comparison. */
 function normalise(value: unknown): unknown {
-  return JSON.parse(JSON.stringify(value).replace(/\b(?:PQ|[QBP])-[0-9a-z]+(-[0-9a-f]{8})?\b/g, "<id>").replace(/\d{4}-\d\d-\d\dT[\d:.]+Z/g, "<ts>"));
+  return JSON.parse(JSON.stringify(value).replace(/\b(?:APR-\d+-[0-9a-f]{8}|DEC-[0-9a-f]{8})\b/g, "<id>").replace(/\b(?:PQ|[QBP])-[0-9a-z]+(-[0-9a-f]{8})?\b/g, "<id>").replace(/\d{4}-\d\d-\d\dT[\d:.]+Z/g, "<ts>"));
 }
 
 const port = await freePort();

@@ -4,18 +4,18 @@
   "kind": "sdk",
   "recorded": {
     "date": "2027-05-01",
-    "cli": "0.32.0"
+    "cli": "0.35.0"
   },
   "steps": [
     {
       "command": "archstone build examples/showcase/manifest --out <work>/ir.json",
       "exit": 0,
-      "stdout": "archstone build examples/showcase/manifest → <work>/ir.json (13 tool(s))\n"
+      "stdout": "archstone build examples/showcase/manifest → <work>/ir.json (16 tool(s))\n"
     },
     {
       "command": "node examples/showcase/sdk/embedded.mjs --ir <work>/ir.json --api <api>",
       "exit": 0,
-      "stdout": "{\n  \"vendorShapes\": {\n    \"anthropic\": {\n      \"tools\": 11,\n      \"envelopeKeys\": [\n        \"description\",\n        \"input_schema\",\n        \"name\"\n      ]\n    },\n    \"openai-chat\": {\n      \"tools\": 11,\n      \"envelopeKeys\": [\n        \"function\",\n        \"type\"\n      ]\n    },\n    \"gemini\": {\n      \"tools\": 11,\n      \"envelopeKeys\": [\n        \"description\",\n        \"name\",\n        \"parameters\"\n      ]\n    }\n  },\n  \"toolNames\": [\n    \"tourism_search\",\n    \"wanderlust_availability\",\n    \"wanderlust_book\",\n    \"wanderlust_cancel\",\n    \"wanderlust_pay\",\n    \"wanderlust_quote\",\n    \"wanderlust_room-status\",\n    \"wanderlust_search\",\n    \"wanderlust_stay-details\",\n    \"wanderlust_stay-page\",\n    \"wanderlust_stay-photos\"\n  ],\n  \"stayDetails\": {\n    \"status\": \"ok\",\n    \"topLevelKeys\": [\n      \"stay\"\n    ],\n    \"forbiddenKeysFound\": []\n  },\n  \"deleteRequest\": {\n    \"status\": \"error\",\n    \"error\": \"unknown capability: wanderlust.delete-guest-bookings\"\n  },\n  \"failures\": []\n}\n"
+      "stdout": "{\n  \"vendorShapes\": {\n    \"anthropic\": {\n      \"tools\": 14,\n      \"envelopeKeys\": [\n        \"description\",\n        \"input_schema\",\n        \"name\"\n      ]\n    },\n    \"openai-chat\": {\n      \"tools\": 14,\n      \"envelopeKeys\": [\n        \"function\",\n        \"type\"\n      ]\n    },\n    \"gemini\": {\n      \"tools\": 14,\n      \"envelopeKeys\": [\n        \"description\",\n        \"name\",\n        \"parameters\"\n      ]\n    }\n  },\n  \"toolNames\": [\n    \"tourism_search\",\n    \"wanderlust_approval-status\",\n    \"wanderlust_availability\",\n    \"wanderlust_book\",\n    \"wanderlust_cancel\",\n    \"wanderlust_pay\",\n    \"wanderlust_quote\",\n    \"wanderlust_request-cancellation-approval\",\n    \"wanderlust_request-payment-approval\",\n    \"wanderlust_room-status\",\n    \"wanderlust_search\",\n    \"wanderlust_stay-details\",\n    \"wanderlust_stay-page\",\n    \"wanderlust_stay-photos\"\n  ],\n  \"stayDetails\": {\n    \"status\": \"ok\",\n    \"topLevelKeys\": [\n      \"stay\"\n    ],\n    \"forbiddenKeysFound\": []\n  },\n  \"deleteRequest\": {\n    \"status\": \"error\",\n    \"error\": \"unknown capability: wanderlust.delete-guest-bookings\"\n  },\n  \"failures\": []\n}\n"
     }
   ],
   "asserts": [

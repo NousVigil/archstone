@@ -1,9 +1,10 @@
 // The synthetic Wanderlust Agency API, called directly.
 //
-// Two jobs. First, the handler is one plain web-standard fetch handler: deterministic, stateless,
-// runnable from Node and from a Workers runtime alike (AC-1.1, AC-1.9). Second, it OVER-EXPOSES
-// ON PURPOSE (AC-1.2), and this file pins every over-exposure so a refactor cannot quietly make
-// the backend "clean" and turn every later absence check into a vacuous pass.
+// Two jobs. First, the handler is one plain web-standard fetch handler: deterministic, stateless
+// but for the approvals store, runnable from Node and from a Workers runtime alike (AC-1.1,
+// AC-1.9). Second, it OVER-EXPOSES ON PURPOSE (AC-1.2), and this file pins every over-exposure so
+// a refactor cannot quietly make the backend "clean" and turn every later absence check into a
+// vacuous pass.
 
 import { describe, it, expect } from "vitest";
 import { readFileSync, readdirSync, statSync } from "node:fs";
@@ -22,6 +23,10 @@ import {
   BUSY_ON,
   SEEDED_BOOKING_ID,
   WRONG_PRICE_ON,
+  APPROVAL_WINDOW_MS,
+  DEMO_APPROVER_KEY,
+  DEMO_ASK_KEY,
+  createApprovalStore,
   handle,
   resolvePlace,
   normalizePreferences,
@@ -202,14 +207,17 @@ describe("determinism and statelessness (AC-1.9)", () => {
     expect(injected.photos[0].startsWith("https://i.showcase.example/")).toBe(true);
   });
 
-  it("contains no storage binding anywhere in the example", () => {
+  it("contains no storage binding anywhere in the example; approvals are the one in-memory store", () => {
     const walkFiles = (dir: string): string[] =>
       readdirSync(dir).flatMap((f) => {
         const p = join(dir, f);
         return statSync(p).isDirectory() ? (f === "node_modules" ? [] : walkFiles(p)) : [p];
       });
     const src = readFileSync(resolve(SHOWCASE_DIR, "api/wanderlust-api.mjs"), "utf8");
-    expect(src).not.toMatch(/\b(KV|D1|R2|localStorage|indexedDB|caches|Durable)\b|new Map\(|new Set\(/);
+    expect(src).not.toMatch(/\b(KV|D1|R2|localStorage|indexedDB|caches|Durable)\b|new Set\(/);
+    // Approvals must be remembered to be consumed: the one Map is the approvals store, nothing else.
+    expect([...src.matchAll(/new Map\(/g)]).toHaveLength(1);
+    expect(src).toMatch(/export function createApprovalStore\(\) \{\n {2}return \{ records: new Map\(\), seq: 0 \};/);
     const connectors = walkFiles(SHOWCASE_DIR)
       // `local/` holds the recorded-only scenarios (the sql reporting manifest of S-15): not part of the
       // deployed manifest or the Worker, which is what this test is about. Its own scenario asserts
@@ -792,5 +800,166 @@ describe("R1-R6: a believable agency (#201)", () => {
       expect(body.pages[1].url.startsWith(`${UNDECLARED_PAGE_HOST}/`)).toBe(true);
       expect(body.pages[1].name).toMatch(/partner listing/);
     });
+  });
+});
+
+describe("approvals: the agency's approvals system, and the ask endpoint Archstone calls (ADD-393)", () => {
+  // Each test gets its own store: approvals are the one thing this API remembers.
+  function agency() {
+    const approvals = createApprovalStore();
+    const send = async (method: string, path: string, key: string | undefined, body?: unknown, now = CLOCK_MS) => {
+      const res = await handle(
+        new Request(`${ORIGIN}${path}`, {
+          method,
+          headers: { "content-type": "application/json", ...(key ? auth(key) : {}) },
+          body: body === undefined ? undefined : JSON.stringify(body),
+        }),
+        { now, approvals },
+      );
+      return { status: res.status, body: (await res.json()) as Body };
+    };
+    const CANCEL = { bookingId: SEEDED_BOOKING_ID };
+    const request = async () => (await send("POST", "/v1/approvals/cancellation", DEMO_KEY_A, CANCEL)).body.id as string;
+    const decide = (id: string, decision: "approve" | "reject") => send("POST", `/v1/approvals/${id}/decision`, DEMO_APPROVER_KEY, { decision });
+    const ask = (id: string, over: Record<string, unknown> = {}, now = CLOCK_MS) =>
+      send(
+        "POST",
+        "/v1/approvals/consume",
+        DEMO_ASK_KEY,
+        {
+          version: 1,
+          token: "human-approval",
+          capabilityId: "wanderlust.cancel",
+          effect: "irreversible",
+          principal: "demo:visitor",
+          approvalId: id,
+          input: { ...CANCEL, approval: id },
+          ...over,
+        },
+        now,
+      );
+    return { approvals, send, request, decide, ask };
+  }
+
+  it("a request starts pending, is recorded against the caller, and reads back only for that caller", async () => {
+    const a = agency();
+    const created = await a.send("POST", "/v1/approvals/cancellation", DEMO_KEY_A, { bookingId: SEEDED_BOOKING_ID });
+    expect(created.status).toBe(201);
+    expect(created.body).toMatchObject({ status: "pending", capabilityId: "wanderlust.cancel" });
+    expect(created.body.id).toMatch(/^APR-1-[0-9a-f]{8}$/);
+    expect(a.approvals.records.get(created.body.id)).toMatchObject({ principal: "demo:visitor", input: { bookingId: SEEDED_BOOKING_ID } });
+    expect((await a.send("GET", `/v1/approvals/${created.body.id}`, DEMO_KEY_A)).body.status).toBe("pending");
+    // Another principal is told it does not exist, exactly as for a missing id.
+    expect(await a.send("GET", `/v1/approvals/${created.body.id}`, DEMO_KEY_B)).toEqual(await a.send("GET", "/v1/approvals/APR-9-00000000", DEMO_KEY_B));
+  });
+
+  it("OVER-EXPOSED: an approval carries the approvals desk's contact and the requesting principal", async () => {
+    const a = agency();
+    const { body } = await a.send("POST", "/v1/approvals/cancellation", DEMO_KEY_A, { bookingId: SEEDED_BOOKING_ID });
+    expect(body.approver.phone).toMatch(/^\+00 000 000 \d{3}$/);
+    expect(body.requestedBy).toBe("demo:visitor");
+  });
+
+  it("a payment approval records exactly the payment's input", async () => {
+    const a = agency();
+    const input = { bookingId: SEEDED_BOOKING_ID, amount: { amount: 354, currency: "EUR" }, paymentQuote: "PQ-x-00000000" };
+    const { status, body } = await a.send("POST", "/v1/approvals/payment", DEMO_KEY_A, { ...input, extra: "ignored" });
+    expect(status).toBe(201);
+    expect(a.approvals.records.get(body.id)).toMatchObject({ capabilityId: "wanderlust.pay", input });
+    expect(a.approvals.records.get(body.id)!.input).not.toHaveProperty("extra");
+  });
+
+  it("requesting needs an agency key that stands for a principal, and a booking that exists", async () => {
+    const a = agency();
+    expect((await a.send("POST", "/v1/approvals/cancellation", undefined, { bookingId: SEEDED_BOOKING_ID })).status).toBe(401);
+    expect((await a.send("POST", "/v1/approvals/cancellation", DEMO_KEY_A, { bookingId: "B-ffffffffffff" })).status).toBe(404);
+    expect((await a.send("POST", "/v1/approvals/payment", DEMO_KEY_A, { bookingId: SEEDED_BOOKING_ID })).status).toBe(400);
+  });
+
+  it("only the approver decides, once; the agency's own key cannot approve", async () => {
+    const a = agency();
+    const id = await a.request();
+    expect((await a.send("POST", `/v1/approvals/${id}/decision`, DEMO_KEY_A, { decision: "approve" })).status).toBe(401);
+    expect((await a.decide(id, "approve")).body.status).toBe("approved");
+    expect((await a.decide(id, "reject")).status).toBe(409);
+  });
+
+  it("the ask: pending until a person decides, allowed once with a reference, then refused (irreversible)", async () => {
+    const a = agency();
+    const id = await a.request();
+    expect((await a.ask(id)).body).toEqual({ approvalId: id, outcome: "pending" });
+    await a.decide(id, "approve");
+    const allowed = await a.ask(id);
+    expect(allowed.status).toBe(200);
+    expect(allowed.body).toEqual({ approvalId: id, outcome: "allowed", reference: expect.stringMatching(/^DEC-[0-9a-f]{8}$/) });
+    expect(a.approvals.records.get(id)!.status).toBe("used");
+    expect((await a.ask(id)).body).toMatchObject({ approvalId: id, outcome: "refused" });
+  });
+
+  it("the ask: a write or read capability is not consumed; how long it lasts is this system's policy", async () => {
+    const a = agency();
+    const id = await a.request();
+    await a.decide(id, "approve");
+    expect((await a.ask(id, { effect: "write" })).body.outcome).toBe("allowed");
+    expect((await a.ask(id, { effect: "write" })).body.outcome).toBe("allowed");
+    expect(a.approvals.records.get(id)!.status).toBe("approved");
+  });
+
+  it("the ask: refused for another capability, another principal, a null principal, or any other input", async () => {
+    const a = agency();
+    const id = await a.request();
+    await a.decide(id, "approve");
+    for (const over of [
+      { capabilityId: "wanderlust.pay" },
+      { principal: "demo:blocked" },
+      { principal: null },
+      { principal: null, effect: "write" },
+      { input: { bookingId: "B-ffffffffffff", approval: id } },
+      { input: { bookingId: SEEDED_BOOKING_ID, reason: "an extra field", approval: id } },
+    ]) {
+      expect((await a.ask(id, over)).body.outcome, JSON.stringify(over)).toBe("refused");
+    }
+    // None of those consumed it: a matching ask is still allowed.
+    expect((await a.ask(id)).body.outcome).toBe("allowed");
+  });
+
+  it("the ask: matching ignores member order and absent optional members, as Archstone sends them", async () => {
+    const a = agency();
+    const input = { bookingId: SEEDED_BOOKING_ID, amount: { amount: 354, currency: "EUR" }, paymentQuote: "PQ-x-00000000" };
+    const { body } = await a.send("POST", "/v1/approvals/payment", DEMO_KEY_A, input);
+    await a.decide(body.id, "approve");
+    const reordered = { paymentQuote: input.paymentQuote, approval: body.id, amount: { currency: "EUR", amount: 354 }, bookingId: input.bookingId };
+    expect((await a.ask(body.id, { capabilityId: "wanderlust.pay", input: reordered })).body.outcome).toBe("allowed");
+  });
+
+  it("the ask: rejected, lapsed and unknown approvals are refused, never 404", async () => {
+    const a = agency();
+    const rejected = await a.request();
+    await a.decide(rejected, "reject");
+    expect((await a.ask(rejected)).body.outcome).toBe("refused");
+    const lapsed = await a.request();
+    await a.decide(lapsed, "approve");
+    expect((await a.ask(lapsed, {}, CLOCK_MS + APPROVAL_WINDOW_MS)).body.outcome).toBe("refused");
+    const unknown = await a.ask("APR-9-00000000");
+    expect(unknown.status).toBe(200);
+    expect(unknown.body).toEqual({ approvalId: "APR-9-00000000", outcome: "refused" });
+  });
+
+  it("the ask answers the runtime's secret only, and only a version 1 human-approval body", async () => {
+    const a = agency();
+    const id = await a.request();
+    for (const key of [undefined, DEMO_KEY_A, DEMO_APPROVER_KEY]) {
+      expect((await a.send("POST", "/v1/approvals/consume", key, { version: 1 })).status).toBe(401);
+    }
+    expect((await a.ask(id, { version: 2 })).status).toBe(400);
+    expect((await a.ask(id, { token: "consent-required" })).status).toBe(400);
+    expect((await a.ask(id, { input: null })).status).toBe(400);
+  });
+
+  it("the answer carries nothing but the echo, the outcome and the reference: no reason to disclose", async () => {
+    const a = agency();
+    const id = await a.request();
+    await a.decide(id, "reject");
+    expect(Object.keys((await a.ask(id)).body).sort()).toEqual(["approvalId", "outcome", "reference"]);
   });
 });

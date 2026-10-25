@@ -29,6 +29,7 @@ import {
   degradedNotes,
   evaluatePolicy,
   evaluateRateLimit,
+  evaluateDecisionGates,
   auditNow,
   buildExecutionRecord,
   emitExecutionRecord,
@@ -38,6 +39,7 @@ import {
   validateInput,
   inputInvalidMessage,
   type ExecutionStatus,
+  type DecisionReferences,
   type PolicyDecision,
 } from "@archstone/emitter-support";
 // ADR-0012 D-5/D-6: this file is reachable from THREE surfaces — `serveStdio` (mcp.ts, Node-
@@ -50,6 +52,8 @@ import {
 // supplies `opts.connector` (see `./connector-rest`'s `InvokeOptions.connector`); this file
 // itself never branches on that decision — `invokeConnectorRest` does, once.
 import { invokeConnectorRest, type InvokeOptions as ConnectorInvokeOptions } from "./connector-rest";
+// ADD-393: the decision gate's ask — the only HTTP of the gate, beside the connector's own.
+import { askApproval } from "@archstone/provider-rest";
 
 type InvokeOptions = ConnectorInvokeOptions;
 
@@ -78,8 +82,9 @@ export type McpToolAnnotations = Pick<ToolAnnotations, "readOnlyHint" | "destruc
  * insists a human confirm — into MCP tool annotations, so the client's tool-confirmation dialog
  * can tell `tourism.search` from a capability that charges a card. Before this, `effect` was
  * compiled, carried through the IR, and dropped here: `McpToolDef` had no field for it and
- * `toolDefinitions` never read it, so the ONLY human-in-the-loop mechanism that exists today
- * (`human-approval` is declared and unenforced — `apply` says so) decided blind.
+ * `toolDefinitions` never read it, so the client's confirmation dialog — then the only
+ * human-in-the-loop mechanism (`human-approval` gained enforcement later, ADD-393's decision gate)
+ * — decided blind.
  *
  * The mapping, exactly and only:
  *   read         → readOnlyHint: true
@@ -276,8 +281,12 @@ export async function callTool(
   // allocation, and every result byte-for-byte what it was before this increment.
   const auditSink = opts?.auditSink;
   const startedAt = auditSink ? auditNow() : "";
+  // ADD-393 D-7: set by the decision-gate step once an ask was sent, and carried on every record
+  // this attempt produces from then on — the denial, the connector failure, or the success.
+  const decided: { references?: DecisionReferences } = {};
   const audit = (status: ExecutionStatus): void => {
     if (!auditSink) return;
+    if (decided.references) status = { ...status, decisionReferences: decided.references };
     emitExecutionRecord(
       auditSink,
       buildExecutionRecord({
@@ -423,6 +432,38 @@ export async function callTool(
           error: "policy_denied",
           capability: tool.id,
           reason: rateDecision.denial.reason,
+        },
+      },
+      isError: true,
+    };
+  }
+
+  // ADD-393: the decision gates — consent, then approval — after the rate limit (a retry spends a
+  // unit) and strictly before the connector. The call is refused unless the deployer's endpoint
+  // answers `allowed` for it. The ask is not "reaching the connector" (ADD-44 D-13): no
+  // `onResponse`, no `reachedConnector`.
+  const gateDecision = await evaluateDecisionGates(tool, args, { principal: opts?.caller?.principal }, {
+    transport: (gate, request) => askApproval(gate, request, opts),
+    resolver: opts?.approvalResolver,
+  });
+  decided.references = gateDecision.references;
+  if (!gateDecision.allowed) {
+    const { denial } = gateDecision;
+    audit({ phase: "denied", message: denial.message, denialReason: denial.reason });
+    if (denial.reason === INPUT_INVALID_DENIAL_REASON) {
+      return {
+        content: [{ type: "text", text: denial.message }],
+        _meta: { [INPUT_INVALID_META_KEY]: { error: "input_invalid", capability: tool.id, problems: denial.problems ?? [] } },
+        isError: true,
+      };
+    }
+    return {
+      content: [{ type: "text", text: denial.message }],
+      _meta: {
+        [POLICY_DENIED_META_KEY]: {
+          error: "policy_denied",
+          capability: tool.id,
+          reason: denial.reason,
         },
       },
       isError: true,

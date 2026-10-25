@@ -152,6 +152,46 @@ function table(title: string, rows: [string, number][], limit = 20): string[] {
   return out;
 }
 
+/** One `human-approval` approval id that appears on more than one executed record. */
+export interface ApprovalReuse {
+  approvalId: string;
+  /** The executed records carrying it, in the order read. */
+  records: { id: string; capabilityId: string; startedAt: string; phase: string; reference?: string }[];
+}
+
+/**
+ * ADD-393 D-7 — detection after the fact, never prevention: a `human-approval` approval id on
+ * more than one EXECUTED record (`succeeded` or `failed` — a `denied` attempt never ran). Keyed
+ * on the id the agent presented, with the endpoint's `reference` beside it as secondary evidence.
+ *
+ * It finds what the records show and nothing else. The endpoint contract asks the deployer's
+ * endpoint to consume an `irreversible` approval in the operation that answers `allowed`;
+ * Archstone cannot observe that, and this is how an auditor sees it afterwards. It needs records,
+ * so it exists only where an audit sink is wired — `archstone serve` wires none. Not applied to
+ * consents, which are commonly durable.
+ */
+export function findApprovalReuse(records: readonly ExecutionRecord[]): ApprovalReuse[] {
+  const byId = new Map<string, ApprovalReuse["records"]>();
+  for (const r of records) {
+    if (r.status.phase !== "succeeded" && r.status.phase !== "failed") continue;
+    const entry = r.status.decisionReferences?.["human-approval"];
+    if (!entry || typeof entry.approvalId !== "string") continue;
+    const list = byId.get(entry.approvalId) ?? [];
+    list.push({
+      id: r.metadata.id,
+      capabilityId: r.metadata.capabilityId,
+      startedAt: r.metadata.startedAt,
+      phase: r.status.phase,
+      ...(entry.reference !== undefined ? { reference: entry.reference } : {}),
+    });
+    byId.set(entry.approvalId, list);
+  }
+  return [...byId.entries()]
+    .filter(([, list]) => list.length > 1)
+    .map(([approvalId, list]) => ({ approvalId, records: list }))
+    .sort((a, b) => a.approvalId.localeCompare(b.approvalId));
+}
+
 /**
  * The default rendering: what happened, to what, and what was refused.
  *
@@ -180,6 +220,17 @@ export function summarize(records: readonly ExecutionRecord[]): string {
       countBy(records, (r) => r.spec.principal ?? "(anonymous)"),
     ),
   );
+
+  const reuse = findApprovalReuse(records);
+  if (reuse.length > 0) {
+    lines.push("", "Approval ids on more than one executed record (the endpoint should have consumed them)");
+    for (const r of reuse) {
+      lines.push(`  ${r.approvalId}`);
+      for (const rec of r.records) {
+        lines.push(`    ${rec.startedAt}  ${rec.capabilityId}  ${rec.phase}${rec.reference ? `  reference ${rec.reference}` : ""}  ${rec.id}`);
+      }
+    }
+  }
 
   return lines.join("\n");
 }
