@@ -219,6 +219,9 @@ export async function runBattery(send: Send): Promise<Check[]> {
   const img = await send("/img/ws-1001/1.svg");
   check("img: served from the same origin", img.status === 200 && (img.headers.get("content-type") ?? "").includes("svg"));
   check("api: a booking without a key is 401", (await send("/v1/bookings", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status === 401);
+  const root = await send("/", { redirect: "manual" });
+  check("GET / is a 301 to the website's demo page", root.status === 301 && root.headers.get("location") === "https://archstone.dev/demo");
+  check("robots.txt allows /img/ only", /Allow: \/img\//.test(await (await send("/robots.txt")).text()));
   check("anything else is 404", (await send("/nope")).status === 404 && (await send("/health")).status === 404);
 
   return checks;

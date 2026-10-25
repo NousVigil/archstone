@@ -3,6 +3,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import defaultWorker from "../src/index";
+import { ROOT_REDIRECT } from "../src/worker";
 import { mockStaysResponse } from "../src/mock-backend";
 import { IMAGE_BASE } from "../../../showcase/api/wanderlust-api.mjs";
 import { runBattery } from "../scripts/battery";
@@ -218,6 +219,24 @@ describe("routes", () => {
       const res = await w.fetch(path, { method: "POST" });
       expect(res.status, path).toBe(404);
     }
+  });
+
+  it("GET and HEAD / redirect permanently to the demo page on the website", async () => {
+    const w = newWorker();
+    for (const method of ["GET", "HEAD"]) {
+      const res = await w.fetch("/", { method });
+      expect(res.status, method).toBe(301);
+      expect(res.headers.get("location"), method).toBe(ROOT_REDIRECT);
+    }
+  });
+
+  it("robots.txt allows /img/ and disallows everything else", async () => {
+    const w = newWorker();
+    const res = await w.fetch("/robots.txt", { method: "GET" });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/plain");
+    expect(await res.text()).toBe("User-agent: *\nAllow: /img/\nDisallow: /\n");
+    expect((await w.fetch("/robots.txt", { method: "POST" })).status).toBe(404);
   });
 
   it("the default export is a plain handler with fetch", async () => {
