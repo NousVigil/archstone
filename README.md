@@ -94,6 +94,7 @@ needs no checkout of this one
 | `archstone verify <dir>` | Replay recorded fixtures against the live backend and report drift; `--json` for CI |
 | `archstone doctor <dir>` | Offline pre-production checklist |
 | `archstone adopt <dir>` | Declare a field the backend started returning (interactive) |
+| `archstone record <dir>` | Record a `contract:` for an existing manifest's read bindings, one live request each (interactive); `--rerecord <id>` replaces one |
 | `archstone audit <log>` | Read back the execution audit trail |
 
 `apply` also warns about what an `irreversible` capability still lacks — here, removing its

@@ -51,6 +51,7 @@ import { INIT_USAGE, runInitCmd } from "./init";
 import { runAuditCmd } from "./audit-cmd";
 import { diagnose, formatReport } from "./doctor";
 import { runAdoptCmd } from "./adopt";
+import { runRecordCmd } from "./record";
 import { formatExposure, totalsOf, type ExposureEntry } from "./exposure-report";
 
 /** `archstone --version` is the first thing a human types after installing, and until this
@@ -80,7 +81,7 @@ function printUsage(opts?: { toStderr?: boolean }): void {
     // `init` is named HERE, in the verb list, and not only in the block below it. It takes a
     // spec file rather than a manifest directory, so it cannot share the first line's shape —
     // which is exactly how it came to be missing from the one line a user actually scans.
-    "usage: archstone <apply|serve|verify|build|diff|doctor|init|adopt|audit>\n\n" +
+    "usage: archstone <apply|serve|verify|build|diff|doctor|init|adopt|record|audit>\n\n" +
       "       archstone <apply|serve|verify|build> <manifest-dir> [--json] [--out path]\n" +
       "       archstone apply <manifest-dir> --exposure [--json]\n" +
       "         per capability: what a model receives, what it is shown, and what the backend was\n" +
@@ -101,7 +102,10 @@ function printUsage(opts?: { toStderr?: boolean }): void {
       "       archstone init <spec-file> --out <dir>   — start here if you have no manifest yet\n" +
       "       archstone init --source postgres --dsn-env <VAR> --out <dir>   — the same, from a database\n" +
       "       archstone adopt <manifest-dir>\n" +
-      "         declare a field the backend started returning; asks before writing, needs a person\n\n" +
+      "         declare a field the backend started returning; asks before writing, needs a person\n" +
+      "       archstone record <manifest-dir> [--rerecord <capabilityId>]...\n" +
+      "         record a contract: for an existing manifest's read bindings — ONE live request each,\n" +
+      "         from fixtures/<capabilityId>.golden.json; asks before every request and write, needs a person\n\n" +
       "       archstone audit <file...> [--since <date>] [--format summary|jsonl|csv]\n" +
       "         read your own Execution audit records; nothing is uploaded (audit --help for filters)\n\n" +
       "       archstone --version | --help\n\n" +
@@ -1039,9 +1043,15 @@ async function main(): Promise<void> {
     return;
   }
   if (cmd === "adopt") {
-    // Its own parser, and its own module: it is the only verb that WRITES a manifest a human
-    // already owns, so keeping it apart from the read-only verbs above is deliberate.
+    // Its own parser, and its own module: with `record`, one of the two verbs that WRITE a
+    // manifest a human already owns, so keeping it apart from the read-only verbs above is
+    // deliberate.
     process.exit(await runAdoptCmd(argv));
+  }
+  if (cmd === "record") {
+    // Own module for the same reason as `adopt`: it sends live requests and WRITES a manifest a
+    // human already owns, and it is a verb rather than `verify --record` so CI cannot reach it.
+    process.exit(await runRecordCmd(argv));
   }
   if (cmd === "audit") {
     // Own parser, for the same reason `init` has one: this verb's flags outnumber the other
