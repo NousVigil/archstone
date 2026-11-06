@@ -124,6 +124,13 @@ export interface CapabilityDoc {
   };
 }
 
+/** One `binding.failures` entry, shape-valid (RFC-0011 D-1..D-3). */
+export interface BindingFailureMapping {
+  status: number;
+  body?: { path: string; equals: string | number | boolean };
+  failure: string;
+}
+
 export interface BindingDoc {
   file: string;
   binding: {
@@ -133,6 +140,8 @@ export interface BindingDoc {
     extract?: Record<string, unknown>; // optional scalar output extraction (extends ADD-12); resolution/lowering is the compiler's
     contract?: Record<string, unknown>; // optional contract snapshot (ADD-18); lowering is the compiler's
     origins?: { pages?: string[]; images?: string[] }; // optional origin lists for origin-bound output types; entry syntax is the semantic pass's
+    /** RFC-0011 D-1..D-3: optional ordered 4xx → failure-token mappings; token resolution, shadowing and path syntax are the semantic pass's. */
+    failures?: BindingFailureMapping[];
   };
 }
 
