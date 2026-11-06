@@ -58,6 +58,7 @@ import {
   type IRTool,
   type IRType,
   type IRDiscriminator,
+  type IRFailureMapping,
   type SemanticType,
 } from "@archstone/compiler";
 import { allowedOrigins, checkOrigin } from "./origins";
@@ -517,6 +518,46 @@ function projectResource(w: Walk, slotType: IRType, name: string, value: unknown
   if (missing.length > 0 || invalid.length > 0 || withheld.length > 0) return { ok: false, reason: "nested", missing, invalid, withheld };
   acc.invalid.push(...childAcc.invalid);
   return ok(out);
+}
+
+/**
+ * RFC-0011 D-7: the binding failure mapping a provider's error response matches, or `undefined`.
+ * Pure, and the one matcher both invocation surfaces call (`callTool` in @archstone/runtime,
+ * `executeCapability` in @archstone/agent), so the two can never disagree on what a response
+ * means.
+ *
+ * - Only a 4xx is ever tested (D-6): a 2xx is never a failure here even if its body matches, and
+ *   a 5xx, a 3xx or `status: 0` (no response at all) never matches anything.
+ * - Mappings are tried in declared order; the first match wins (D-1).
+ * - A mapping with no `body` matches on status alone. One with a `body` test matches only when
+ *   the parsed body is a JSON object or array, the path finds a value, and the first value found
+ *   is a string, number or boolean strictly equal to `equals` (D-3). A non-JSON body (which the
+ *   REST provider hands over as the raw text), a missing path or a non-scalar value is no match.
+ *
+ * The caller must use only the returned mapping's author-declared fields. Nothing from `data`
+ * reaches a model through this function, not even the value that matched (D-8, ADR-0008).
+ */
+export function matchFailure(
+  mappings: readonly IRFailureMapping[] | undefined,
+  status: number,
+  data: unknown,
+): IRFailureMapping | undefined {
+  if (!mappings || mappings.length === 0) return undefined;
+  if (!Number.isInteger(status) || status < 400 || status > 499) return undefined;
+  for (const m of mappings) {
+    if (m.status !== status) continue;
+    if (!m.body) return m;
+    if (typeof data !== "object" || data === null) continue;
+    let found: unknown[];
+    try {
+      found = evalPath(data, m.body.path);
+    } catch {
+      continue; // a path the compiler would refuse (hand-written IR): no match, never a throw
+    }
+    const v = found[0];
+    if (found.length > 0 && isPrimitive(v) && v === m.body.equals) return m;
+  }
+  return undefined;
 }
 
 /** First JSONPath match, or undefined when the path resolves to nothing. */

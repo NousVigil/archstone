@@ -5,7 +5,7 @@
 // pass (validateSemantics); it builds what it can regardless.
 
 import type { LoadResult, CapabilityDoc, PolicyDoc } from "@archstone/schema";
-import { SEMANTIC_TYPES, ORIGIN_LIST_KEYS, LIFECYCLE_STATES, type IR, type IRTool, type IRField, type IRType, type IRConnector, type IRRestConnector, type IRResourceRegistry, type IRResponseMapping, type IRResponseOnError, type IRDiscriminator, type IRFieldMapping, type IRContract, type IRPolicyRule, type IROrigins, type Lifecycle, type SemanticType } from "./ir";
+import { SEMANTIC_TYPES, ORIGIN_LIST_KEYS, LIFECYCLE_STATES, type IR, type IRTool, type IRField, type IRType, type IRConnector, type IRRestConnector, type IRResourceRegistry, type IRResponseMapping, type IRResponseOnError, type IRDiscriminator, type IRFieldMapping, type IRContract, type IRPolicyRule, type IROrigins, type IRFailureMapping, type Lifecycle, type SemanticType } from "./ir";
 import { JSON_TYPES, type JsonType, type ShapeMap } from "./fingerprint";
 import { domainOf, resolveResourceName, resourceIndex } from "./resolve";
 
@@ -277,6 +277,33 @@ function lowerOrigins(raw: unknown): IROrigins | undefined {
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
+/** RFC-0011 D-5: lower a shape-valid binding `failures:` list in authored order (D-1: order is
+ *  the tie-break), copying each token's one-line description from the capability's own
+ *  `failures`. An entry naming a token the capability does not declare is dropped — the semantic
+ *  pass has already refused it (`failure-mapping-unknown-token`), and the safe floor is never to
+ *  emit a token the capability does not declare. Absent or empty → undefined, so the tool carries
+ *  no `failures` member at all. Keys are built in one fixed order so IR bytes never depend on
+ *  authoring order within an entry. */
+function lowerFailures(raw: unknown, declared: unknown): IRFailureMapping[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const tokens = declared && typeof declared === "object" ? (declared as Record<string, unknown>) : {};
+  const out: IRFailureMapping[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") continue;
+    const e = entry as { status?: unknown; body?: { path?: unknown; equals?: unknown }; failure?: unknown };
+    if (typeof e.status !== "number" || typeof e.failure !== "string") continue;
+    if (!Object.prototype.hasOwnProperty.call(tokens, e.failure)) continue;
+    const description = tokens[e.failure];
+    const eq = e.body?.equals;
+    const body =
+      e.body && typeof e.body.path === "string" && (typeof eq === "string" || typeof eq === "number" || typeof eq === "boolean")
+        ? { path: e.body.path, equals: eq }
+        : undefined;
+    out.push({ status: e.status, ...(body ? { body } : {}), failure: e.failure, description: typeof description === "string" ? description : "" });
+  }
+  return out.length > 0 ? out : undefined;
+}
+
 /** Read a capability's authored `lifecycle`, defaulting to "stable" when absent or not a
  *  recognized state (same defensive-default style as `raw.required`, ADD-24 D-4). */
 function lowerLifecycle(raw: unknown): Lifecycle {
@@ -289,7 +316,9 @@ export function compile(model: LoadResult): IR {
   const extractByCap = new Map<string, Record<string, unknown>>();
   const contractByCap = new Map<string, Record<string, unknown>>();
   const originsByCap = new Map<string, unknown>();
+  const failuresByCap = new Map<string, unknown>();
   for (const b of model.bindings) {
+    if (b.binding.failures) failuresByCap.set(b.binding.capabilityId, b.binding.failures);
     if (b.binding.origins) originsByCap.set(b.binding.capabilityId, b.binding.origins);
     const connector = lowerConnector(b.binding.connector);
     if (connector) connectorByCap.set(b.binding.capabilityId, connector);
@@ -343,6 +372,8 @@ export function compile(model: LoadResult): IR {
     }
     const origins = lowerOrigins(originsByCap.get(c.id));
     if (origins) tool.origins = origins;
+    const failures = lowerFailures(failuresByCap.get(c.id), c.failures);
+    if (failures) tool.failures = failures;
     return tool;
   });
 
