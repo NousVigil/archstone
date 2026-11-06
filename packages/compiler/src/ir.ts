@@ -208,6 +208,22 @@ export interface IRContract {
 }
 
 /**
+ * RFC-0011 D-5: one binding `failures:` entry, lowered — a provider's 4xx error response mapped
+ * to a business failure token the capability declares. Ordered on the tool; first match wins
+ * (D-1). The IR carries the status as a number, as `IRRestConnector` already carries method and
+ * path: the IR is HTTP-client-free, not HTTP-free. Matching lives in
+ * `@archstone/emitter-support`'s `matchFailure` (D-7), never here.
+ */
+export interface IRFailureMapping {
+  status: number; // one HTTP status, 400–499 (D-2)
+  /** At most one equality test on the parsed JSON error body (D-3). `path` is a validated JSONPath. */
+  body?: { path: string; equals: string | number | boolean };
+  failure: string; // a token the capability declares under `failures`
+  /** The token's one-line CDL description, copied in so the runtime serves from the IR alone. */
+  description: string;
+}
+
+/**
  * One resolved Policy document (`*.policy.yaml`), lowered onto a tool (#43 / ADD-43 D-1).
  *
  * SHAPE ONLY — no evaluation lives in this file, and this type carries NO identity semantics:
@@ -264,6 +280,11 @@ export interface IRTool {
   /** Present iff the binding declares `origins:`. Absent otherwise, so every IR produced for a
    *  manifest without origin-bound types is unchanged. */
   origins?: IROrigins;
+  /** RFC-0011 D-5: present iff the binding declares `failures:`. Absent otherwise, so every IR
+   *  produced for a manifest without failure mappings is unchanged. This is the only place the
+   *  IR carries failure tokens, and only the mapped ones: the ADD-311 lint keeps reading the
+   *  capability's full `failures` from its document. */
+  failures?: IRFailureMapping[];
 }
 
 /**

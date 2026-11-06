@@ -2,17 +2,19 @@
 // (ADD-0008 #28)
 //
 // Composes invokeRest (@archstone/provider-rest) -> applyResponseMapping
-// (@archstone/emitter-support) into a 4-state result — NOT the MCP CallResult shape
+// (@archstone/emitter-support) into a 5-state result — NOT the MCP CallResult shape
 // (content/isError/_meta from @archstone/runtime's server.ts). Mirrors that file's
 // `callTool` composition (invokeRest -> check ok -> applyResponseMapping -> branch on
 // status) but adds a 4th outcome, "error", for transport/connector failures invokeRest
 // already distinguishes from a shape VIOLATION (missing env, missing path param, network
 // error, non-2xx) — R-8 in ADD-0008's risk table; not in the RFC's original ok|degraded|
-// violation sketch.
+// violation sketch. RFC-0011 D-8 adds a 5th, "failure": a 4xx the binding maps to a declared
+// failure token.
 
 import {
   Registry,
   applyResponseMapping,
+  matchFailure,
   contractViolationMessage,
   type InvalidField,
   passThroughRefusal,
@@ -121,7 +123,7 @@ export interface ExecuteDenial {
 }
 
 export interface ExecuteResult {
-  status: "ok" | "degraded" | "violation" | "error";
+  status: "ok" | "degraded" | "violation" | "error" | "failure";
   data?: Record<string, unknown>; // present on ok/degraded
   missing?: string[]; // present on violation (ADD-12/19 semantics, verbatim)
   /** Present-but-wrong-shape fields (#196), `{field, expected}`, never the value: required ones on a
@@ -135,6 +137,11 @@ export interface ExecuteResult {
    *  "the provider did not send an optional field". */
   withheld?: string[];
   error?: string; // present on error — invokeRest returned ok:false (InvokeResult.error verbatim)
+  /** RFC-0011 D-8: present on `failure` — the declared failure token the binding mapped the
+   *  backend's 4xx to. Author-declared, never read from the response body. */
+  failure?: string;
+  /** RFC-0011 D-8: present on `failure` — the capability's one-line description of `failure`. */
+  description?: string;
   /**
    * #43 (ADD-43 D-11): present iff this call was refused — by the policy evaluation point, OR
    * (ADD-51, #51) by the ADD-24 exposure gate for a `retired` capability, which runs BEFORE
@@ -147,6 +154,10 @@ export interface ExecuteResult {
    * shipped `expect(r.status).toBe("error")` assertion — while buying nothing this object does
    * not already provide. `denial !== undefined` is a strictly STRONGER discriminator than a
    * status string, because it also carries the reason.
+   *
+   * RFC-0011 D-8 did add a fifth member, `"failure"`, and the trade-off above is why it is a
+   * status and a denial is not: a denial is still an error to every existing consumer, while a
+   * mapped business failure is the backend's answer, a different thing for a caller to branch on.
    */
   denial?: ExecuteDenial;
 }
@@ -292,6 +303,13 @@ export async function executeCapability(
     // ADD-44 Amendment 2 (archstone#34): `reachedConnector` mirrors `callTool`'s derivation —
     // `status !== 0` iff invokeRest received a response, never true for a pre-dispatch
     // short-circuit or a network-level exception, both of which leave `status` at its default.
+    // RFC-0011 D-7/D-8/D-9: the same matcher and audit shape as `callTool`, so the two surfaces
+    // cannot disagree. Unmapped responses keep the `"error"` outcome below, unchanged.
+    const mapped = matchFailure(tool.failures, result.status, result.data);
+    if (mapped) {
+      audit({ phase: "failed", message: mapped.failure, reachedConnector: true });
+      return { status: "failure", failure: mapped.failure, description: mapped.description };
+    }
     const text = result.error ?? "invocation failed";
     audit({ phase: "failed", message: text, reachedConnector: result.status !== 0 });
     return { status: "error", error: text };
