@@ -13,7 +13,7 @@
 
 import { readFileSync, writeFileSync, mkdtempSync, cpSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { load } from "@archstone/schema";
 import { compile, diffShape, validateSemantics, type IRTool, type ShapeMap } from "@archstone/compiler";
@@ -71,7 +71,8 @@ export function locateFiles(dir: string, tool: IRTool): Target | { problem: stri
   return { tool, resourceFile: join(dir, doc.file), bindingFile: join(dir, binding.file), capabilityFile: join(dir, capabilityDoc.file) };
 }
 
-function readFixture(dir: string, path: string): GoldenFixture | undefined {
+/** Shared with `archstone record`. `undefined` for a missing file and an unparseable one alike. */
+export function readFixture(dir: string, path: string): GoldenFixture | undefined {
   try {
     return JSON.parse(readFileSync(resolve(dir, path), "utf8")) as GoldenFixture;
   } catch {
@@ -79,10 +80,19 @@ function readFixture(dir: string, path: string): GoldenFixture | undefined {
   }
 }
 
-/** y/N. Anything but an explicit yes is no — the default must never be "declare it". */
-async function confirm(ask: Ask, question: string): Promise<boolean> {
+/** y/N. Anything but an explicit yes is no — the default must never be "declare it". Shared with
+ *  `archstone record`, where the default must never be "send the request" either. */
+export async function confirm(ask: Ask, question: string): Promise<boolean> {
   const answer = (await ask.question(`${question} [y/N] `)).trim().toLowerCase();
   return answer === "y" || answer === "yes";
+}
+
+/** One proposed document rewrite, for `compilesClean`. */
+export interface FileEdit {
+  /** Path of a manifest document inside `dir` (as `join(dir, loaderFile)` produces it). */
+  file: string;
+  /** Its proposed new contents. */
+  yaml: string;
 }
 
 /**
@@ -91,23 +101,14 @@ async function confirm(ask: Ask, question: string): Promise<boolean> {
  * The modified documents are written into a COPY of the manifest and run through the real
  * loader and compiler — the same pipeline `apply` runs. Nothing reaches the user's files until
  * that passes, so a bug in the surgical append is a refused run rather than a corrupted
- * manifest (ADD-117 Challenge).
+ * manifest (ADD-117 Challenge). Shared with `archstone record`, which proves its one binding
+ * edit the same way.
  */
-function compilesClean(
-  dir: string,
-  resourceFile: string,
-  resourceYaml: string,
-  bindingFile: string,
-  bindingYaml: string,
-  capabilityFile: string,
-  capabilityYaml: string,
-): string | undefined {
+export function compilesClean(dir: string, edits: FileEdit[]): string | undefined {
   const scratch = mkdtempSync(join(tmpdir(), "archstone-adopt-"));
   try {
     cpSync(dir, scratch, { recursive: true });
-    writeFileSync(join(scratch, resourceFile.slice(dir.length + 1)), resourceYaml);
-    writeFileSync(join(scratch, bindingFile.slice(dir.length + 1)), bindingYaml);
-    writeFileSync(join(scratch, capabilityFile.slice(dir.length + 1)), capabilityYaml);
+    for (const edit of edits) writeFileSync(join(scratch, relative(dir, edit.file)), edit.yaml);
     const res = load(scratch);
     if (!res.ok) return res.issues.map((i) => `${i.file}: ${i.message}`).join("; ");
     const errors = validateSemantics(res).filter((d) => d.severity === "error");
@@ -194,15 +195,11 @@ async function adoptOne(dir: string, target: Target, contractShape: ShapeMap | u
     return 1;
   }
 
-  const problem = compilesClean(
-    dir,
-    target.resourceFile,
-    applied.resource,
-    target.bindingFile,
-    rewritten.binding,
-    target.capabilityFile,
-    applied.capability,
-  );
+  const problem = compilesClean(dir, [
+    { file: target.resourceFile, yaml: applied.resource },
+    { file: target.bindingFile, yaml: rewritten.binding },
+    { file: target.capabilityFile, yaml: applied.capability },
+  ]);
   if (problem) {
     console.error(`\n  ${tool.id}: the edit does not compile — nothing written.\n    ${problem}`);
     return 1;

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { applyAdoption, applyContractRecording, type AdoptionEdit } from "../src/adopt-edit";
+import { applyAdoption, applyContractRecording, insertContract, stampVerifiedAt, type AdoptionEdit } from "../src/adopt-edit";
 
 const root = resolve(__dirname, "../../..");
 const resourceYaml = readFileSync(resolve(root, "examples/manifests/tourism/tourism.Stay.resource.yaml"), "utf8");
@@ -193,5 +193,91 @@ describe("applyContractRecording — one response, one contract (ADD-117 R-4)", 
   it("refuses a binding with no contract to update", () => {
     const r = applyContractRecording("binding:\n  capabilityId: x\n", "sha256:" + "e".repeat(64), shape);
     expect(r).toEqual({ ok: false, problem: expect.stringContaining("no contract fingerprint") });
+  });
+});
+
+describe("insertContract — a contract for a binding that has none", () => {
+  // The checked-in binding with its contract (and the comment introducing it) cut off.
+  const bare = bindingYaml.slice(0, bindingYaml.indexOf("  # What we last verified")).replace(/\n+$/, "\n");
+  const block = {
+    fingerprint: "sha256:abc",
+    shape: { "$.b": "number", $: "object", "$.a[]": "string" },
+    verifiedAt: "2026-11-03T10:00:00.000Z",
+    fixture: "fixtures/tourism.search.golden.json",
+  };
+
+  it("appends at the end of the binding: block, at its child indent, rendered as init renders it", () => {
+    const r = insertContract(bare, block);
+    if (!r.ok) throw new Error(r.problem);
+    const added = r.binding.slice(bare.length - 1);
+    expect(added).toBe(
+      [
+        "",
+        "",
+        "  # What we recorded the live backend returning, at the time shown. `archstone verify`",
+        "  # replays this fixture's `request` and compares the response shape — that is how you",
+        "  # find out the backend changed before an agent does.",
+        "  contract:",
+        "    source: recorded",
+        '    fingerprint: "sha256:abc"',
+        "    shape:",
+        '      "$": object',
+        '      "$.a[]": string',
+        '      "$.b": number',
+        '    verifiedAt: "2026-11-03T10:00:00.000Z"',
+        "    probe:",
+        "      fixture: fixtures/tourism.search.golden.json",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  it("touches every other byte not at all", () => {
+    const r = insertContract(bare, block);
+    if (!r.ok) throw new Error(r.problem);
+    expect(r.binding.startsWith(bare.replace(/\n$/, ""))).toBe(true);
+  });
+
+  it("lands inside binding: when a top-level document follows it", () => {
+    const yaml = "# head\nbinding:\n    capabilityId: x  # deeper indent\n\n# trailing top-level comment\n";
+    const r = insertContract(yaml, block);
+    if (!r.ok) throw new Error(r.problem);
+    const lines = r.binding.split("\n");
+    expect(lines.slice(0, 3)).toEqual(["# head", "binding:", "    capabilityId: x  # deeper indent"]);
+    expect(lines).toContain("    contract:");
+    expect(lines).toContain("      source: recorded");
+    expect(lines.indexOf("    contract:")).toBeLessThan(lines.indexOf("# trailing top-level comment"));
+  });
+
+  it("omits shape: when the recording has none", () => {
+    const { shape: _s, ...noShape } = block;
+    const r = insertContract(bare, noShape);
+    if (!r.ok) throw new Error(r.problem);
+    expect(r.binding).not.toContain("shape:");
+  });
+
+  it("refuses when a contract: already exists", () => {
+    const r = insertContract(bindingYaml, block);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.problem).toContain("already declares a contract");
+  });
+
+  it("refuses when the binding: block is missing or not top-level", () => {
+    expect(insertContract("capability:\n  id: x\n", block).ok).toBe(false);
+    expect(insertContract("wrapper:\n  binding:\n    capabilityId: x\n", block).ok).toBe(false);
+  });
+});
+
+describe("stampVerifiedAt — re-record moves the date it checks", () => {
+  it("replaces only the contract's verifiedAt value", () => {
+    const r = stampVerifiedAt(bindingYaml, "2026-11-03T10:00:00.000Z");
+    if (!r.ok) throw new Error(r.problem);
+    expect(r.binding).toBe(bindingYaml.replace('verifiedAt: "2026-09-11T00:00:00Z"', 'verifiedAt: "2026-11-03T10:00:00.000Z"'));
+  });
+
+  it("leaves a contract with no verifiedAt unchanged", () => {
+    const yaml = "binding:\n  capabilityId: x\n  contract:\n    source: recorded\n    fingerprint: a\n";
+    const r = stampVerifiedAt(yaml, "2026-11-03T10:00:00.000Z");
+    expect(r).toEqual({ ok: true, binding: yaml });
   });
 });

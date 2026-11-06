@@ -260,3 +260,87 @@ export function applyContractRecording(bindingYaml: string, fingerprint: string,
 
   return { ok: true, binding: [...lines.slice(0, fpIdx), ...rendered, ...lines.slice(fpIdx + 1)].join("\n") };
 }
+
+/** What `insertContract` writes — one recording, as `recordContract` returned it. */
+export interface ContractBlock {
+  fingerprint: string;
+  /** Optional, as in `emit.ts`: a recording with no shape writes no `shape:` block. */
+  shape?: Record<string, string>;
+  /** The recording's own timestamp (`fixture.recordedAt`), never "now" at write time. */
+  verifiedAt: string;
+  /** Manifest-relative path of the golden fixture the recording replayed. */
+  fixture: string;
+}
+
+/**
+ * Append a `contract:` block to a binding that has none (`archstone record`).
+ *
+ * Rendered as `@archstone/init`'s `emit.ts` renders one — the same comment, the same keys in the
+ * same order, `shape` sorted — so a recorded contract reads the same whichever verb wrote it, and
+ * a later `adopt`/`record --rerecord` finds it where `applyContractRecording` expects it.
+ *
+ * It goes at the END of the top-level `binding:` block, at that block's child indent, and every
+ * other byte of the file is left exactly as it was. REFUSES when a `contract:` already exists
+ * (replacing one is `applyContractRecording`'s job, and a second key would be a document the
+ * loader rejects or, worse, silently resolves) or when the `binding:` block is not exactly one
+ * top-level key.
+ */
+export function insertContract(bindingYaml: string, contract: ContractBlock): RewriteResult {
+  const lines = bindingYaml.split("\n");
+  const block = locate(lines, 0, lines.length, "binding");
+  if ("problem" in block) return { ok: false, problem: `binding: ${block.problem}` };
+  const start = lines.findIndex((l) => /^binding:\s*(#.*)?$/.test(l));
+  if (start === -1) return { ok: false, problem: "binding: the 'binding:' block is not at the top level; refusing to guess where a contract goes" };
+
+  const child = block.indent;
+  const existing = new RegExp(`^${child}contract\\s*:`);
+  if (lines.slice(start + 1, block.end).some((l) => existing.test(l))) {
+    return { ok: false, problem: "binding: already declares a contract: — replace it with --rerecord, never a second one" };
+  }
+
+  const deeper = `${child}  `;
+  const added = [
+    "",
+    `${child}# What we recorded the live backend returning, at the time shown. \`archstone verify\``,
+    `${child}# replays this fixture's \`request\` and compares the response shape — that is how you`,
+    `${child}# find out the backend changed before an agent does.`,
+    `${child}contract:`,
+    `${deeper}source: recorded`,
+    `${deeper}fingerprint: ${yamlScalar(contract.fingerprint)}`,
+    ...(contract.shape
+      ? [
+          `${deeper}shape:`,
+          ...Object.keys(contract.shape)
+            .sort()
+            .map((k) => `${deeper}  ${yamlKey(k)}: ${yamlScalar(contract.shape![k])}`),
+        ]
+      : []),
+    `${deeper}verifiedAt: ${yamlScalar(contract.verifiedAt)}`,
+    `${deeper}probe:`,
+    `${deeper}  fixture: ${yamlScalar(contract.fixture)}`,
+  ];
+  return { ok: true, binding: insert(lines, block.end, added).join("\n") };
+}
+
+/**
+ * Re-stamp an existing contract's `verifiedAt` (`archstone record --rerecord`).
+ *
+ * `applyContractRecording` deliberately leaves it alone for `adopt`, whose act is declaring a
+ * field. `record --rerecord`'s act IS the check `verifiedAt` dates, so there it moves with the
+ * fingerprint. A contract with no `verifiedAt:` line is returned unchanged — adding a key the
+ * author left out is not this function's call. Only the value changes: the line's indent and any
+ * trailing comment are kept.
+ */
+export function stampVerifiedAt(bindingYaml: string, verifiedAt: string): RewriteResult {
+  const lines = bindingYaml.split("\n");
+  const contract = nest(lines, ["binding", "contract"]);
+  if ("problem" in contract) return { ok: false, problem: `binding: ${contract.problem}` };
+  const header = lines.findIndex((l) => /^\s*contract:\s*(#.*)?$/.test(l));
+  const re = new RegExp(`^(${contract.indent}verifiedAt:\\s*)("[^"]*"|[^\\s#]+)(.*)$`);
+  const hits: number[] = [];
+  for (let i = header + 1; i < contract.end; i++) if (re.test(lines[i])) hits.push(i);
+  if (hits.length === 0) return { ok: true, binding: bindingYaml };
+  if (hits.length > 1) return { ok: false, problem: `binding: found ${hits.length} 'verifiedAt:' lines in the contract; refusing to guess` };
+  lines[hits[0]] = lines[hits[0]].replace(re, (_m, key: string, _old: string, rest: string) => `${key}${yamlScalar(verifiedAt)}${rest}`);
+  return { ok: true, binding: lines.join("\n") };
+}
