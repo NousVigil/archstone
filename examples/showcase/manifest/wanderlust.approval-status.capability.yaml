@@ -1,0 +1,20 @@
+capability:
+  id: wanderlust.approval-status
+  description: "Read whether an approval is still pending, approved, rejected, used or expired. This is how to wait for a person: read the approval again later. Only the caller who requested it can read it."
+  effect: read
+
+  input:
+    approval:
+      ref: Approval
+      description: "The approval id from wanderlust.request-payment-approval or wanderlust.request-cancellation-approval."
+
+  output:
+    approval:
+      type: Approval
+
+  failures:
+    approval-not-found: No approval with that id was requested by this caller.
+
+  policies:
+    - authenticated
+  provider: wanderlust-api

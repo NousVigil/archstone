@@ -8,27 +8,39 @@ import { calls, commands, expectWellFormed, stepWith } from "./recorded";
 const t = expectWellFormed("S-19", "cli");
 
 describe("recorded S-19: audit and doctor, sending nothing anywhere", () => {
-  it("builds the trail from five real executions, two of them irreversible", () => {
-    expect(calls(t).map((c) => c.call.tool)).toEqual(["wanderlust.search", "wanderlust.quote", "wanderlust.book", "wanderlust.cancel", "wanderlust.pay"]);
+  it("builds the trail from seven real executions, two of them irreversible and each of those approved first", () => {
+    expect(calls(t).map((c) => c.call.tool)).toEqual([
+      "wanderlust.search",
+      "wanderlust.quote",
+      "wanderlust.book",
+      "wanderlust.request-cancellation-approval",
+      "wanderlust.cancel",
+      "wanderlust.request-payment-approval",
+      "wanderlust.pay",
+    ]);
     expect(calls(t).every((c) => c.result.status === "ok")).toBe(true);
   });
 
   it("audit lists the irreversible actions that ran", () => {
     const summary = stepWith(t, "archstone audit <work>/trail.jsonl", 0);
     expect(summary.exit).toBe(0);
-    expect(summary.stdout).toContain("5 records");
+    expect(summary.stdout).toContain("7 records");
     expect(summary.stdout).toMatch(/wanderlust\.cancel\s+1/);
     expect(summary.stdout).toMatch(/wanderlust\.pay\s+1/);
     const csv = commands(t).find((s) => s.command.endsWith("--format csv"))!;
     expect(csv.stdout!.split("\n").filter((l) => /,wanderlust\.(cancel|pay),/.test(l))).toHaveLength(2);
   });
 
-  it("doctor reports health: 13 capabilities, no error, and names the two irreversible ones", () => {
+  it("doctor reports health: 16 capabilities, no error, and says the two gated ones need an identified caller", () => {
     const doctor = stepWith(t, "archstone doctor examples/showcase/manifest");
     expect(doctor.exit).toBe(0);
-    expect(doctor.stdout).toMatch(/13 capabilities checked — 0 error/);
-    expect(doctor.stdout).toContain("wanderlust.cancel — is irreversible and declares policies:[human-approval], which this version does not enforce");
-    expect(doctor.stdout).toContain("wanderlust.pay — is irreversible and declares policies:[human-approval], which this version does not enforce");
+    expect(doctor.stdout).toMatch(/16 capabilities checked — 0 error/);
+    for (const id of ["wanderlust.cancel", "wanderlust.pay"]) {
+      expect(doctor.stdout).toContain(`${id} — is declared \`irreversible\``);
+      expect(doctor.stdout).toContain(`${id} — is gated by \`approval:\`, which needs an identified caller`);
+    }
+    expect(doctor.stdout).toContain("(approval-without-principal)");
+    expect(doctor.stdout).not.toContain("which this version does not enforce");
   });
 
   it("lists the exposed fields", () => {

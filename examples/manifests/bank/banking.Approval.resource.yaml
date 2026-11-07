@@ -1,0 +1,20 @@
+# Resource Definition — CDL 0.2
+# An approval a person grants for one transfer. Requesting it and reading its status are ordinary
+# capabilities (banking.request-transfer-approval, banking.approval-status); deciding it is not in
+# this manifest at all, because an agent that could approve its own request would make the approval
+# a formality.
+
+resource:
+  name: banking.Approval
+  description: A person's decision on one transfer, requested before the transfer is sent.
+  fields:
+    id:
+      type: identifier
+      description: The approval's id; banking.initiate-transfer takes it as its approval input.
+    status:
+      type: enum
+      values: [pending, approved, rejected, used, expired]
+      description: Where the decision stands. A used approval has already authorised a transfer.
+    expiresAt:
+      type: datetime
+      description: When an undecided or unused approval lapses.

@@ -12,7 +12,7 @@
       "code": "authenticated-needs-principal",
       "capability": "tourism.book",
       "message": "requires an authenticated caller",
-      "because": "The surface serving it must carry a per-request principal — `resolveCaller` on HTTP or the embedded SDK. `archstone serve` (stdio) has one static caller for the whole process, so it cannot serve this capability to more than one identity."
+      "because": "The surface serving it must carry a per-request principal — `resolveCaller` on HTTP or the embedded SDK. No `archstone serve` path carries a principal: stdio `serve` passes no caller, and `serve --http` sets no `resolveCaller`. Only `serveStdio` embedded with a static `invoke.caller` has one, and then one identity for the whole process."
     },
     {
       "severity": "warning",
@@ -26,7 +26,7 @@
       "code": "authenticated-needs-principal",
       "capability": "tourism.cancel",
       "message": "requires an authenticated caller",
-      "because": "The surface serving it must carry a per-request principal — `resolveCaller` on HTTP or the embedded SDK. `archstone serve` (stdio) has one static caller for the whole process, so it cannot serve this capability to more than one identity."
+      "because": "The surface serving it must carry a per-request principal — `resolveCaller` on HTTP or the embedded SDK. No `archstone serve` path carries a principal: stdio `serve` passes no caller, and `serve --http` sets no `resolveCaller`. Only `serveStdio` embedded with a static `invoke.caller` has one, and then one identity for the whole process."
     },
     {
       "severity": "warning",
@@ -40,7 +40,7 @@
       "code": "authenticated-needs-principal",
       "capability": "tourism.invoice",
       "message": "requires an authenticated caller",
-      "because": "The surface serving it must carry a per-request principal — `resolveCaller` on HTTP or the embedded SDK. `archstone serve` (stdio) has one static caller for the whole process, so it cannot serve this capability to more than one identity."
+      "because": "The surface serving it must carry a per-request principal — `resolveCaller` on HTTP or the embedded SDK. No `archstone serve` path carries a principal: stdio `serve` passes no caller, and `serve --http` sets no `resolveCaller`. Only `serveStdio` embedded with a static `invoke.caller` has one, and then one identity for the whole process."
     },
     {
       "severity": "warning",

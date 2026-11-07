@@ -1,12 +1,15 @@
 capability:
   id: wanderlust.cancel
-  description: "Cancel a booking. This cannot be undone. Needs the agency key and a principal the manifest's policy allows: Archstone's policy refuses a missing key or a caller who is not allowed before the agency is asked. The manifest declares that a person should approve it; this version of Archstone does not enforce that."
+  description: "Cancel a booking. This cannot be undone. Needs the agency key and a principal the manifest's policy allows: Archstone's policy refuses a missing key or a caller who is not allowed before the agency is asked. A person must approve it first: ask with wanderlust.request-cancellation-approval, wait with wanderlust.approval-status, then pass the approval id. Archstone refuses the call unless the agency's approvals system answers that this approval allows this cancellation, and the agency uses the approval up when it does."
   effect: irreversible
 
   input:
     bookingId:
       type: identifier
       description: "The booking reference from wanderlust.book."
+    approval:
+      ref: Approval
+      description: "The id of an approved approval from wanderlust.request-cancellation-approval, for this same booking."
 
   output:
     cancellation:

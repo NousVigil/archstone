@@ -1,0 +1,347 @@
+{
+  "scenario": "S-10",
+  "title": "A person approves before it happens (human-approval)",
+  "kind": "sdk",
+  "recorded": {
+    "date": "2027-05-01",
+    "cli": "0.35.0"
+  },
+  "steps": [
+    {
+      "command": "archstone build examples/showcase/manifest --out <work>/ir.json",
+      "exit": 0,
+      "stdout": "archstone build examples/showcase/manifest → <work>/ir.json (16 tool(s))\n"
+    },
+    {
+      "call": {
+        "tool": "wanderlust.quote",
+        "arguments": {
+          "dates": {
+            "from": "2027-05-12",
+            "to": "2027-05-15"
+          },
+          "stayId": "ws-1001",
+          "travelers": {
+            "adults": 2
+          }
+        }
+      },
+      "result": {
+        "status": "ok"
+      }
+    },
+    {
+      "call": {
+        "tool": "wanderlust.book",
+        "arguments": {
+          "dates": {
+            "from": "2027-05-12",
+            "to": "2027-05-15"
+          },
+          "guestName": "Ana Pop",
+          "quoteId": "Q-n34aqj6o-8902ed05",
+          "stayId": "ws-1001",
+          "travelers": {
+            "adults": 2
+          }
+        }
+      },
+      "result": {
+        "status": "ok"
+      }
+    },
+    {
+      "call": {
+        "tool": "wanderlust.pay",
+        "arguments": {
+          "amount": {
+            "amount": 354,
+            "currency": "EUR"
+          },
+          "bookingId": "B-0162f95c1506",
+          "paymentQuote": "PQ-n34aqj6o-61e32b76"
+        }
+      },
+      "result": {
+        "reason": "input_invalid",
+        "status": "error"
+      }
+    },
+    {
+      "call": {
+        "tool": "wanderlust.request-payment-approval",
+        "arguments": {
+          "amount": {
+            "amount": 354,
+            "currency": "EUR"
+          },
+          "bookingId": "B-0162f95c1506",
+          "paymentQuote": "PQ-n34aqj6o-61e32b76"
+        }
+      },
+      "result": {
+        "approval": {
+          "id": "APR-1-e6b07b53",
+          "status": "pending"
+        },
+        "status": "ok"
+      }
+    },
+    {
+      "call": {
+        "tool": "wanderlust.pay",
+        "arguments": {
+          "amount": {
+            "amount": 354,
+            "currency": "EUR"
+          },
+          "approval": "APR-1-e6b07b53",
+          "bookingId": "B-0162f95c1506",
+          "paymentQuote": "PQ-n34aqj6o-61e32b76"
+        }
+      },
+      "result": {
+        "reason": "approval_pending",
+        "status": "error"
+      }
+    },
+    {
+      "call": {
+        "tool": "wanderlust.approval-status",
+        "arguments": {
+          "approval": "APR-1-e6b07b53"
+        }
+      },
+      "result": {
+        "approval": {
+          "id": "APR-1-e6b07b53",
+          "status": "pending"
+        },
+        "status": "ok"
+      }
+    },
+    {
+      "call": {
+        "tool": "wanderlust.approval-status",
+        "arguments": {
+          "approval": "APR-1-e6b07b53"
+        }
+      },
+      "result": {
+        "approval": {
+          "id": "APR-1-e6b07b53",
+          "status": "approved"
+        },
+        "status": "ok"
+      }
+    },
+    {
+      "call": {
+        "tool": "wanderlust.pay",
+        "arguments": {
+          "amount": {
+            "amount": 354,
+            "currency": "EUR"
+          },
+          "approval": "APR-1-e6b07b53",
+          "bookingId": "B-0162f95c1506",
+          "paymentQuote": "PQ-n34aqj6o-61e32b76"
+        }
+      },
+      "result": {
+        "reason": "policy_unevaluatable",
+        "status": "error"
+      }
+    },
+    {
+      "call": {
+        "tool": "wanderlust.pay",
+        "arguments": {
+          "amount": {
+            "amount": 354,
+            "currency": "EUR"
+          },
+          "approval": "APR-1-e6b07b53",
+          "bookingId": "B-0162f95c1506",
+          "paymentQuote": "PQ-n34aqj6o-61e32b76"
+        }
+      },
+      "result": {
+        "payment": {
+          "status": "paid"
+        },
+        "status": "ok"
+      }
+    },
+    {
+      "call": {
+        "tool": "wanderlust.pay",
+        "arguments": {
+          "amount": {
+            "amount": 354,
+            "currency": "EUR"
+          },
+          "approval": "APR-1-e6b07b53",
+          "bookingId": "B-0162f95c1506",
+          "paymentQuote": "PQ-n34aqj6o-61e32b76"
+        }
+      },
+      "result": {
+        "reason": "approval_refused",
+        "status": "error"
+      }
+    },
+    {
+      "call": {
+        "tool": "wanderlust.approval-status",
+        "arguments": {
+          "approval": "APR-1-e6b07b53"
+        }
+      },
+      "result": {
+        "approval": {
+          "id": "APR-1-e6b07b53",
+          "status": "used"
+        },
+        "status": "ok"
+      }
+    },
+    {
+      "call": {
+        "tool": "wanderlust.request-cancellation-approval",
+        "arguments": {
+          "bookingId": "B-0162f95c1506"
+        }
+      },
+      "result": {
+        "approval": {
+          "id": "APR-2-ce86ca82",
+          "status": "pending"
+        },
+        "status": "ok"
+      }
+    },
+    {
+      "call": {
+        "tool": "wanderlust.cancel",
+        "arguments": {
+          "approval": "APR-2-ce86ca82",
+          "bookingId": "B-0162f95c1506"
+        }
+      },
+      "result": {
+        "reason": "approval_refused",
+        "status": "error"
+      }
+    },
+    {
+      "call": {
+        "tool": "wanderlust.request-cancellation-approval",
+        "arguments": {
+          "bookingId": "B-0000cafe"
+        }
+      },
+      "result": {
+        "approval": {
+          "id": "APR-3-ecf6ad18",
+          "status": "pending"
+        },
+        "status": "ok"
+      }
+    },
+    {
+      "call": {
+        "tool": "wanderlust.pay",
+        "arguments": {
+          "amount": {
+            "amount": 354,
+            "currency": "EUR"
+          },
+          "approval": "APR-3-ecf6ad18",
+          "bookingId": "B-0162f95c1506",
+          "paymentQuote": "PQ-n34aqj6o-61e32b76"
+        }
+      },
+      "result": {
+        "reason": "approval_refused",
+        "status": "error"
+      }
+    }
+  ],
+  "asserts": [
+    {
+      "claim": "`build` exits 0 and writes the IR the SDK loads",
+      "negative": false
+    },
+    {
+      "claim": "the booking is made (status ok)",
+      "negative": false
+    },
+    {
+      "claim": "a payment without an approval id is refused as input_invalid, and the agency is not asked",
+      "negative": true
+    },
+    {
+      "claim": "the agent requests an approval for exactly this payment, and it starts pending",
+      "negative": false
+    },
+    {
+      "claim": "paying while the approval is pending is refused approval_pending, and the agency is not asked to pay",
+      "negative": true
+    },
+    {
+      "claim": "the agent waits by reading the status, which says pending",
+      "negative": false
+    },
+    {
+      "claim": "a person at the agency approves it, outside Archstone (no capability decides)",
+      "negative": false
+    },
+    {
+      "claim": "the status now says approved",
+      "negative": false
+    },
+    {
+      "claim": "with the runtime's secret wrong, the agency's endpoint answers 401 and the call is policy_unevaluatable, not a refusal",
+      "negative": true
+    },
+    {
+      "claim": "with the approval granted, the payment goes through",
+      "negative": false
+    },
+    {
+      "claim": "its execution record carries the approval presented and the agency's decision reference",
+      "negative": false
+    },
+    {
+      "claim": "the same approval presented again is refused approval_refused: the agency used it up",
+      "negative": true
+    },
+    {
+      "claim": "the status says used",
+      "negative": false
+    },
+    {
+      "claim": "a cancellation a person rejected is refused approval_refused",
+      "negative": true
+    },
+    {
+      "claim": "an approval granted to cancel another booking cannot pay for this one: approval_refused",
+      "negative": true
+    },
+    {
+      "claim": "an agent is given an approval's id, status and expiry, and nothing else the agency returned (approver contact, requesting principal)",
+      "negative": true
+    },
+    {
+      "claim": "the agency received exactly one payment, and no cancellation",
+      "negative": true
+    }
+  ],
+  "normalisation": [
+    {
+      "what": "temporary directory standing in for work",
+      "as": "<work>"
+    }
+  ]
+}

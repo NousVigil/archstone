@@ -19,12 +19,12 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { fromIR, type ExecuteResult } from "@archstone/agent";
 import { InMemoryRateLimitCounter, type CallerContext, type Registry } from "@archstone/emitter-support";
 import { callTool, createMcpServer, type CallResult } from "@archstone/runtime";
-import { handle } from "../api/wanderlust-api.mjs";
-import { CLOCK_MS, callerForLabel, fill, openRegistry, type KeyLabel, type ScenarioRow } from "./harness";
+import { DEMO_APPROVER_KEY, createApprovalStore, handle, type ApprovalStore } from "../api/wanderlust-api.mjs";
+import { API_ORIGIN, CLOCK_MS, SHOWCASE_ENV, callerForLabel, fill, openRegistry, type KeyLabel, type ScenarioRow } from "./harness";
 
-export const API_ORIGIN = "http://api.showcase.example";
+export { API_ORIGIN };
 export const API_HOST = new URL(API_ORIGIN).host;
-const ENV = { SHOWCASE_API_URL: API_ORIGIN };
+const ENV = SHOWCASE_ENV;
 
 // ---------------------------------------------------------------------------------------------
 // The request spy
@@ -53,12 +53,17 @@ export interface Spy {
   /** Requests to any other origin. The runtime must never make one. */
   foreign: () => SeenRequest[];
   fetchImpl: typeof fetch;
+  /** This spy's own approvals store: a fresh one per session. */
+  approvals: ApprovalStore;
+  /** A person decides an approval in the agency's approvals system. Not a request Archstone made, so not recorded. */
+  decide: (approvalId: string, decision?: "approve" | "reject") => Promise<Response>;
 }
 
 export type Intercept = (request: Request) => Response | undefined;
 
 export function makeSpy(clock: Clock, intercept?: Intercept): Spy {
   const requests: SeenRequest[] = [];
+  const approvals = createApprovalStore();
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
     const request = new Request(input as string | URL, init);
     const url = new URL(request.url);
@@ -70,9 +75,20 @@ export function makeSpy(clock: Clock, intercept?: Intercept): Spy {
     if (url.host !== API_HOST) return new Response("not found", { status: 404 });
     const injected = intercept?.(request);
     if (injected) return injected;
-    return handle(request, { now: () => clock.t });
+    return handle(request, { now: () => clock.t, approvals });
   }) as typeof fetch;
+  const decide = (approvalId: string, decision: "approve" | "reject" = "approve") =>
+    handle(
+      new Request(`${API_ORIGIN}/v1/approvals/${encodeURIComponent(approvalId)}/decision`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${DEMO_APPROVER_KEY}` },
+        body: JSON.stringify({ decision }),
+      }),
+      { now: () => clock.t, approvals },
+    );
   return {
+    approvals,
+    decide,
     requests,
     apiCalls: () => requests.filter((r) => r.host === API_HOST).map((r) => `${r.method} ${r.pathname}`),
     foreign: () => requests.filter((r) => r.host !== API_HOST),
@@ -218,6 +234,9 @@ export interface Session {
   execute(capabilityId: string, args: Record<string, unknown>, key?: KeyLabel): Promise<ExecuteResult>;
   /** Run a scenario row's setup chain, then its own call (or overrides) on the MCP tool path. */
   run(row: ScenarioRow, overrides?: { key?: KeyLabel; arguments?: Record<string, unknown>; tool?: string }): Promise<{ result: CallResult; captured: Record<string, unknown>; args: Record<string, unknown> }>;
+  /** The approval flow a gated call needs: the agent requests an approval for exactly `input` (through
+   *  Archstone), and a person decides it in the agency's own system. Returns the approval id. */
+  approve(kind: "payment" | "cancellation", input: Record<string, unknown>, key?: KeyLabel, decision?: "approve" | "reject"): Promise<string>;
   /** A real MCP client on an in-memory transport to the real MCP server (arms outputSchema validation). */
   withClient<T>(key: KeyLabel, fn: (client: Client) => Promise<T>): Promise<T>;
 }
@@ -251,6 +270,11 @@ export function session(opts: SessionOptions = {}): Session {
     run: async (row, overrides = {}) => {
       const captured: Record<string, unknown> = {};
       for (const step of row.setup ?? []) {
+        if (step.approve !== undefined) {
+          const decided = await spy.decide(String(fill(step.approve, captured)), step.decision);
+          if (!decided.ok) throw new Error(`setup decision of ${row.id} failed: ${decided.status}`);
+          continue;
+        }
         const r = await s.call(step.tool, fill(step.arguments, captured) as Record<string, unknown>, step.key);
         if (r.isError) throw new Error(`setup step ${step.tool} of ${row.id} failed: ${JSON.stringify(r)}`);
         for (const [name, path] of Object.entries(step.capture ?? {})) captured[name] = atPath(r.structuredContent, path);
@@ -258,6 +282,14 @@ export function session(opts: SessionOptions = {}): Session {
       const args = fill(overrides.arguments ?? row.arguments ?? {}, captured) as Record<string, unknown>;
       const result = await s.call(overrides.tool ?? row.tool ?? "", args, overrides.key ?? row.key);
       return { result, captured, args };
+    },
+    approve: async (kind, input, key = "A", decision = "approve") => {
+      const requested = await s.call(`wanderlust_request-${kind}-approval`, input, key);
+      if (requested.isError) throw new Error(`requesting a ${kind} approval failed: ${JSON.stringify(requested)}`);
+      const id = (requested.structuredContent as { approval: { id: string } }).approval.id;
+      const decided = await spy.decide(id, decision);
+      if (!decided.ok) throw new Error(`deciding ${id} failed: ${decided.status}`);
+      return id;
     },
     withClient: async (key, fn) => {
       const server = createMcpServer(reg, invoke(key));

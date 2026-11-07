@@ -19,8 +19,9 @@ export interface Finding {
   /** Stable machine key, so a CI job can allowlist a specific finding without regex-matching prose. */
   code: string;
   capability?: string;
-  /** The unenforced CDL token, on `irreversible-unenforced-policy` only — so CI can tell two
-   *  findings on one capability apart without parsing prose. Absent on every other finding. */
+  /** The CDL token, on `irreversible-unenforced-policy` and the ADD-393 gate findings only — so
+   *  CI can tell two findings on one capability apart without parsing prose. Absent on every
+   *  other finding. */
   token?: string;
   message: string;
   /** Why it matters — the part that makes a checklist worth reading rather than obeying. */
@@ -204,7 +205,37 @@ export function diagnose(
         capability: tool.id,
         message: "requires an authenticated caller",
         because:
-          "The surface serving it must carry a per-request principal — `resolveCaller` on HTTP or the embedded SDK. `archstone serve` (stdio) has one static caller for the whole process, so it cannot serve this capability to more than one identity.",
+          // ADD-393 §8 corrects the stdio sentence: no `archstone serve` path carries a principal
+          // at all. One static caller exists only when `serveStdio` is embedded with `invoke.caller`.
+          "The surface serving it must carry a per-request principal — `resolveCaller` on HTTP or the embedded SDK. No `archstone serve` path carries a principal: stdio `serve` passes no caller, and `serve --http` sets no `resolveCaller`. Only `serveStdio` embedded with a static `invoke.caller` has one, and then one identity for the whole process.",
+      });
+    }
+    // ADD-393 D-8: the decision gates. A declared token with no gate refuses every call; a gated
+    // capability needs a principal, which no CLI path supplies (OR-5).
+    for (const [token, block] of [["consent-required", "consent"], ["human-approval", "approval"]] as const) {
+      if (!tool.policies?.includes(token)) continue;
+      if (!tool[block]) {
+        add({
+          severity: "warning",
+          code: `${block}-gate-missing`,
+          capability: tool.id,
+          token,
+          message: `declares policies:[${token}] but its binding declares no \`${block}:\` gate`,
+          because: `Every call is refused, fail-closed, until the binding declares one. With a gate, the call is refused unless the deployer's endpoint answers \`allowed\` for it.`,
+        });
+        continue;
+      }
+      add({
+        severity: "advisory",
+        code: `${block}-without-principal`,
+        capability: tool.id,
+        token,
+        message: `is gated by \`${block}:\`, which needs an identified caller`,
+        because:
+          (tool.effect === "irreversible"
+            ? "On an `irreversible` capability an ask with no principal is never sent: the call is refused. "
+            : "The ask is sent with `principal: null`, and the endpoint contract requires the endpoint to refuse it. ") +
+          "No `archstone serve` path carries a principal, so serve this capability through the embedded SDK or a host `resolveCaller`. `archstone verify` never sends the ask: it replays a gated `read` (and, with --sandbox, the rest) as a deployer-initiated probe.",
       });
     }
     if (tool.lifecycle === "experimental") {

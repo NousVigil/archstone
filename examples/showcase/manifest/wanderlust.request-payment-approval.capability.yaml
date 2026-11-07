@@ -1,0 +1,26 @@
+capability:
+  id: wanderlust.request-payment-approval
+  description: "Ask a person at the agency to approve paying for a booking. Takes exactly what the payment will take, so the person sees what they approve. Returns an approval that starts pending; read it with wanderlust.approval-status, do not retry. The approval is for this booking, amount and payment quote, and for the caller who asked."
+  effect: write
+
+  input:
+    bookingId:
+      type: identifier
+      description: "The booking reference from wanderlust.book."
+    amount:
+      type: money
+      description: "The amount the booking total was quoted at."
+    paymentQuote:
+      type: identifier
+      description: "The payment quote returned with the booking, still valid."
+
+  output:
+    approval:
+      type: Approval
+
+  failures:
+    booking-not-found: No booking has that reference.
+
+  policies:
+    - authenticated
+  provider: wanderlust-api

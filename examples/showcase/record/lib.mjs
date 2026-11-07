@@ -14,7 +14,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { handle } from "../api/wanderlust-api.mjs";
+import { createApprovalStore, handle } from "../api/wanderlust-api.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const SHOWCASE_DIR = resolve(here, "..");
@@ -104,6 +104,9 @@ const lengthOf = (find) => (typeof find === "string" ? find.length : 0);
  * made none.
  */
 export async function startApi() {
+  // Each started API keeps its own approvals, so a scenario's approval ids never depend on which
+  // scenarios ran before it in the same process.
+  const approvals = createApprovalStore();
   const api = {
     url: "",
     port: 0,
@@ -125,7 +128,7 @@ export async function startApi() {
       });
       api.requests.push(`${method} ${new URL(request.url).pathname}`);
       (async () => {
-        let response = await handle(request.clone(), { now: CLOCK_MS });
+        let response = await handle(request.clone(), { now: CLOCK_MS, approvals });
         if (api.transform) response = (await api.transform(request, response)) ?? response;
         res.writeHead(response.status, Object.fromEntries(response.headers));
         res.end(Buffer.from(await response.arrayBuffer()));

@@ -12,6 +12,7 @@
 
 import type { AuditSink } from "./audit";
 import type { RateLimitCounter } from "./ratelimit";
+import type { ApprovalResolver } from "./approval";
 
 /**
  * A fact about ONE invocation — never about the compiled artifact (ADD-32 D-1). The IR is
@@ -109,6 +110,11 @@ export interface InvokeOptions {
   /** #45/ADD-45: TYPE-ONLY here, exactly like `auditSink` — no connector reads, calls, or
    *  branches on this field. */
   rateLimitCounter?: RateLimitCounter;
+  /** ADD-393 §9 (OR-2): TYPE-ONLY here, like `rateLimitCounter` — no connector reads it. Read
+   *  only by the two audited consumers' decision-gate step, where it REPLACES THE TRANSPORT of
+   *  every `approval:`/`consent:` gate. It does not lift a missing gate and carries no timeout
+   *  of its own — see `ApprovalResolver`. `archstone serve` never sets it. */
+  approvalResolver?: ApprovalResolver;
   /** ADR-0012 D-3 — see `IdentityAdapter`'s own doc comment. Read in exactly one place:
    *  `invokeSql` (`providers/sql`). Every other connector ignores it. */
   identityAdapter?: IdentityAdapter;

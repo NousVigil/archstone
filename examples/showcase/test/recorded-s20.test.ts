@@ -14,7 +14,7 @@ describe("recorded S-20: init from the synthetic OpenAPI", () => {
   it("proposes every operation of the document and emits only what a person confirmed", () => {
     expect(init.exit).toBe(0);
     expect(init.command).toContain("--non-interactive");
-    expect(init.stdout).toContain("Candidates: 16 proposed, 3 emitted");
+    expect(init.stdout).toContain("Candidates: 21 proposed, 3 emitted");
     const kept = decisions.decisions.filter((d) => d.keep).map((d) => d.capabilityId);
     expect(kept).toEqual(["wanderlust.search", "wanderlust.stay-details", "wanderlust.availability"]);
     const emitted = [...init.stdout!.matchAll(/^ {2}✓ (\S+)/gm)].map((m) => m[1]);

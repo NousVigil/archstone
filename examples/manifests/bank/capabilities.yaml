@@ -10,9 +10,12 @@ company:
 capabilities:
   - banking.list-accounts
   - banking.quote-transfer
+  - banking.request-transfer-approval
+  - banking.approval-status
   - banking.initiate-transfer
   - banking.generate-statement
 
 providers:
   - core-banking
   - statements
+  - approvals

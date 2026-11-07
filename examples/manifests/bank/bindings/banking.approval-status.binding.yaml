@@ -1,0 +1,12 @@
+# NOT CDL — implementation (how), separate from the capability (what).
+
+binding:
+  capabilityId: banking.approval-status
+  connector:
+    type: rest
+    rest:
+      baseUrl: "${APPROVALS_URL}"
+      method: GET
+      path: /approvals/{approval}
+      headers:
+        Authorization: "Bearer ${caller.accessToken}"

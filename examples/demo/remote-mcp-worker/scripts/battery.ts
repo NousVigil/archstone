@@ -126,7 +126,8 @@ export async function runBattery(send: Send): Promise<Check[]> {
   check("book with a non-Bearer Authorization: policy_unevaluatable", policyReason(malformed.result) === "policy_unevaluatable", policyReason(malformed.result));
 
   // The blocked key is denied by Archstone's policy on paying and cancelling too (#201), and the
-  // backend is not asked; the visitor key reaches the agency, whose refusal of an unknown booking is its own.
+  // backend is not asked. With the visitor key, cancel and pay also need an approval a person granted
+  // (human-approval, #165): without one Archstone refuses before the agency is asked to cancel.
   const KEY_VISITOR = "Bearer demo-public-key-visitor-0000";
   const KEY_BLOCKED = "Bearer demo-public-key-blocked-0000";
   const payArgs = { bookingId: "B-0000cafe", amount: { amount: 354, currency: "EUR" }, paymentQuote: "PQ-0-00000000" };
@@ -136,11 +137,15 @@ export async function runBattery(send: Send): Promise<Check[]> {
   check("cancel with the blocked key: principal_denied, backend never called", policyReason(cancelB.result) === "principal_denied" && cancelB.res.headers.get("x-showcase-backend-calls") === "0", policyReason(cancelB.result));
   const cancelNone = await callMcp("wanderlust_cancel", { bookingId: "B-0000cafe" });
   check("cancel with no key: authenticated_no_credential, backend never called", policyReason(cancelNone.result) === "authenticated_no_credential" && cancelNone.res.headers.get("x-showcase-backend-calls") === "0", policyReason(cancelNone.result));
-  const cancelA = await callMcp("wanderlust_cancel", { bookingId: "B-0000cafe" }, KEY_VISITOR);
-  const refund = (cancelA.result?.structuredContent as { cancellation?: { refund?: { amount?: number } } } | undefined)?.cancellation?.refund?.amount;
-  check("cancel the seeded booking with the visitor key: refund equals its total", cancelA.result?.isError !== true && refund === 354, String(refund));
-  const cancelUnknown = await callMcp("wanderlust_cancel", { bookingId: "B-ffffffffffff" }, KEY_VISITOR);
-  check("cancel an unknown booking: the agency answers 404 and nothing is invented", cancelUnknown.result?.isError === true && /404/.test(JSON.stringify(cancelUnknown.result)), JSON.stringify(cancelUnknown.result).slice(0, 160));
+  const cancelBare = await callMcp("wanderlust_cancel", { bookingId: "B-0000cafe" }, KEY_VISITOR);
+  const bareMeta = cancelBare.result?._meta?.["dev.archstone/input_invalid"] as { error?: string } | undefined;
+  check("cancel with the visitor key but no approval id: input_invalid, backend never called", bareMeta?.error === "input_invalid" && cancelBare.res.headers.get("x-showcase-backend-calls") === "0", JSON.stringify(bareMeta));
+  // An approval nobody granted: the agency's ask endpoint is asked once (one backend call) and refuses;
+  // the cancel itself is never sent. (Isolate-independent: no approval needs to be remembered.)
+  const cancelUngranted = await callMcp("wanderlust_cancel", { bookingId: "B-0000cafe", approval: "APR-0-00000000" }, KEY_VISITOR);
+  check("cancel with an approval nobody granted: approval_refused, only the ask reached the agency", policyReason(cancelUngranted.result) === "approval_refused" && cancelUngranted.res.headers.get("x-showcase-backend-calls") === "1", policyReason(cancelUngranted.result));
+  const askUnknown = await callMcp("wanderlust_request-cancellation-approval", { bookingId: "B-ffffffffffff" }, KEY_VISITOR);
+  check("asking to approve cancelling an unknown booking: the agency answers 404 and nothing is invented", askUnknown.result?.isError === true && /404/.test(JSON.stringify(askUnknown.result)), JSON.stringify(askUnknown.result).slice(0, 160));
 
   const searchArgs = { destination: "Lisbon", dates: { from: "2027-05-12", to: "2027-05-15" }, travelers: { adults: 2 } };
 
@@ -182,6 +187,14 @@ export async function runBattery(send: Send): Promise<Check[]> {
   check("run: the allowed origin is echoed exactly, with Vary: Origin", s07.res.headers.get("access-control-allow-origin") === PAGE_ORIGIN && (s07.res.headers.get("vary") ?? "").includes("Origin"));
   const s06 = await run("S-06", { headers: { origin: PAGE_ORIGIN } });
   check("run S-06: the visitor key books", s06.json?.caller === "demo key A" && s06.json?.result?.isError === false);
+  // The approval flow in ONE request (one isolate, so the approval is remembered between its steps):
+  // the agent requests, a person approves, the cancel presents it.
+  const s08 = await run("S-08", { headers: { origin: PAGE_ORIGIN } });
+  const s08Refund = (s08.json?.result?.structuredContent as { cancellation?: { refund?: { amount?: number } } } | undefined)?.cancellation?.refund?.amount;
+  check("run S-08: approved by a person first, the cancel goes through and refunds the booking's total", s08.json?.result?.isError === false && s08Refund === 354, JSON.stringify(s08.json?.result).slice(0, 200));
+  check("run S-08: three agency calls, the approval request, the ask and the cancel", s08.json?.backendCalls === 3, String(s08.json?.backendCalls));
+  const s09 = await run("S-09", { headers: { origin: PAGE_ORIGIN } });
+  check("run S-09: booked, approved by a person, and paid", s09.json?.result?.isError === false && (s09.json?.result?.structuredContent as { payment?: { status?: string } } | undefined)?.payment?.status === "paid", JSON.stringify(s09.json?.result).slice(0, 200));
   const s14 = await run("S-14");
   check("run S-14: the DELETE route has no tool", s14.json?.result?.isError === true && /unknown tool/.test(s14.json?.result?.content?.[0]?.text ?? ""));
   const s12 = await run("S-12");

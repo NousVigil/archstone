@@ -10,6 +10,19 @@ binding:
       headers:
         Authorization: "Bearer ${caller.accessToken}"
 
+  # The human-approval gate (ADD-393). Before the call reaches the agency, Archstone POSTs a fixed
+  # body (capability, effect, principal, approval id, full input) to the agency's ask endpoint and
+  # goes on only if it answers `allowed`. The endpoint (askApproval in ../../api/wanderlust-api.mjs)
+  # matches the approval to this call and marks it used in the same step. SHOWCASE_ASK_TOKEN is the
+  # runtime's own secret toward it, never the caller's key.
+  approval:
+    input: approval
+    ask:
+      baseUrl: "${SHOWCASE_API_URL}"
+      path: /v1/approvals/consume
+      headers:
+        Authorization: "Bearer ${SHOWCASE_ASK_TOKEN}"
+
   response:
     resource: Payment
     map:

@@ -7,7 +7,8 @@ info:
     the guests, the passport numbers (DEMO-PASS-nnnnnn), the phone numbers (+00 000 000 nnn) and
     the addresses (reserved .example domain).
 
-    It is deliberately stateless and deliberately over-exposing. Responses carry fields that no
+    It is deliberately stateless, except for approvals (an approval has to be remembered to be
+    consumed), and deliberately over-exposing. Responses carry fields that no
     capability declares (the agency's rate sheet, raw HTML, guest passports and phones at every
     nesting level), images and links on hosts the manifest never names, and there is an endpoint
     that deletes bookings which no capability exposes. This document describes what the backend
@@ -21,6 +22,14 @@ components:
       type: http
       scheme: bearer
       description: One of the two public demo keys (see credentials.mjs). Any other value is refused with 401.
+    approverKey:
+      type: http
+      scheme: bearer
+      description: The published approver key (DEMO_APPROVER_KEY). The credential of the person who decides an approval.
+    askKey:
+      type: http
+      scheme: bearer
+      description: The published secret the Archstone runtime presents when it asks (DEMO_ASK_KEY). A real one is a configured secret.
   schemas:
     Money:
       type: object
@@ -55,6 +64,15 @@ components:
         net: { type: number }
         margin: { type: number }
         commission: { type: number }
+    Approval:
+      type: object
+      properties:
+        id: { type: string, examples: ["APR-1-ecf6ad16"] }
+        status: { type: string, enum: [pending, approved, rejected, used, expired] }
+        capabilityId: { type: string }
+        expiresAt: { type: string, format: date-time }
+        approver: { description: "OVER-EXPOSED. Who sits on the approvals desk.", type: object }
+        requestedBy: { description: "OVER-EXPOSED. The requesting principal.", type: string }
     Problem:
       type: object
       properties:
@@ -235,3 +253,106 @@ paths:
       responses:
         "200": { description: "{ guest, deletedBookings, deletedAt }" }
         "401": { description: Not an agency key }
+  /v1/approvals/payment:
+    post:
+      summary: Ask a person to approve a payment (agency key required)
+      description: The body is what wanderlust.pay will take. The approval is recorded against the caller's principal and starts pending.
+      security: [{ agencyKey: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [bookingId, amount, paymentQuote]
+              properties:
+                bookingId: { type: string }
+                amount: { $ref: "#/components/schemas/Money" }
+                paymentQuote: { type: string }
+      responses:
+        "201": { description: The approval, pending }
+        "401": { description: Not an agency key }
+        "403": { description: The key stands for no principal }
+        "404": { description: No such booking }
+  /v1/approvals/cancellation:
+    post:
+      summary: Ask a person to approve a cancellation (agency key required)
+      security: [{ agencyKey: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [bookingId]
+              properties:
+                bookingId: { type: string }
+      responses:
+        "201": { description: The approval, pending }
+        "401": { description: Not an agency key }
+        "403": { description: The key stands for no principal }
+        "404": { description: No such booking }
+  /v1/approvals/{approvalId}:
+    get:
+      summary: Where an approval stands (agency key required; only the principal who asked may read it)
+      security: [{ agencyKey: [] }]
+      parameters:
+        - { name: approvalId, in: path, required: true, schema: { type: string, examples: ["APR-1-ecf6ad16"] } }
+      responses:
+        "200": { description: The approval }
+        "404": { description: No such approval for this caller }
+  /v1/approvals/{approvalId}/decision:
+    post:
+      summary: A person decides. Never bound as a capability; the scenario runner plays the person.
+      security: [{ approverKey: [] }]
+      parameters:
+        - { name: approvalId, in: path, required: true, schema: { type: string, examples: ["APR-1-ecf6ad16"] } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision]
+              properties:
+                decision: { type: string, enum: [approve, reject] }
+      responses:
+        "200": { description: The approval, approved or rejected }
+        "401": { description: Not the approver key }
+        "404": { description: No such approval }
+        "409": { description: Already decided or lapsed }
+  /v1/approvals/consume:
+    post:
+      summary: The ask endpoint. Archstone calls it once per gated call, before the call reaches the agency.
+      description: |
+        Takes Archstone's fixed ask body and answers allowed, pending or refused. Allows only an
+        approval granted for this capability, principal and full input; refuses a null principal;
+        for an irreversible capability, marks the approval used in the same step that answers
+        allowed. An unknown approval is refused, never 404: Archstone treats every non-answer as
+        unevaluatable, not as a refusal.
+      security: [{ askKey: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version, token, capabilityId, effect, principal, approvalId, input]
+              properties:
+                version: { const: 1 }
+                token: { const: human-approval }
+                capabilityId: { type: string }
+                effect: { type: string, enum: [read, write, irreversible] }
+                principal: { type: [string, "null"] }
+                approvalId: { type: string }
+                input: { type: object }
+      responses:
+        "200":
+          description: The answer
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [approvalId, outcome]
+                properties:
+                  approvalId: { type: string, description: The id that was asked about, echoed }
+                  outcome: { type: string, enum: [allowed, pending, refused] }
+                  reference: { type: string, description: The decision's reference; always present with allowed }
+        "400": { description: Not a version 1 human-approval ask }
+        "401": { description: Not the runtime's ask key }

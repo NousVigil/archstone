@@ -44,8 +44,8 @@ export type IRDiffKind =
   | "policy-rate-limit-changed" // notable — tightened, loosened, added or removed
   | "policy-tokens-changed" // notable
   | "description-changed" // compatible
-  | "binding-changed"; // compatible, except a removed connector and a failure-mapping change on a
-  // write/irreversible capability (RFC-0011 D-5) — see `diffBinding`
+  | "binding-changed"; // compatible, except a removed connector, a removed decision gate, and a
+  // failure-mapping change on a write/irreversible capability (RFC-0011 D-5) — see `diffBinding`
 
 export interface IRDiffEntry {
   severity: IRDiffSeverity;
@@ -86,6 +86,8 @@ interface NormTool {
   response: IRTool["response"];
   extract: NonNullable<IRTool["extract"]>;
   origins: IRTool["origins"];
+  approval: IRTool["approval"];
+  consent: IRTool["consent"];
   failures: NonNullable<IRTool["failures"]>;
 }
 
@@ -104,6 +106,8 @@ function normalise(t: IRTool): NormTool {
     response: t.response,
     extract: t.extract ?? [],
     origins: t.origins,
+    approval: t.approval,
+    consent: t.consent,
     failures: t.failures ?? [],
     // `contract` deliberately not copied (D-5).
   };
@@ -389,7 +393,7 @@ function diffPolicyRules(id: string, before: IRPolicyRule[], after: IRPolicyRule
   }
 }
 
-function diffPolicyTokens(id: string, before: string[], after: string[], emit: Emit): void {
+function diffPolicyTokens(id: string, before: string[], after: string[], emit: Emit, gates: Pick<NormTool, "approval" | "consent">): void {
   const b = sortedSet(before);
   const a = sortedSet(after);
   if (canonical(b) === canonical(a)) return;
@@ -398,7 +402,19 @@ function diffPolicyTokens(id: string, before: string[], after: string[], emit: E
   const parts: string[] = [];
   if (gained.length > 0) parts.push(`gained ${quoteList(gained)}`);
   if (lost.length > 0) parts.push(`lost ${quoteList(lost)}`);
-  emit({ kind: "policy-tokens-changed", capabilityId: id, path: "policies", before: b, after: a, detail: `policy tokens ${parts.join(" and ")}` });
+  // ADD-393: a gained decision token whose gate the binding does not declare refuses every call
+  // (fail-closed) — an agent that worked against before fails against after.
+  const ungated = gained.filter((p) => (p === "human-approval" && !gates.approval) || (p === "consent-required" && !gates.consent));
+  if (ungated.length > 0) parts.push(`with no gate for ${quoteList(ungated)}, so every call is now refused`);
+  emit({
+    kind: "policy-tokens-changed",
+    ...(ungated.length > 0 ? { severity: "breaking" as const } : {}),
+    capabilityId: id,
+    path: "policies",
+    before: b,
+    after: a,
+    detail: `policy tokens ${parts.join(" and ")}`,
+  });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -434,6 +450,30 @@ function diffBinding(id: string, b: NormTool, a: NormTool, emit: Emit): void {
   }
   if (canonical(b.origins) !== canonical(a.origins)) {
     emit({ kind: "binding-changed", capabilityId: id, path: "origins", detail: "binding origins changed" });
+  }
+  // ADD-393: a decision gate added or removed is reported on its own, not folded into "binding
+  // changed". Removing one while the capability still declares the token is `breaking`: every
+  // call that the endpoint used to answer `allowed` for is now refused, fail-closed.
+  for (const [block, token] of [["consent", "consent-required"], ["approval", "human-approval"]] as const) {
+    const bg = b[block];
+    const ag = a[block];
+    if (canonical(bg) === canonical(ag)) continue;
+    if (bg && !ag) {
+      const stillDeclared = a.policies.includes(token);
+      emit({
+        kind: "binding-changed",
+        ...(stillDeclared ? { severity: "breaking" as const } : {}),
+        capabilityId: id,
+        path: block,
+        detail: stillDeclared
+          ? `${block} gate removed — policies:[${token}] is still declared, so every call is now refused`
+          : `${block} gate removed`,
+      });
+    } else if (!bg && ag) {
+      emit({ kind: "binding-changed", capabilityId: id, path: block, detail: `${block} gate added — the call is refused unless the deployer's endpoint answers \`allowed\` for it` });
+    } else {
+      emit({ kind: "binding-changed", capabilityId: id, path: block, detail: `${block} gate changed` });
+    }
   }
   if (canonical(b.failures) !== canonical(a.failures)) {
     const consequential = b.effect !== "read" || a.effect !== "read";
@@ -546,7 +586,7 @@ function diffTool(b: NormTool, a: NormTool, emit: Emit): void {
   diffFields(id, "input", b.input, a.input, emit);
   diffFields(id, "output", b.output, a.output, emit);
   diffPolicyRules(id, b.policyRules, a.policyRules, emit);
-  diffPolicyTokens(id, b.policies, a.policies, emit);
+  diffPolicyTokens(id, b.policies, a.policies, emit, a);
   if (b.description !== a.description) {
     emit({ kind: "description-changed", capabilityId: id, path: "description", before: b.description, after: a.description, detail: "description changed" });
   }

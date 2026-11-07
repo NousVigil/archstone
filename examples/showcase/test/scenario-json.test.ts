@@ -27,7 +27,7 @@ describe("AC-1.10: the scenario table", () => {
     expect(new Set(rows.map((r) => r.id)).size).toBe(23);
   });
 
-  it("gives every row except the two locked ones its N-xx id, numbered like the scenario", () => {
+  it("gives every row except S-10 (the approval story) and S-22 (locked) its N-xx id, numbered like the scenario", () => {
     for (const r of rows) {
       if (r.id === "S-10" || r.id === "S-22") {
         expect(r.negative, r.id).toBeNull();
@@ -37,16 +37,14 @@ describe("AC-1.10: the scenario table", () => {
     }
   });
 
-  it("has live rows S-01..S-09, S-11..S-14 and S-23, recorded rows S-15..S-21, and exactly two locked ones", () => {
+  it("has live rows S-01..S-09, S-11..S-14 and S-23, recorded rows S-10 and S-15..S-21, and exactly one locked one", () => {
     const modes = (m: string) => rows.filter((r) => r.mode === m).map((r) => r.id);
     expect(modes("live")).toEqual(["S-01", "S-02", "S-03", "S-04", "S-05", "S-06", "S-07", "S-08", "S-09", "S-11", "S-12", "S-13", "S-14", "S-23"]);
-    expect(modes("recorded")).toEqual(["S-15", "S-16", "S-17", "S-18", "S-19", "S-20", "S-21"]);
-    expect(modes("locked")).toEqual(["S-10", "S-22"]);
+    expect(modes("recorded")).toEqual(["S-10", "S-15", "S-16", "S-17", "S-18", "S-19", "S-20", "S-21"]);
+    expect(modes("locked")).toEqual(["S-22"]);
   });
 
-  it("links the two locked rows to their issues and no other row to any", () => {
-    expect(byId("S-10").issue).toBe(165);
-    expect(byId("S-10").issueUrl).toBe("https://github.com/NousVigil/archstone/issues/165");
+  it("links the locked row to its issue and no other row to any", () => {
     expect(byId("S-22").issue).toBe(166);
     expect(byId("S-22").issueUrl).toBe("https://github.com/NousVigil/archstone/issues/166");
     for (const r of rows.filter((x) => x.mode !== "locked")) {
@@ -95,11 +93,13 @@ describe("AC-1.10: the scenario table", () => {
     }
   });
 
-  it("makes no claim Archstone does not keep: approval is declared, not enforced; nothing is guaranteed safe", () => {
+  it("makes no claim Archstone does not keep: the agency decides approvals and uses them up; nothing is guaranteed safe", () => {
     const all = rows.map((r) => Object.values(r.copy.en).join(" ")).join(" ").toLowerCase();
-    expect(all).toContain("does not enforce");
-    expect(byId("S-10").copy.en.refused.toLowerCase()).toContain("not enforced");
-    expect(byId("S-08").copy.en.refused.toLowerCase()).toContain("archstone does not pause it");
+    // ADD-393: Archstone refuses unless the deployer's endpoint answers allowed; single use is the endpoint's.
+    expect(byId("S-08").copy.en.refused.toLowerCase()).toContain("archstone refuses it unless the agency's approvals system answers");
+    expect(byId("S-08").copy.en.refused.toLowerCase()).toContain("the agency uses the approval up");
+    expect(byId("S-10").copy.en.refused.toLowerCase()).toContain("archstone keeps no approval state");
+    expect(all).not.toMatch(/single-use|archstone (prevents|stops|blocks) (re)?use|archstone uses the approval up/);
     expect(byId("S-09").copy.en.refused.toLowerCase()).toContain("not archstone");
     expect(all).not.toMatch(/\b(safe|secure|secured|guarantee|guaranteed)\b/);
   });
@@ -155,8 +155,11 @@ describe("AC-1.10: the scenario table", () => {
   });
 
   it("defines a setup chain only where a call needs something an earlier call returned", () => {
-    expect(rows.filter((r) => r.setup).map((r) => r.id)).toEqual(["S-06", "S-07", "S-09"]);
-    expect(byId("S-09").setup!.map((s) => s.tool)).toEqual(["wanderlust_quote", "wanderlust_book"]);
+    expect(rows.filter((r) => r.setup).map((r) => r.id)).toEqual(["S-06", "S-07", "S-08", "S-09"]);
+    // The approval steps: the agent requests, a person decides (no tool: never an agent's call), the call presents it.
+    expect(byId("S-08").setup!.map((s) => s.tool ?? `approve ${s.approve}`)).toEqual(["wanderlust_request-cancellation-approval", "approve {{approvalId}}"]);
+    expect(byId("S-09").setup!.map((s) => s.tool ?? `approve ${s.approve}`)).toEqual(["wanderlust_quote", "wanderlust_book", "wanderlust_request-payment-approval", "approve {{approvalId}}"]);
+    for (const id of ["S-08", "S-09"]) expect(byId(id).arguments!.approval, id).toBe("{{approvalId}}");
   });
 });
 
@@ -224,7 +227,7 @@ describe("AC-1.12: public-repo hygiene", () => {
 
   it("has a README that frames the example honestly", () => {
     const readme = readFileSync(resolve(SHOWCASE_DIR, "README.md"), "utf8");
-    for (const must of [DEMO_KEY_A, DEMO_KEY_B, "public", "synthetic", "invented", "over-expos", "not enforced", "MCP annotation"]) {
+    for (const must of [DEMO_KEY_A, DEMO_KEY_B, "public", "synthetic", "invented", "over-expos", "refused unless the deployer's endpoint answers", "MCP annotation"]) {
       expect(readme.toLowerCase(), must).toContain(must.toLowerCase());
     }
     expect(readme).toMatch(/does not make a real backend safe|cannot make a real backend safe/i);

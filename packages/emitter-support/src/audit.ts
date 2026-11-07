@@ -30,6 +30,7 @@
 
 import type { IRTool } from "@archstone/compiler";
 import type { PolicyDenialReason } from "./policy";
+import type { DecisionDenialReason, DecisionReferences } from "./approval";
 
 /**
  * The record's denial vocabulary: the policy evaluator's four codes, copied verbatim, plus
@@ -63,7 +64,11 @@ import type { PolicyDenialReason } from "./policy";
  * second new code — see `evaluateRateLimit`'s own doc comment for why that is the same meaning,
  * not a different one wearing the same name), and one from the input-contract gate (#195:
  * `validateInput` refusing a call whose arguments do not match the declared input fields —
- * `input_invalid`'s single named producer, run after policy and before the rate limiter). Without that rule the enum is a list; with it, it
+ * `input_invalid`'s single named producer, run after policy and before the rate limiter), and
+ * four from the decision-gate step (ADD-393 D-6: `evaluateDecisionGates`, `approval.ts` —
+ * `approval_pending`/`approval_refused` for `human-approval`, `consent_pending`/`consent_refused`
+ * for `consent-required`; every failure to obtain an answer reuses `policy_unevaluatable`, and
+ * there is deliberately no timeout code, ADR-0014 Amendment 1). Without that rule the enum is a list; with it, it
  * is a contract — and it is permanent the moment a customer filters on one of these strings.
  */
 export type ExecutionDenialReason =
@@ -71,7 +76,8 @@ export type ExecutionDenialReason =
   | "lifecycle_blocked"
   | "lifecycle_unevaluatable"
   | "rate_limit_exceeded"
-  | "input_invalid";
+  | "input_invalid"
+  | DecisionDenialReason;
 
 /** The non-policy refusal code for a `retired` capability. Spelled to match the agent-facing
  *  `LIFECYCLE_BLOCKED_META_KEY` the MCP surface already ships — one concept, one spelling,
@@ -122,6 +128,11 @@ export interface ExecutionStatus {
    *  and `denied`, where it would be a constant carrying no information. Doc 6 §3's billing rule:
    *  billable iff `phase === "succeeded"` or (`phase === "failed"` and `reachedConnector === true`). */
   reachedConnector?: boolean;
+  /** ADD-393 D-7: per decision token, the approval id presented and the reference a valid answer
+   *  returned. Present on every phase once an ask was SENT — an unevaluatable ask is still
+   *  traceable to the id presented. NOT scrubbed, as `principal` is not: both values are
+   *  restricted to visible ASCII before they are sent or accepted. */
+  decisionReferences?: DecisionReferences;
 }
 
 /**
@@ -394,6 +405,11 @@ export function buildExecutionRecord(args: BuildExecutionRecordInput): Execution
   // ADD-44 Amendment 2 (archstone#34): present only when the caller sets it, which the two
   // audited consumers do only on `phase: "failed"` — never synthesized here for any other phase.
   if (status.reachedConnector !== undefined) record.status.reachedConnector = status.reachedConnector;
+  // Copied, not scrubbed (ADD-393 D-7): an id or reference that happens to equal a caller
+  // secret would otherwise be rewritten into `[redacted]` and stop matching the deciding system.
+  if (status.decisionReferences !== undefined) {
+    record.status.decisionReferences = JSON.parse(JSON.stringify(status.decisionReferences)) as DecisionReferences;
+  }
 
   // `status.output` is NEVER populated, on any phase — the schema has the property and this
   // emitter has no code path that writes it. Rule #7's non-negotiable is "with what OUTCOME",

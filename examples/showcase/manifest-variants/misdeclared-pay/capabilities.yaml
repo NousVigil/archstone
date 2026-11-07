@@ -1,9 +1,9 @@
 # A MIS-DECLARED payment, kept as a fixture outside the live manifest and never deployed.
 #
 # Same payment as ../../manifest, written carelessly: no quote step, no declared failures, no
-# authenticated caller, and an approval token that this version of Archstone does not enforce.
-# `archstone apply` reports three warnings naming the capability and still exits 0: the checks
-# warn, they do not block, and nothing here stops a payment sequence the agency would refuse.
+# authenticated caller, and an approval token with no gate in its binding. `archstone apply` reports
+# three warnings naming the capability and still exits 0: the checks warn, they do not block. At
+# runtime the missing gate refuses every call (fail-closed), which is the one thing here that stops it.
 #
 #   archstone apply examples/showcase/manifest-variants/misdeclared-pay
 

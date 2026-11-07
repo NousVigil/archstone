@@ -18,9 +18,9 @@ const sections = out
   }));
 
 describe("recorded S-16: what the AI sees, in one list", () => {
-  it("covers all 13 capabilities and exits 0", () => {
+  it("covers all 16 capabilities and exits 0", () => {
     expect(stepWith(t, "archstone apply examples/showcase/manifest --exposure").exit).toBe(0);
-    expect(sections).toHaveLength(13);
+    expect(sections).toHaveLength(16);
   });
 
   it("negative: no exposed list names margin, passport, phone or description_html", () => {

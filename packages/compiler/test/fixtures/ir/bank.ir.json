@@ -6,6 +6,48 @@
   },
   "tools": [
     {
+      "id": "banking.approval-status",
+      "description": "Read whether a transfer approval is still pending, approved, rejected, used or expired.",
+      "effect": "read",
+      "provider": "approvals",
+      "policies": [
+        "authenticated"
+      ],
+      "lifecycle": "stable",
+      "input": [
+        {
+          "name": "approval",
+          "required": true,
+          "type": {
+            "kind": "resource",
+            "name": "banking.Approval",
+            "identity": true
+          }
+        }
+      ],
+      "output": [
+        {
+          "name": "approval",
+          "required": true,
+          "type": {
+            "kind": "resource",
+            "name": "banking.Approval"
+          }
+        }
+      ],
+      "connector": {
+        "type": "rest",
+        "rest": {
+          "method": "GET",
+          "path": "/approvals/{approval}",
+          "baseUrl": "${APPROVALS_URL}",
+          "headers": {
+            "Authorization": "Bearer ${caller.accessToken}"
+          }
+        }
+      }
+    },
+    {
       "id": "banking.generate-statement",
       "description": "Produce an account statement for a period.",
       "effect": "read",
@@ -90,6 +132,16 @@
             "kind": "scalar",
             "semantic": "text"
           }
+        },
+        {
+          "name": "approval",
+          "required": true,
+          "type": {
+            "kind": "resource",
+            "name": "banking.Approval",
+            "identity": true
+          },
+          "description": "The approved approval from banking.request-transfer-approval, for this same transfer."
         }
       ],
       "output": [
@@ -108,6 +160,16 @@
           "method": "POST",
           "path": "/v2/transfers",
           "baseUrl": "${CORE_BANKING_URL}"
+        }
+      },
+      "approval": {
+        "input": "approval",
+        "ask": {
+          "baseUrl": "${APPROVALS_URL}",
+          "path": "/approvals/consume",
+          "headers": {
+            "Authorization": "Bearer ${APPROVALS_TOKEN}"
+          }
         }
       }
     },
@@ -191,6 +253,73 @@
           }
         }
       ]
+    },
+    {
+      "id": "banking.request-transfer-approval",
+      "description": "Ask a person at the bank to approve a transfer before it is sent. Returns an approval that starts pending.",
+      "effect": "write",
+      "provider": "approvals",
+      "policies": [
+        "authenticated"
+      ],
+      "lifecycle": "stable",
+      "input": [
+        {
+          "name": "source",
+          "required": true,
+          "type": {
+            "kind": "resource",
+            "name": "banking.Account",
+            "identity": true
+          }
+        },
+        {
+          "name": "beneficiary",
+          "required": true,
+          "type": {
+            "kind": "resource",
+            "name": "banking.Beneficiary",
+            "identity": true
+          }
+        },
+        {
+          "name": "amount",
+          "required": true,
+          "type": {
+            "kind": "scalar",
+            "semantic": "money"
+          }
+        },
+        {
+          "name": "reference",
+          "required": false,
+          "type": {
+            "kind": "scalar",
+            "semantic": "text"
+          }
+        }
+      ],
+      "output": [
+        {
+          "name": "approval",
+          "required": true,
+          "type": {
+            "kind": "resource",
+            "name": "banking.Approval"
+          }
+        }
+      ],
+      "connector": {
+        "type": "rest",
+        "rest": {
+          "method": "POST",
+          "path": "/approvals",
+          "baseUrl": "${APPROVALS_URL}",
+          "headers": {
+            "Authorization": "Bearer ${caller.accessToken}"
+          }
+        }
+      }
     }
   ],
   "resources": {
@@ -236,6 +365,42 @@
             "closed"
           ]
         }
+      }
+    ],
+    "banking.Approval": [
+      {
+        "name": "id",
+        "required": true,
+        "type": {
+          "kind": "scalar",
+          "semantic": "identifier"
+        },
+        "description": "The approval's id; banking.initiate-transfer takes it as its approval input."
+      },
+      {
+        "name": "status",
+        "required": true,
+        "type": {
+          "kind": "scalar",
+          "semantic": "enum",
+          "values": [
+            "pending",
+            "approved",
+            "rejected",
+            "used",
+            "expired"
+          ]
+        },
+        "description": "Where the decision stands. A used approval has already authorised a transfer."
+      },
+      {
+        "name": "expiresAt",
+        "required": true,
+        "type": {
+          "kind": "scalar",
+          "semantic": "datetime"
+        },
+        "description": "When an undecided or unused approval lapses."
       }
     ],
     "banking.Beneficiary": [

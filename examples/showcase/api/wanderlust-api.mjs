@@ -3,10 +3,12 @@
 // One plain fetch handler: `handle(request, options) -> Promise<Response>`. It uses only the
 // web-standard Request/Response/URL/Headers, no Node API and no Workers API, so the same file
 // serves from a Node `http` wrapper (./serve.mjs), from Vitest through a `fetch` stand-in, and
-// from a Workers runtime. It is deterministic and stateless: every id, every price and every
-// "time" is a pure function of the request and of the injected clock. There is no storage of any
-// kind; a booking "exists" only in the sense that its id verifies (it carries its own total and a
-// check) and was derived from a quote the agency would have issued, still inside its 15-minute window.
+// from a Workers runtime. It is deterministic and, except for approvals, stateless: every id, every
+// price and every "time" is a pure function of the request and of the injected clock. A booking
+// "exists" only in the sense that its id verifies (it carries its own total and a check) and was
+// derived from a quote the agency would have issued, still inside its 15-minute window. Approvals
+// are the one thing kept, in an injectable store, because an approval has to be remembered to be
+// consumed (see "Approvals" below).
 //
 // IT OVER-EXPOSES ON PURPOSE. Everything marked OVER-EXPOSED below is a field, a link, a host or
 // an endpoint that a well-run contract must keep away from a model, and each one is pinned by
@@ -19,7 +21,7 @@
 // on the reserved ".example" domain). Any resemblance to a real business or person is accidental.
 
 /* global Response, URL */
-import { ACCEPTED_KEYS } from "../credentials.mjs";
+import { ACCEPTED_KEYS, DEMO_KEYS } from "../credentials.mjs";
 
 /** The origin the agency's own images answer on: the public demo Worker, which serves `/img/...`
  *  from the same script as the API. Constant on purpose: not derived from the request, so the output
@@ -41,6 +43,8 @@ export const QUOTE_WINDOW_MS = 15 * 60 * 1000;
  * @property {number | (() => number)} [now]  The clock, in epoch milliseconds, or a function
  *   returning it. Injected so a fixed clock gives byte-identical output.
  * @property {string} [imageBase]  Origin used in image URLs. Defaults to IMAGE_BASE.
+ * @property {ReturnType<typeof createApprovalStore>} [approvals]  Where approvals are kept. Defaults
+ *   to one store per module instance; inject a fresh one for an isolated run.
  */
 
 // ---------------------------------------------------------------------------------------------
@@ -576,6 +580,241 @@ async function postPayment(request, nowMs) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Approvals: the agency's own approvals system, and the endpoint Archstone asks
+// ---------------------------------------------------------------------------------------------
+//
+// This is the ONE part of the agency that keeps state, because it cannot be done without it: an
+// approval is requested, then decided by a person, then consumed by the call it authorised, and
+// "consumed" has to be remembered or the same approval would authorise a second payment. The state
+// lives in an ApprovalStore that the caller of `handle` may inject (`options.approvals`; tests use a
+// fresh one each). Without one, a module-level store is used, which lives as long as the process or
+// Workers isolate does. Nothing is written anywhere else. Archstone holds none of this state.
+//
+// Four endpoints, three audiences:
+//
+//   POST /v1/approvals/payment          (agency key)    an agent asks a person to approve a payment;
+//   POST /v1/approvals/cancellation     (agency key)    ... or a cancellation. Bound as capabilities.
+//   GET  /v1/approvals/{id}             (agency key)    an agent reads where the decision stands.
+//                                                       Bound as a capability: this is how an agent
+//                                                       waits, by reading, not by retrying the call.
+//   POST /v1/approvals/{id}/decision    (approver key)  a PERSON decides. Driven by the scenario
+//                                                       runner, and never bound as a capability: an
+//                                                       agent that can approve its own request has
+//                                                       made the approval a formality.
+//   POST /v1/approvals/consume          (ask key)       the endpoint Archstone asks, once per gated
+//                                                       call, before the call reaches the agency.
+//
+// The last one is the deployer-side half of Archstone's `human-approval` gate, and it is written to
+// be copied: see askApproval below. Archstone sends it a fixed body and runs the call only if it
+// answers `allowed`; everything that makes `allowed` mean something is decided HERE.
+
+/** The approver's key: the credential of the person who decides. PUBLISHED, like the demo keys, so
+ *  it proves nothing about who decided; in a real deployment the decision is taken by a person in
+ *  the business's own approvals system, behind its own sign-in. */
+export const DEMO_APPROVER_KEY = "demo-public-key-approver-0000";
+/** The secret Archstone presents when it asks (`Authorization: Bearer ${SHOWCASE_ASK_TOKEN}` in a
+ *  gated binding). PUBLISHED: a real one is a configured secret known only to the runtime. */
+export const DEMO_ASK_KEY = "demo-public-key-archstone-ask-0000";
+
+/** An approval lapses this long after it is requested, decided or not. */
+export const APPROVAL_WINDOW_MS = QUOTE_WINDOW_MS;
+/** A store forgets its oldest approvals beyond this many, so a long-lived isolate cannot grow without bound. */
+const APPROVAL_CAPACITY = 1000;
+
+/**
+ * @typedef {object} ApprovalRecord
+ * @property {string} id
+ * @property {"wanderlust.pay" | "wanderlust.cancel"} capabilityId  The one capability it may authorise.
+ * @property {string} principal  Who asked. Only the same principal may use it.
+ * @property {Record<string, unknown>} input  Exactly what was asked for; the call must match it.
+ * @property {"pending" | "approved" | "rejected" | "used"} status
+ * @property {number} requestedAt
+ * @property {number} expiresAtMs
+ * @property {number} [decidedAt]
+ * @property {string} [reference]  The agency's decision reference, set when a person decides.
+ */
+
+/** @returns {{ records: Map<string, ApprovalRecord>, seq: number }} */
+export function createApprovalStore() {
+  return { records: new Map(), seq: 0 };
+}
+const moduleApprovals = createApprovalStore();
+
+/** The principal a bearer key stands for, as the demo Worker asserts it (credentials.mjs). */
+function principalOf(request) {
+  const m = /^Bearer (.+)$/.exec(request.headers.get("authorization") ?? "");
+  return m ? Object.values(DEMO_KEYS).find((k) => k.key === m[1])?.principal : undefined;
+}
+
+/** Compare two JSON values by content, ignoring member order. */
+function sameJson(a, b) {
+  if (a === b) return true;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((v, i) => sameJson(v, b[i]));
+  }
+  if (!a || !b || typeof a !== "object" || typeof b !== "object") return false;
+  const ka = Object.keys(a).filter((k) => a[k] !== undefined && a[k] !== null);
+  const kb = Object.keys(b).filter((k) => b[k] !== undefined && b[k] !== null);
+  return ka.length === kb.length && ka.every((k) => sameJson(a[k], b[k]));
+}
+
+/** What an agent may see of an approval. The record itself carries more (OVER-EXPOSED below). */
+function approvalView(rec, nowMs) {
+  const lapsed = rec.status !== "used" && nowMs >= rec.expiresAtMs;
+  return {
+    id: rec.id,
+    status: lapsed ? "expired" : rec.status,
+    capabilityId: rec.capabilityId,
+    expiresAt: new Date(rec.expiresAtMs).toISOString(),
+    // OVER-EXPOSED: who sits on the approvals desk. The manifest maps id, status and expiresAt only.
+    approver: { name: "Approvals desk (fictional)", phone: "+00 000 000 222", email: "approvals.desk@guest.example" },
+    requestedBy: rec.principal, // OVER-EXPOSED: the requesting principal, never mapped
+  };
+}
+
+/** The business input each request endpoint accepts: the same fields the gated capability takes. */
+const APPROVAL_KINDS = {
+  payment: {
+    capabilityId: "wanderlust.pay",
+    pick: (b) =>
+      typeof b.bookingId === "string" && b.amount && typeof b.amount.amount === "number" && typeof b.amount.currency === "string" && typeof b.paymentQuote === "string"
+        ? { bookingId: b.bookingId, amount: { amount: b.amount.amount, currency: b.amount.currency }, paymentQuote: b.paymentQuote }
+        : undefined,
+    shape: "bookingId, amount { amount, currency } and paymentQuote",
+  },
+  cancellation: {
+    capabilityId: "wanderlust.cancel",
+    pick: (b) => (typeof b.bookingId === "string" ? { bookingId: b.bookingId } : undefined),
+    shape: "bookingId",
+  },
+};
+
+async function requestApproval(request, kind, store, nowMs) {
+  const principal = principalOf(request);
+  if (!principal) return problem(403, "principal_required", "An approval is requested by an identified caller.");
+  const body = await readJson(request);
+  const input = body ? APPROVAL_KINDS[kind].pick(body) : undefined;
+  if (!input) return problem(400, "bad_request", `An approval request needs ${APPROVAL_KINDS[kind].shape}.`);
+  if (bookingTotal(input.bookingId) === undefined) return problem(404, "booking_not_found", "No such booking.");
+  store.seq += 1;
+  const capabilityId = APPROVAL_KINDS[kind].capabilityId;
+  /** @type {ApprovalRecord} */
+  const rec = {
+    id: `APR-${store.seq}-${hex8(`${capabilityId}|${principal}|${JSON.stringify(input)}|${nowMs}|${store.seq}`)}`,
+    capabilityId,
+    principal,
+    input,
+    status: "pending",
+    requestedAt: nowMs,
+    expiresAtMs: nowMs + APPROVAL_WINDOW_MS,
+  };
+  store.records.set(rec.id, rec);
+  while (store.records.size > APPROVAL_CAPACITY) store.records.delete(store.records.keys().next().value);
+  return json(approvalView(rec, nowMs), 201);
+}
+
+function approvalStatus(request, id, store, nowMs) {
+  const rec = store.records.get(id);
+  // Someone else's approval is answered exactly like a missing one: its existence is not disclosed.
+  if (!rec || rec.principal !== principalOf(request)) return problem(404, "approval_not_found", "No such approval.");
+  return json(approvalView(rec, nowMs));
+}
+
+async function decideApproval(request, id, store, nowMs) {
+  if ((request.headers.get("authorization") ?? "") !== `Bearer ${DEMO_APPROVER_KEY}`) {
+    return json({ error: "invalid_token", message: "Only an approver may decide." }, 401, { "www-authenticate": "Bearer" });
+  }
+  const rec = store.records.get(id);
+  if (!rec) return problem(404, "approval_not_found", "No such approval.");
+  const body = await readJson(request);
+  if (body?.decision !== "approve" && body?.decision !== "reject") {
+    return problem(400, "bad_request", 'decision must be "approve" or "reject".');
+  }
+  if (rec.status !== "pending" || nowMs >= rec.expiresAtMs) {
+    return problem(409, "already_decided", "That approval is no longer waiting for a decision.");
+  }
+  rec.status = body.decision === "approve" ? "approved" : "rejected";
+  rec.decidedAt = nowMs;
+  rec.reference = `DEC-${hex8(`${rec.id}|${rec.status}|${nowMs}`)}`;
+  return json(approvalView(rec, nowMs));
+}
+
+/**
+ * THE ASK ENDPOINT: what Archstone calls before a gated capability reaches the agency.
+ *
+ * A deployer writes one of these in front of the approvals system they already run. Archstone
+ * sends, once per invocation and strictly before the provider, a POST with this fixed body, which
+ * it builds itself and no binding can reshape:
+ *
+ *   { "version": 1, "token": "human-approval", "capabilityId": "wanderlust.pay",
+ *     "effect": "irreversible", "principal": "demo:visitor", "approvalId": "APR-1-…",
+ *     "input": { …every declared input field the call was validated with… } }
+ *
+ * and expects exactly this back, with HTTP 200:
+ *
+ *   { "approvalId": "<the same id, echoed>", "outcome": "allowed" | "pending" | "refused",
+ *     "reference": "<this system's own reference; required with allowed>" }
+ *
+ * Archstone runs the call only on `allowed`. Anything that is not a well-formed answer (a 401 or
+ * 404, a redirect, a timeout, a missing echo, an unknown outcome) is not a refusal to Archstone:
+ * the call fails closed as `policy_unevaluatable`. So an unknown or unusable approval must be
+ * answered `refused`, never 404, and a 401 here means the wiring is wrong, not that the person said no.
+ *
+ * The contract this endpoint keeps, which Archstone cannot see and therefore cannot promise:
+ *  1. Find the approval by approvalId.
+ *  2. Refuse a null principal, for any capability: nobody can be held to an approval nobody asked for.
+ *  3. Allow only if the approval was granted for THIS capabilityId, THIS principal and THIS input
+ *     (here: every field equal; a business may use its own rule, for instance a payment up to the
+ *     approved amount). The input's own `approval` field is the id itself and is not compared.
+ *  4. For an irreversible capability, mark the approval used IN THE SAME OPERATION that answers
+ *     allowed, so it can never answer allowed for it twice. Here that is a synchronous check-and-set
+ *     with no await in between; with a database it is one conditional UPDATE (… SET status='used'
+ *     WHERE id=? AND status='approved'), and allowed only if it changed a row.
+ *  5. Refuse anything used, rejected, expired, or granted for something else. Say nothing about why:
+ *     Archstone ignores every other member of the answer, and the reference is where an auditor
+ *     reads the reason.
+ *
+ * For a write or read capability, how long an approval lasts is this system's own policy; this one
+ * lets a granted approval authorise the same call again until it expires.
+ */
+async function askApproval(request, store, nowMs) {
+  // The runtime's own secret toward this endpoint. Wrong or missing is a wiring fault, not a refusal.
+  if ((request.headers.get("authorization") ?? "") !== `Bearer ${DEMO_ASK_KEY}`) {
+    return json({ error: "invalid_token", message: "This endpoint answers the runtime only." }, 401, { "www-authenticate": "Bearer" });
+  }
+  const ask = await readJson(request);
+  const wellFormed =
+    ask &&
+    ask.version === 1 &&
+    ask.token === "human-approval" &&
+    typeof ask.capabilityId === "string" &&
+    ["read", "write", "irreversible"].includes(ask.effect) &&
+    (ask.principal === null || typeof ask.principal === "string") &&
+    typeof ask.approvalId === "string" &&
+    ask.input !== null &&
+    typeof ask.input === "object";
+  // A body that does not follow the contract is not an ask this endpoint can answer.
+  if (!wellFormed) return problem(400, "bad_ask", "Not a version 1 human-approval ask.");
+
+  const answer = (outcome, reference) => json({ approvalId: ask.approvalId, outcome, ...(reference ? { reference } : {}) });
+  const rec = store.records.get(ask.approvalId);
+  // 1. An id this system never issued is a refusal, not a 404.
+  if (!rec) return answer("refused");
+  // 2.–3. Bound to the caller, the capability and the full input.
+  const { approval: _presented, ...asked } = ask.input;
+  if (ask.principal === null || rec.principal !== ask.principal || rec.capabilityId !== ask.capabilityId || !sameJson(rec.input, asked)) {
+    return answer("refused", rec.reference);
+  }
+  // 5. Used, rejected or lapsed: refused. Still waiting for a person: pending.
+  if (rec.status === "used" || rec.status === "rejected" || nowMs >= rec.expiresAtMs) return answer("refused", rec.reference);
+  if (rec.status === "pending") return answer("pending");
+  // 4. Granted. For an irreversible capability, consume it in the same step that answers allowed:
+  // nothing awaits between the check above and this assignment, so no second ask can slip between.
+  if (ask.effect === "irreversible") rec.status = "used";
+  return answer("allowed", rec.reference);
+}
+
+// ---------------------------------------------------------------------------------------------
 // Availability, room status, neighbourhoods
 // ---------------------------------------------------------------------------------------------
 
@@ -729,6 +968,7 @@ function tokenCheck(request) {
 export async function handle(request, options = {}) {
   const nowMs = typeof options.now === "function" ? options.now() : (options.now ?? Date.now());
   const imageBase = options.imageBase ?? IMAGE_BASE;
+  const approvals = options.approvals ?? moduleApprovals;
   const url = new URL(request.url);
   const method = request.method.toUpperCase();
   let seg;
@@ -804,6 +1044,18 @@ export async function handle(request, options = {}) {
   // POST /v1/payments (token)
   if (rest.length === 1 && rest[0] === "payments") {
     return only("POST") ?? authed() ?? postPayment(request, nowMs);
+  }
+
+  // Approvals. POST /v1/approvals/consume is the ask endpoint (ask key); /{id}/decision is the
+  // approver's (approver key); the rest are an agent's (agency key).
+  if (rest[0] === "approvals") {
+    if (rest.length === 2 && rest[1] === "consume") return only("POST") ?? askApproval(request, approvals, nowMs);
+    if (rest.length === 2 && (rest[1] === "payment" || rest[1] === "cancellation")) {
+      return only("POST") ?? authed() ?? requestApproval(request, rest[1], approvals, nowMs);
+    }
+    if (rest.length === 2) return only("GET") ?? authed() ?? approvalStatus(request, rest[1], approvals, nowMs);
+    if (rest.length === 3 && rest[2] === "decision") return only("POST") ?? decideApproval(request, rest[1], approvals, nowMs);
+    return problem(404, "not_found", "No such route.");
   }
 
   // GET /v1/availability, /v1/room-status

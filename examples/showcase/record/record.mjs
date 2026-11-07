@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// The Showcase recorder (#170): runs scenarios S-15 .. S-21 for real and writes one transcript each.
+// The Showcase recorder (#170): runs scenarios S-10 and S-15 .. S-21 for real and writes one transcript each.
 //
 //   node examples/showcase/record/record.mjs            write examples/showcase/transcripts/s-NN.json
 //   node examples/showcase/record/record.mjs --check    regenerate into a temp dir; fail on any difference
@@ -17,6 +17,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, write
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CLI_JS, CLI_VERSION, RECORDED_DATE, SHOWCASE_DIR, ScenarioFailure, newContext } from "./lib.mjs";
+import * as s10 from "./s10.mjs";
 import * as s15 from "./s15.mjs";
 import * as s16 from "./s16.mjs";
 import * as s17 from "./s17.mjs";
@@ -26,7 +27,7 @@ import * as s20 from "./s20.mjs";
 import * as s21 from "./s21.mjs";
 
 export const TRANSCRIPT_DIR = join(SHOWCASE_DIR, "transcripts");
-const SCENARIOS = [s15, s16, s17, s18, s19, s20, s21];
+const SCENARIOS = [s10, s15, s16, s17, s18, s19, s20, s21];
 
 /** Run one scenario; return its transcript as an object with a fixed key order. */
 async function record(scenario) {

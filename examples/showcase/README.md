@@ -26,10 +26,13 @@ Read the example for what it is:
 - **Effects are MCP annotations.** `read`, `write` and `irreversible` become hints that a client may use
   to decide whether to ask a person first. Archstone does not enforce them and does not take credit for
   a confirmation the client chose to ask for.
-- **`human-approval` is declared, not enforced.** The cancel and pay capabilities declare it; this
-  version of Archstone has no approval mechanism, and `archstone apply` says so in a warning. Runtime
-  enforcement is tracked in
-  [#165](https://github.com/NousVigil/archstone/issues/165). HTML output is tracked in
+- **`human-approval` gates cancel and pay; the agency decides.** An agent asks a person to approve
+  (`wanderlust.request-payment-approval`, `wanderlust.request-cancellation-approval`), waits by reading
+  the decision (`wanderlust.approval-status`), and passes the approval id to the call. The call is
+  refused unless the deployer's endpoint answers `allowed` for it. Here the deployer is the synthetic
+  agency, whose ask endpoint also uses the approval up, so it works once. That is the agency's doing,
+  which Archstone cannot observe; Archstone keeps no approval state (see [Approvals](#approvals) and
+  [#165](https://github.com/NousVigil/archstone/issues/165)). HTML output is tracked in
   [#166](https://github.com/NousVigil/archstone/issues/166); until then the raw description is not
   sent at all.
 - **Who enforces what.** For `book`, `pay` and `cancel`, Archstone's *policy* runs first: a missing
@@ -69,23 +72,59 @@ The name and URL come first: `--header` takes any number of values, so placed be
 Use the second key to see the blocked caller refused. Other clients vary; if yours has no header
 setting, it will see the refusal.
 
+## Approvals
+
+The agency runs its own small approvals system, the one part of the synthetic API that keeps state
+(an approval has to be remembered to be consumed). It has four routes, for three audiences:
+
+| Route | Key | Who | Bound as a capability |
+|---|---|---|---|
+| `POST /v1/approvals/payment`, `/cancellation` | a demo key | the agent asks a person to approve | yes: the two `request-…-approval` capabilities |
+| `GET /v1/approvals/{id}` | a demo key | the agent reads the decision | yes: `wanderlust.approval-status` |
+| `POST /v1/approvals/{id}/decision` | the approver key | a person decides | **never**: the scenario runner plays the person |
+| `POST /v1/approvals/consume` | the ask key | Archstone asks, once per gated call | no: a binding's `approval:` gate names it |
+
+The last route is the **ask endpoint**: `askApproval` in
+[`api/wanderlust-api.mjs`](api/wanderlust-api.mjs), commented as the reference a deployer copies. It
+takes Archstone's fixed ask body (`version`, `token`, `capabilityId`, `effect`, `principal`,
+`approvalId`, `input`) and answers `{ approvalId, outcome, reference }`. It allows only an approval
+granted for that capability, that principal and every field of that input. It refuses a `null`
+principal, and refuses an unknown id rather than answering 404. For an irreversible capability it
+marks the approval used in the same step that answers `allowed`, so a second ask with the same
+approval is refused. Once a capability is gated, Archstone's guarantee is that the call is refused
+unless the deployer's endpoint answers `allowed` for it. That single use holds is this endpoint's
+doing, not Archstone's. See the
+[ONBOARDING section](../../docs/ONBOARDING.md#approval-and-consent-human-approval-consent-required)
+for the whole contract.
+
+Gated `irreversible` capabilities need a principal, and `archstone serve` carries none: over
+`archstone serve`, cancel and pay are always refused. The showcase serves them through the demo Worker
+([`examples/demo/remote-mcp-worker`](../demo/remote-mcp-worker)), whose `resolveCaller` maps each
+demo key to its principal.
+
+The approver key (`DEMO_APPROVER_KEY`) and the ask key (`DEMO_ASK_KEY`) are published like the demo
+keys. They prove nothing about who decided: in a real deployment the decision is a person's, behind
+the approvals system's own sign-in, and the ask key is a configured secret.
+
 ## Run it
 
 ```bash
-# The manifest compiles (exit 0). Two warnings are expected: cancel and pay declare an approval step
-# this version does not enforce.
+# The manifest compiles (exit 0, no warnings).
 pnpm apply examples/showcase/manifest
 
 # The synthetic backend, on http://localhost:8788 (PORT to change it).
 pnpm --filter archstone-showcase api
 
-# The tools, over stdio, against that backend.
-SHOWCASE_API_URL=http://localhost:8788 pnpm serve examples/showcase/manifest
+# The tools, over stdio, against that backend. `serve` carries no principal, so cancel and pay are
+# refused here (policy_unevaluatable): their approval gate needs an identified caller.
+SHOWCASE_API_URL=http://localhost:8788 SHOWCASE_ASK_TOKEN=demo-public-key-archstone-ask-0000 \
+  pnpm serve examples/showcase/manifest
 
 # Replay the recorded contracts against the running backend.
 SHOWCASE_API_URL=http://localhost:8788 pnpm verify examples/showcase/manifest
 
-# The mis-declared payment: exits 0 with three warnings naming wanderlust.pay.
+# The mis-declared payment: exits 0 with three warnings naming wanderlust.pay (no failures, no
+# authentication, and an approval token with no gate, so every call to it is refused).
 pnpm apply examples/showcase/manifest-variants/misdeclared-pay
 ```
 
@@ -96,17 +135,17 @@ reads `capabilities.yaml` from the directory it is given, and the other folders 
 
 | Path | What |
 |---|---|
-| [`api/wanderlust-api.mjs`](api/wanderlust-api.mjs) | The synthetic API: one plain `handle(request, { now, imageBase }) -> Response`. Web-standard APIs only; no Node and no Workers imports; deterministic and stateless. |
+| [`api/wanderlust-api.mjs`](api/wanderlust-api.mjs) | The synthetic API: one plain `handle(request, { now, imageBase, approvals }) -> Response`. Web-standard APIs only; no Node and no Workers imports; deterministic, and stateless except for approvals (an injectable in-memory store). |
 | [`api/serve.mjs`](api/serve.mjs) | A Node `http` wrapper serving that same handler. |
 | [`api/wanderlust.openapi.yaml`](api/wanderlust.openapi.yaml) | A synthetic OpenAPI document describing every route, over-exposed fields included. |
 | [`credentials.mjs`](credentials.mjs) | The two public demo keys and their principals. |
-| [`manifest/`](manifest/) | The live manifest: 13 capabilities, resources, four policies (principals for book, pay and cancel; the availability rate limit), bindings, golden fixtures for `verify`. |
+| [`manifest/`](manifest/) | The live manifest: 16 capabilities, resources, four policies (principals for book, pay and cancel; the availability rate limit), bindings, golden fixtures for `verify`. |
 | [`manifest-variants/`](manifest-variants/) | Authoring fixtures that are never deployed. Today: the mis-declared payment. |
 | [`scenarios.json`](scenarios.json) | The scenario table, S-01 to S-23. |
-| [`test/`](test/) | `api.test.ts`, `manifests.test.ts`, `scenario-json.test.ts`, the negative-scenario suite (`negatives.test.ts`, `denial-reasons.test.ts`, `tool-list.test.ts`), the shared `harness.ts` and `negatives-support.ts`, and for the recorded scenarios `recorded-s15.test.ts` to `recorded-s21.test.ts`, `recorded-determinism.test.ts` and `recorded.ts`. |
-| [`record/`](record/) | The recorder for S-15 to S-21 (`record.mjs`), one module per scenario, and the person's answers for S-20. |
+| [`test/`](test/) | `api.test.ts`, `manifests.test.ts`, `scenario-json.test.ts`, the negative-scenario suite (`negatives.test.ts`, `denial-reasons.test.ts`, `tool-list.test.ts`), the shared `harness.ts` and `negatives-support.ts`, and for the recorded scenarios `recorded-s10.test.ts`, `recorded-s15.test.ts` to `recorded-s21.test.ts`, `recorded-determinism.test.ts` and `recorded.ts`. |
+| [`record/`](record/) | The recorder for S-10 and S-15 to S-21 (`record.mjs`), one module per scenario, and the person's answers for S-20. |
 | [`conversations/`](conversations/) | The local conversation check (`pnpm showcase:conversations`): a real model drives the MCP endpoint. Not part of CI. |
-| [`transcripts/`](transcripts/) | Its output: `s-15.json` to `s-21.json`. Generated; do not edit by hand. |
+| [`transcripts/`](transcripts/) | Its output: `s-10.json` and `s-15.json` to `s-21.json`. Generated; do not edit by hand. |
 | [`local/reporting/`](local/reporting/) | The SQL reporting manifest of S-15, its `fixture.sql` and identity map. Local only: not part of the manifest the Worker serves. |
 | [`sdk/embedded.mjs`](sdk/embedded.mjs) | The runnable embedded-SDK script of S-21. |
 
@@ -120,15 +159,19 @@ reads `capabilities.yaml` from the directory it is given, and the other folders 
 | `wanderlust.stay-page` | read | stable | `web-page` checked against `origins.pages` |
 | `wanderlust.quote` | write | stable | valid 15 minutes from when it is issued; optional `pets` (a count) itemises the stay's pet fee in the total; a stay with no pets refuses it; books nothing |
 | `wanderlust.book` | write | stable | `authenticated`, forwards `${caller.accessToken}`; policy allows `demo:visitor`, denies `demo:blocked`; books at the quoted total |
-| `wanderlust.cancel` | irreversible | stable | `authenticated`, the same principal policy as book, `human-approval` declared, failures declared; the refund is the booking's total |
-| `wanderlust.pay` | irreversible | stable | as cancel (the same principal policy), plus a payment quote the agency checks |
+| `wanderlust.cancel` | irreversible | stable | `authenticated`, the same principal policy as book, `human-approval` with its gate (a required `approval` input), failures declared; the refund is the booking's total |
+| `wanderlust.pay` | irreversible | stable | as cancel (the same principal policy and gate), plus a payment quote the agency checks |
+| `wanderlust.request-payment-approval` | write | stable | `authenticated`; asks a person to approve a payment; takes what pay takes; returns an approval that starts `pending` |
+| `wanderlust.request-cancellation-approval` | write | stable | `authenticated`; the same for a cancellation |
+| `wanderlust.approval-status` | read | stable | `authenticated`; how an agent waits for the person; only the principal who asked can read it |
 | `wanderlust.availability` | read | beta | the only `rateLimit`: 3 calls per 60 seconds |
 | `wanderlust.room-status` | read | stable | `onError` rows; a wrong-typed price is a contract violation (reported as `invalid`) |
 | `wanderlust.neighbourhood` | read | experimental | unlisted, still callable by name |
 | `tourism.search` | read | deprecated | the original `tourism_search` tool; same input and filters as `wanderlust.search`, the old output shape (no ids) |
 | `tourism.search-classic` | read | retired | listed nowhere, refused when called |
 
-There is **no capability** for the DELETE endpoint, for `description_html`, for the margin, or for
+There is **no capability** for deciding an approval: a person decides, never the agent. There is
+also **no capability** for the DELETE endpoint, for `description_html`, for the margin, or for
 passport and phone. Those are the things the backend returns that the manifest never names. The booking
 resource declares no guest field at all.
 
@@ -213,27 +256,29 @@ changes the constant and the declaration together.
 `scenarios.json` has one row per scenario, `S-01` to `S-23`, each exactly once. Fields: `id`, `negative`
 (the `N-xx` id and any overrides the negative call needs), `group`, `mode` (`live`, `recorded`, `locked`),
 `tool`, `capability`, `arguments`, `key` (`none`, `A`, `B`), optional `setup` steps (a call whose
-result a later argument needs, referenced as `"{{name}}"`), `outcome`, optional `refusal` (`input_invalid` on S-23: refused by the input contract, not by a
+result a later argument needs, referenced as `"{{name}}"`, or `{ "approve": "{{approvalId}}", "decision": "approve" }`:
+a person deciding an approval in the agency's own system, never a tool call), `outcome`, optional `refusal` (`input_invalid` on S-23: refused by the input contract, not by a
 policy), optional `alsoRun` (more fixed calls the live run makes and reports separately: S-13's
 wrong-format price), optional `evidence` (a fact the card relies on that lives in the tool list:
-S-12's deprecation note, with where it lives), `anchor`, `test`, `issue` and `issueUrl` (only the two
-locked rows), and `copy` with English and Romanian slots (`ask`, `happens`,
+S-12's deprecation note, with where it lives), `anchor`, `test`, `issue` and `issueUrl` (only the
+locked row), and `copy` with English and Romanian slots (`ask`, `happens`,
 `refused`). The Romanian slots exist and are empty. A row with a key may also carry `ownAi` (English
 and Romanian slots): a short plain note on what a visitor's own AI app will see, connected without a key or
 with either demo key. Every `ask` is written to be pasted alone into a fresh conversation: it names the stay, the dates,
 the guests and any booking number it needs (the seeded booking is `B-0000cafe`) rather than leaning on
 an earlier turn. Live rows are run by `test/manifests.test.ts`;
-recorded rows get their tests with the recorder; the two locked rows run nothing.
+recorded rows get their tests with the recorder; the locked row runs nothing.
 
-## Recorded scenarios (S-15 to S-21)
+## Recorded scenarios (S-10, S-15 to S-21)
 
 Some things cannot or should not run on the public Worker: the SQL provider is Node-only, and the CLI
-verbs are local by nature. Those seven rows of `scenarios.json` (`mode: "recorded"`) are shown as
-**transcripts**: the real workspace CLI (and, for S-21, the embedded SDK) run against the synthetic API,
+verbs are local by nature, and S-10's approval story is a sequence of calls rather than one. Those eight rows of `scenarios.json` (`mode: "recorded"`) are shown as
+**transcripts**: the real workspace CLI (and, for S-10 and S-21, the embedded SDK) run against the synthetic API,
 with their output written to [`transcripts/`](transcripts/) and checked in.
 
 | Row | What it runs | What it must show, and its negative |
 |---|---|---|
+| S-10 | the embedded SDK through the approval flow | the payment is refused without an approval, while it is pending, with the runtime's ask secret wrong (`policy_unevaluatable`), once it is used, when it was rejected and when it was granted for something else; it runs once after a person approves, and its record carries the approval and the agency's decision reference |
 | S-15 | `verify` and a tool call over [`local/reporting`](local/reporting/) against a local Postgres | a table of bookings per city; another tenant gets no rows; the live manifest has no sql capability |
 | S-16 | `apply --exposure` | the exposed list names no margin, passport, phone, `description_html` or delete tool, while the backend is observed returning them |
 | S-17 | `verify`, `adopt` against a wrapped backend | `verify` names the new `guestEmail` field; it is absent from the exposure until a person declares it |
@@ -318,7 +363,7 @@ raw.githubusercontent.com/NousVigil/archstone/<tag-or-commit>/examples/showcase/
 Render `steps` in order, show `recorded.date` and `recorded.cli` beside them, and keep `typed` visible,
 because it is where the person's decision lives.
 
-The tests for these rows are `test/recorded-s15.test.ts` to `test/recorded-s21.test.ts`; they assert each
+The tests for these rows are `test/recorded-s10.test.ts` and `test/recorded-s15.test.ts` to `test/recorded-s21.test.ts`; they assert each
 scenario's outcome and negative from the committed transcript. `recorded-determinism.test.ts` records
 twice and requires identical bytes that equal the committed files. CI also runs
 `node examples/showcase/record/record.mjs --check` in the job that has the Postgres service.

@@ -4,6 +4,8 @@ export interface HandleOptions {
   now?: number | (() => number);
   /** Origin used in image URLs. Defaults to IMAGE_BASE. */
   imageBase?: string;
+  /** Where approvals are kept. Defaults to one store per module instance. */
+  approvals?: ApprovalStore;
 }
 export const IMAGE_BASE: string;
 export const PAGES_BASE: string;
@@ -40,3 +42,26 @@ export function resolveDestination(text: unknown): string | undefined;
 export function resolvePlace(text: unknown): { city: string; stay?: CatalogueStay } | undefined;
 /** The recognised preference tags (pets, breakfast, family) in a list; synonyms folded, unknown dropped. */
 export function normalizePreferences(list: unknown): string[];
+/** Where the approvals system keeps its approvals: the one stateful part of the agency. */
+export interface ApprovalStore {
+  readonly records: Map<string, {
+    id: string;
+    capabilityId: "wanderlust.pay" | "wanderlust.cancel";
+    principal: string;
+    input: Record<string, unknown>;
+    status: "pending" | "approved" | "rejected" | "used";
+    requestedAt: number;
+    expiresAtMs: number;
+    decidedAt?: number;
+    reference?: string;
+  }>;
+  seq: number;
+}
+/** A fresh, empty approvals store (inject it as `HandleOptions.approvals`). */
+export function createApprovalStore(): ApprovalStore;
+/** The published approver key: the credential of the person who decides (`POST /v1/approvals/{id}/decision`). */
+export const DEMO_APPROVER_KEY: string;
+/** The published secret the runtime presents to the ask endpoint (`POST /v1/approvals/consume`). */
+export const DEMO_ASK_KEY: string;
+/** How long an approval lives after it is requested. */
+export const APPROVAL_WINDOW_MS: number;

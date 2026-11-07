@@ -1,0 +1,18 @@
+# CDL 0.2 — how an agent waits for a person: it reads the approval, it does not retry the transfer
+
+capability:
+  id: banking.approval-status
+  description: Read whether a transfer approval is still pending, approved, rejected, used or expired.
+  effect: read
+
+  input:
+    approval:
+      ref: Approval
+
+  output:
+    approval:
+      type: Approval
+
+  policies:
+    - authenticated
+  provider: approvals

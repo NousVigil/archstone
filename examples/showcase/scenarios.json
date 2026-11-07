@@ -342,12 +342,13 @@
       "tool": "wanderlust_cancel",
       "capability": "wanderlust.cancel",
       "arguments": {
-        "bookingId": "B-0000cafe"
+        "bookingId": "B-0000cafe",
+        "approval": "{{approvalId}}"
       },
       "key": "A",
       "outcome": "success",
       "ownAi": {
-        "en": "Your own AI app connects without a key unless it lets you set an Authorization header, so the cancellation is refused for lack of a key. \"Run it live\" sends the published demo key instead.",
+        "en": "Your own AI app connects without a key unless it lets you set an Authorization header, so the cancellation is refused for lack of a key. With a key, it still needs an approval: your AI can request one and read its status, but only a person at the agency can grant it. \"Run it live\" sends the published demo key and plays that person.",
         "ro": ""
       },
       "anchor": "/demo/how-it-works#s-08",
@@ -360,15 +361,31 @@
       "copy": {
         "en": {
           "ask": "Cancel booking B-0000cafe (Casa Alfama, 12-15 May 2027). I am sure, go ahead.",
-          "happens": "The cancellation goes through, and the refund is the booking's own total.",
-          "refused": "It needs the agency key and an allowed caller, like booking: Archstone's rules refuse a missing key before the agency is asked. Archstone does not pause it. The manifest says a person should approve it, but this version does not enforce that; any confirmation comes from your AI app, not from Archstone."
+          "happens": "A person at the agency approves the cancellation first. Then it goes through, and the refund is the booking's own total.",
+          "refused": "It needs the agency key and an allowed caller, like booking, and an approval a person granted for this booking. Archstone refuses it unless the agency's approvals system answers that the approval allows this cancellation. The agency uses the approval up when it says yes, so the same approval cannot cancel twice."
         },
         "ro": {
           "ask": "",
           "happens": "",
           "refused": ""
         }
-      }
+      },
+      "setup": [
+        {
+          "tool": "wanderlust_request-cancellation-approval",
+          "key": "A",
+          "arguments": {
+            "bookingId": "B-0000cafe"
+          },
+          "capture": {
+            "approvalId": "approval.id"
+          }
+        },
+        {
+          "approve": "{{approvalId}}",
+          "decision": "approve"
+        }
+      ]
     },
     {
       "id": "S-09",
@@ -384,7 +401,8 @@
       "arguments": {
         "bookingId": "{{bookingId}}",
         "amount": "{{total}}",
-        "paymentQuote": "{{paymentQuote}}"
+        "paymentQuote": "{{paymentQuote}}",
+        "approval": "{{approvalId}}"
       },
       "key": "A",
       "setup": [
@@ -425,11 +443,27 @@
             "total": "booking.total",
             "paymentQuote": "booking.paymentQuote"
           }
+        },
+        {
+          "tool": "wanderlust_request-payment-approval",
+          "key": "A",
+          "arguments": {
+            "bookingId": "{{bookingId}}",
+            "amount": "{{total}}",
+            "paymentQuote": "{{paymentQuote}}"
+          },
+          "capture": {
+            "approvalId": "approval.id"
+          }
+        },
+        {
+          "approve": "{{approvalId}}",
+          "decision": "approve"
         }
       ],
       "outcome": "success",
       "ownAi": {
-        "en": "Your own AI app connects without a key unless it lets you set an Authorization header, so the booking, and with it the payment, is refused for lack of a key. \"Run it live\" sends the published demo key instead.",
+        "en": "Your own AI app connects without a key unless it lets you set an Authorization header, so the booking, and with it the payment, is refused for lack of a key. With a key, the payment still needs an approval that only a person at the agency can grant. \"Run it live\" sends the published demo key instead and plays that person.",
         "ro": ""
       },
       "anchor": "/demo/how-it-works#s-09",
@@ -442,8 +476,8 @@
       "copy": {
         "en": {
           "ask": "Book Casa Alfama for Ana Pop, two adults, 12-15 May 2027, and pay for it with the demo card.",
-          "happens": "The payment goes through for a booking the agency quoted a moment ago.",
-          "refused": "A payment needs the agency key and an allowed caller (Archstone's rules refuse otherwise), and a price the agency quoted a moment ago, and the agency checks that, not Archstone. Archstone's checks flag a payment action declared without safeguards; they warn and do not block."
+          "happens": "A person at the agency approves the payment, and it goes through for a booking the agency quoted a moment ago.",
+          "refused": "A payment needs the agency key and an allowed caller (Archstone's rules refuse otherwise), an approval a person granted for this booking, amount and quote (Archstone refuses unless the agency's approvals system says it allows this payment), and a price the agency quoted a moment ago, and the agency checks that, not Archstone. Archstone's checks flag a payment action declared without safeguards; they warn and do not block."
         },
         "ro": {
           "ask": "",
@@ -456,22 +490,23 @@
       "id": "S-10",
       "negative": null,
       "group": "irreversible",
-      "mode": "locked",
+      "mode": "recorded",
       "tool": null,
       "capability": null,
       "arguments": null,
       "key": "none",
-      "outcome": "locked",
+      "outcome": "recorded",
+      "command": "the approval flow: request, wait, a person approves, pay once",
       "parent": "S-08/S-09",
       "anchor": "/demo/how-it-works#s-10",
       "test": null,
-      "issue": 165,
-      "issueUrl": "https://github.com/NousVigil/archstone/issues/165",
+      "issue": null,
+      "issueUrl": null,
       "copy": {
         "en": {
           "ask": "A person approves before it happens.",
-          "happens": "Planned: not available yet.",
-          "refused": "Nothing runs today. Approval is written down in the manifest, not enforced."
+          "happens": "The payment waits for a person: refused while the approval is pending, then it goes through once the agency's approver says yes.",
+          "refused": "Archstone refuses the payment before the agency is asked when there is no approval, when it is still pending, when it was rejected, or when it was already used. It also refuses when the caller is not identified. The agency's approvals system decides each time, and Archstone keeps no approval state."
         },
         "ro": {
           "ask": "",

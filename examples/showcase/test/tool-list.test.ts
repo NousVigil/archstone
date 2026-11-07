@@ -10,11 +10,14 @@ installGlobalInvariants({ expectTraffic: false });
 
 const EXPECTED_TOOLS = [
   "tourism_search",
+  "wanderlust_approval-status",
   "wanderlust_availability",
   "wanderlust_book",
   "wanderlust_cancel",
   "wanderlust_pay",
   "wanderlust_quote",
+  "wanderlust_request-cancellation-approval",
+  "wanderlust_request-payment-approval",
   "wanderlust_room-status",
   "wanderlust_search",
   "wanderlust_stay-details",
@@ -23,7 +26,7 @@ const EXPECTED_TOOLS = [
 ];
 
 describe("AC-2.16: the exposed tool list has no deletion tool", () => {
-  it("lists exactly the eleven callable tools to a real client; none is for deletion", async () => {
+  it("lists exactly the fourteen callable tools to a real client; none is for deletion", async () => {
     await session().withClient("none", async (client) => {
       const { tools } = await client.listTools();
       expect(tools.map((t) => t.name).sort()).toEqual(EXPECTED_TOOLS);
@@ -94,7 +97,8 @@ describe("AC-2.10: effects are advertised as MCP annotations", () => {
     for (const d of toolDefinitions(registry())) {
       expect(d.description, d.name).not.toMatch(/archstone[^.]{0,60}(pauses|asks|waits|approves)/i);
     }
+    // What it does say: the agency's approvals system decides, and Archstone refuses without its yes.
     const cancel = toolDefinitions(registry()).find((d) => d.name === "wanderlust_cancel")!;
-    expect(cancel.description).toMatch(/does not enforce that/);
+    expect(cancel.description).toMatch(/Archstone refuses the call unless the agency's approvals system answers/);
   });
 });

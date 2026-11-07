@@ -1,0 +1,15 @@
+# NOT CDL — implementation (how), separate from the capability (what).
+#
+# The bank's own approvals system. The caller's bearer token goes with the request, so the
+# approvals system records who asked; the person who decides is someone else, in that system.
+
+binding:
+  capabilityId: banking.request-transfer-approval
+  connector:
+    type: rest
+    rest:
+      baseUrl: "${APPROVALS_URL}"
+      method: POST
+      path: /approvals
+      headers:
+        Authorization: "Bearer ${caller.accessToken}"

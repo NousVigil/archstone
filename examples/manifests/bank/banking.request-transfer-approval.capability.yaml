@@ -1,0 +1,26 @@
+# CDL 0.2 — the "ask a person" step that comes before an irreversible transfer
+# Same business input as banking.initiate-transfer, so the person sees exactly what they approve.
+
+capability:
+  id: banking.request-transfer-approval
+  description: Ask a person at the bank to approve a transfer before it is sent. Returns an approval that starts pending.
+  effect: write
+
+  input:
+    source:
+      ref: Account
+    beneficiary:
+      ref: Beneficiary
+    amount:
+      type: money
+    reference:
+      type: text
+      required: false
+
+  output:
+    approval:
+      type: Approval
+
+  policies:
+    - authenticated
+  provider: approvals

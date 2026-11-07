@@ -29,6 +29,7 @@ import {
   MANIFEST_DIR,
   REPO_ROOT,
   VARIANT_DIR,
+  approve,
   backend,
   call,
   callerForLabel,
@@ -38,6 +39,7 @@ import {
   runRow,
   textOf,
   CLOCK_MS,
+  SHOWCASE_ENV,
   type ScenarioRow,
 } from "./harness";
 
@@ -69,15 +71,16 @@ const listed = new Set(toolDefinitions(registry).map((d) => d.name));
 const definitionsOf = (name: string): string => toolDefinitions(registry).find((d) => d.name === name)?.description ?? "";
 
 describe("AC-1.3: `archstone apply` on the manifest", () => {
-  it("exits 0, reports 13 capabilities, and warns only about the two unenforced approval tokens", async () => {
+  it("exits 0, reports 16 capabilities, and has no warning: cancel and pay declare human-approval and carry its gate", async () => {
     const r = await apply(MANIFEST_DIR);
     expect(r.code).toBe(0);
-    expect(r.stdout).toContain("IR v0 — 13 capabilities, 13 invocable (bound)");
+    expect(r.stdout).toContain("IR v0 — 16 capabilities, 16 invocable (bound)");
     expect(r.stdout).toContain("shapes valid");
-    const warnings = r.stdout.split("\n").filter((l) => l.includes("⚠"));
-    expect(warnings).toHaveLength(2);
-    expect(warnings.some((l) => l.includes("'wanderlust.cancel'") && l.includes("human-approval"))).toBe(true);
-    expect(warnings.some((l) => l.includes("'wanderlust.pay'") && l.includes("human-approval"))).toBe(true);
+    expect(r.stdout.split("\n").filter((l) => l.includes("⚠"))).toEqual([]);
+    for (const id of ["wanderlust.cancel", "wanderlust.pay"]) {
+      expect(tool(id).policies, id).toContain("human-approval");
+      expect(registry.ir.tools.find((t) => t.id === id)!.connector, id).toBeDefined();
+    }
   });
 
   it("lists a tool for every live scenario S-01..S-09, S-11, S-12, S-13", () => {
@@ -232,20 +235,20 @@ describe("AC-1.8: the mis-declared payment variant", () => {
     const warnings = r.stdout.split("\n").filter((l) => l.includes("⚠"));
     expect(warnings).toHaveLength(3);
     for (const w of warnings) expect(w).toContain("capability 'wanderlust.pay'");
-    expect(warnings[0]).toContain("declares no failures");
-    expect(warnings[1]).toContain("does not declare policies:[authenticated]");
-    expect(warnings[2]).toContain("human-approval");
+    // ADD-393 D-8: a declared approval token with no gate is refused at runtime, and apply says so.
+    expect(warnings[0]).toContain("declares policies:[human-approval] but its binding");
+    expect(warnings[0]).toContain("every call is refused");
+    expect(warnings[1]).toContain("declares no failures");
+    expect(warnings[2]).toContain("does not declare policies:[authenticated]");
   });
 
-  it("the lints are the three shipped codes, all warnings", () => {
+  it("the findings are the missing gate and the two irreversible-* lints, all warnings", () => {
     const model = load(VARIANT_DIR);
-    expect(validateSemantics(model).filter((d) => d.severity === "error")).toEqual([]);
+    const semantic = validateSemantics(model);
+    expect(semantic.filter((d) => d.severity === "error")).toEqual([]);
+    expect(semantic.map((d) => [d.code, d.capability, d.severity])).toEqual([["approval-gate-missing", "wanderlust.pay", "warning"]]);
     const findings = lintIR(compile(model), model);
-    expect(findings.map((f) => f.code)).toEqual([
-      "irreversible-no-failures",
-      "irreversible-unauthenticated",
-      "irreversible-unenforced-policy",
-    ]);
+    expect(findings.map((f) => f.code)).toEqual(["irreversible-no-failures", "irreversible-unauthenticated"]);
     expect(findings.every((f) => f.severity === "warning" && f.capability === "wanderlust.pay")).toBe(true);
   });
 
@@ -255,13 +258,10 @@ describe("AC-1.8: the mis-declared payment variant", () => {
     expect(tool("wanderlust.pay").input.map((f) => f.name)).toContain("paymentQuote");
   });
 
-  it("the live manifest's only findings are the two intended approval-token warnings", () => {
+  it("the live manifest has no lint finding and no semantic warning", () => {
     const model = load(MANIFEST_DIR);
-    const findings = lintIR(compile(model), model);
-    expect(findings.map((f) => [f.code, f.capability])).toEqual([
-      ["irreversible-unenforced-policy", "wanderlust.cancel"],
-      ["irreversible-unenforced-policy", "wanderlust.pay"],
-    ]);
+    expect(lintIR(compile(model), model)).toEqual([]);
+    expect(validateSemantics(model)).toEqual([]);
   });
 });
 
@@ -270,18 +270,17 @@ describe("AC-1.9: stateless by construction", () => {
     expect(new Set(registry.ir.tools.map((t) => t.connector!.type))).toEqual(new Set(["rest"]));
   });
 
-  it("book -> pay -> cancel works from derived ids with nothing remembered between calls", async () => {
-    const ctx = newContext();
-    const { result: booked, captured } = await runRow(ctx, { ...row("S-09"), arguments: { bookingId: "B-0000cafe", amount: { amount: 1, currency: "EUR" }, paymentQuote: "x" } });
-    // The row's own call (a bad payment quote) is refused by the agency ...
-    expect(booked.isError).toBe(true);
-    expect(textOf(booked)).toContain("422");
+  it("book -> pay -> cancel works from derived ids; the only thing remembered is the agency's approvals", async () => {
+    const { captured } = await runRow(newContext(), row("S-09"));
     expect(captured.bookingId).toMatch(/^B-[0-9a-f]{12}$/);
-    // ... and a fresh context (no shared memory at all) accepts the genuine one.
+    // A fresh context (a fresh agency: no booking, quote or approval remembered) still pays and cancels
+    // from the derived ids alone, once a person has approved each action there.
     const fresh = newContext();
-    const paid = await call(fresh, "wanderlust_pay", { bookingId: captured.bookingId, amount: captured.total, paymentQuote: captured.paymentQuote }, "A");
-    expect(paid.isError).toBe(false);
-    const cancelled = await call(fresh, "wanderlust_cancel", { bookingId: captured.bookingId }, "A");
+    const pay = { bookingId: captured.bookingId, amount: captured.total, paymentQuote: captured.paymentQuote };
+    const paid = await call(fresh, "wanderlust_pay", { ...pay, approval: await approve(fresh, "payment", pay) }, "A");
+    expect(paid.isError, JSON.stringify(paid)).toBe(false);
+    const cancel = { bookingId: captured.bookingId as string };
+    const cancelled = await call(fresh, "wanderlust_cancel", { ...cancel, approval: await approve(fresh, "cancellation", cancel) }, "A");
     expect(cancelled.structuredContent).toMatchObject({ cancellation: { bookingId: captured.bookingId, status: "cancelled" } });
   });
 });
@@ -399,21 +398,26 @@ describe("what each manifest is wired to withhold, observed through the runtime"
 
   it("the agency, not Archstone, refuses a credential it does not know: it is forwarded and answered 401", async () => {
     const ctx = newContext();
-    const forwarded = await callTool(ctx.registry, "wanderlust_cancel", { bookingId: "B-0000cafe" }, {
-      env: { SHOWCASE_API_URL: "http://api.showcase.example" },
+    const approval = await approve(ctx, "cancellation", { bookingId: "B-0000cafe" });
+    const forwarded = await callTool(ctx.registry, "wanderlust_cancel", { bookingId: "B-0000cafe", approval }, {
+      env: SHOWCASE_ENV,
       fetchImpl: ctx.spy.fetchImpl,
       caller: { accessToken: "not-a-demo-key", principal: "demo:visitor" },
     });
     expect(forwarded.isError).toBe(true);
     expect(textOf(forwarded)).toContain("backend returned 401");
-    expect(ctx.spy.calls).toEqual(["POST /v1/bookings/B-0000cafe/cancel"]);
+    // The approval was asked about (and allowed: same principal, same input) before the agency judged the key.
+    expect(ctx.spy.calls).toEqual(["POST /v1/approvals/cancellation", "POST /v1/approvals/consume", "POST /v1/bookings/B-0000cafe/cancel"]);
   });
 
   it("pay: the agency refuses a missing, expired or foreign payment quote and Archstone only reports it", async () => {
-    const wrong = await runRow(newContext(), row("S-09"), { arguments: { bookingId: "B-0000cafe", amount: { amount: 5, currency: "EUR" }, paymentQuote: "PQ-0-00000000" } });
-    expect(wrong.result.isError).toBe(true);
-    expect(textOf(wrong.result)).toContain("backend returned 422");
-    expect(wrong.result._meta?.[POLICY_DENIED_META_KEY]).toBeUndefined();
+    const ctx = newContext();
+    const pay = { bookingId: "B-0000cafe", amount: { amount: 5, currency: "EUR" }, paymentQuote: "PQ-0-00000000" };
+    // A person approved exactly this (wrong) payment, so Archstone lets it through to the agency, which refuses the quote.
+    const wrong = await call(ctx, "wanderlust_pay", { ...pay, approval: await approve(ctx, "payment", pay) }, "A");
+    expect(wrong.isError).toBe(true);
+    expect(textOf(wrong)).toContain("backend returned 422");
+    expect(wrong._meta?.[POLICY_DENIED_META_KEY]).toBeUndefined();
   });
 
   it("availability: three calls answer, the fourth is refused, another capability still answers", async () => {
@@ -455,7 +459,7 @@ describe("what each manifest is wired to withhold, observed through the runtime"
 describe("over the MCP wire: the reference client validates every live answer against the advertised outputSchema", () => {
   async function withClient(key: "none" | "A", fn: (client: Client) => Promise<void>): Promise<void> {
     const server = createMcpServer(registry, {
-      env: { SHOWCASE_API_URL: "http://api.showcase.example" },
+      env: SHOWCASE_ENV,
       fetchImpl: backend().fetchImpl,
       caller: callerForLabel(key),
       rateLimitCounter: new InMemoryRateLimitCounter(() => CLOCK_MS),
@@ -476,13 +480,13 @@ describe("over the MCP wire: the reference client validates every live answer ag
     await withClient("none", async (client) => {
       const names = (await client.listTools()).tools.map((t) => t.name).sort();
       expect(names).toEqual([...listed].sort());
-      expect(names).toHaveLength(11); // 13 declared, minus one experimental and one retired
+      expect(names).toHaveLength(14); // 16 declared, minus one experimental and one retired
     });
   });
 
   it("answers each no-setup success scenario, including the withheld photo and the error row", async () => {
     const wired = liveRows.filter((r) => r.outcome === "success" && !r.setup && r.key !== "B");
-    expect(wired.map((r) => r.id)).toEqual(["S-01", "S-02", "S-03", "S-04", "S-05", "S-08", "S-11", "S-12", "S-13"]);
+    expect(wired.map((r) => r.id)).toEqual(["S-01", "S-02", "S-03", "S-04", "S-05", "S-11", "S-12", "S-13"]);
     for (const key of ["none", "A"] as const) {
       await withClient(key, async (client) => {
         for (const r of wired.filter((w) => w.key === key)) {
@@ -506,7 +510,7 @@ describe("`verify` replays the recorded contracts against the synthetic API", ()
       "wanderlust.search",
       "wanderlust.stay-details",
     ]);
-    const opts = { env: { SHOWCASE_API_URL: "http://api.showcase.example" }, fetchImpl: backend().fetchImpl };
+    const opts = { env: SHOWCASE_ENV, fetchImpl: backend().fetchImpl };
     for (const t of withContract) {
       const r = await verifyTool(t, MANIFEST_DIR, registry.ir.resources, opts);
       expect(r.status, `${t.id}: ${JSON.stringify(r)}`).toBe("green");
@@ -546,12 +550,18 @@ describe("#201: a believable agency, through the real runtime", () => {
     const q = quoteOf(await call(ctx, "wanderlust_quote", quoteArgs));
     const booking = ((await call(ctx, "wanderlust_book", bookArgs(q.quoteId), "A")).structuredContent as { booking: { bookingId: string; total: unknown; paymentQuote: string } }).booking;
     const payArgs = { bookingId: booking.bookingId, amount: booking.total, paymentQuote: booking.paymentQuote };
-    now += 15 * 60_000;
-    const late = await call(ctx, "wanderlust_pay", payArgs, "A");
+    now += 14 * 60_000; // the approval is asked for and granted a minute before the quote lapses
+    const approval = await approve(ctx, "payment", payArgs);
+    now += 60_000;
+    const late = await call(ctx, "wanderlust_pay", { ...payArgs, approval }, "A");
     expect(late.isError).toBe(true);
     expect(textOf(late)).toContain("backend returned 422");
+    // The ask allowed it and the agency used the approval up; the agency then refused the quote. A
+    // spent approval stays spent (ADD-393: "ask again" is the safe direction), so it is refused now.
     now = CLOCK_MS + 60_000;
-    expect((await call(ctx, "wanderlust_pay", payArgs, "A")).isError).toBe(false);
+    const again = await call(ctx, "wanderlust_pay", { ...payArgs, approval }, "A");
+    expect(again._meta?.[POLICY_DENIED_META_KEY]).toMatchObject({ reason: "approval_refused" });
+    expect((await call(ctx, "wanderlust_pay", { ...payArgs, approval: await approve(ctx, "payment", payArgs) }, "A")).isError).toBe(false);
   });
 
   it("R2: pets is a declared optional input; the quote itemises the fee, and a bad count never reaches the agency", async () => {
@@ -627,7 +637,8 @@ describe("#201: a believable agency, through the real runtime", () => {
       expect(definitionsOf(name), name).toMatch(/Needs the agency key and a principal the manifest's policy allows: Archstone's policy refuses a missing key or a caller who is not allowed before the agency is asked/);
     }
     for (const name of ["wanderlust_cancel", "wanderlust_pay"]) {
-      expect(definitionsOf(name), name).toMatch(/a person should approve it; this version of Archstone does not enforce that/);
+      expect(definitionsOf(name), name).toMatch(/A person must approve it first/);
+      expect(definitionsOf(name), name).toMatch(/Archstone refuses the call unless the agency's approvals system answers that this approval allows/);
     }
     expect(definitionsOf("wanderlust_pay")).toMatch(/the agency, not Archstone, checks it/);
     expect(definitionsOf("wanderlust_stay-page")).toMatch(/agency's own page is returned/);
@@ -652,12 +663,12 @@ describe("#201: a believable agency, through the real runtime", () => {
     }
   });
 
-  it("R6: cancelling an id the agency never issued is its 404; the seeded booking refunds its total", async () => {
+  it("R6: an id the agency never issued cannot even be put up for approval (its 404); the seeded booking refunds its total", async () => {
     const ctx = newContext();
-    const unknown = await call(ctx, "wanderlust_cancel", { bookingId: "B-ffffffffffff" }, "A");
-    expect(unknown.isError).toBe(true);
-    expect(textOf(unknown)).toContain("backend returned 404");
-    const seeded = await call(ctx, "wanderlust_cancel", { bookingId: "B-0000cafe" }, "A");
+    const asked = await call(ctx, "wanderlust_request-cancellation-approval", { bookingId: "B-ffffffffffff" }, "A");
+    expect(asked.isError).toBe(true);
+    expect(textOf(asked)).toContain("backend returned 404");
+    const seeded = await call(ctx, "wanderlust_cancel", { bookingId: "B-0000cafe", approval: await approve(ctx, "cancellation", { bookingId: "B-0000cafe" }) }, "A");
     const refund = (seeded.structuredContent as { cancellation: { refund: { amount: number } } }).cancellation.refund.amount;
     expect(refund).toBe(quoteOf(await call(ctx, "wanderlust_quote", quoteArgs)).total.amount);
   });
