@@ -18,6 +18,33 @@ All notable changes to Archstone are documented here. Format loosely follows
 
 ## [Unreleased]
 
+## [0.36.0]
+
+### Added
+
+- **A binding can map a provider error to a declared failure token.** A REST binding's new
+  `failures:` list maps a 4xx status, optionally narrowed by one JSONPath `body` test, to one of
+  the capability's declared `failures` tokens; the first matching entry wins. A matched response
+  reaches the model as `token: description` with
+  `_meta["dev.archstone/business_failure"]`, and nothing from the response body or the status
+  code is passed on; the audit message becomes the token. `@archstone/agent` `execute()` returns
+  a new `status: "failure"` outcome with `failure` and `description` for it, so an exhaustive
+  `switch` on `ExecuteResult.status` needs a new case. A 5xx and an unmapped status are
+  unchanged. The compiler checks the mappings (`failure-mapping-*` and
+  `bad-failure-mapping-path`), the IR carries them only when declared, so existing IR is
+  byte-identical, and `archstone diff` reports a mapping change as breaking on a `write` or
+  `irreversible` capability (RFC-0011).
+
+- **`archstone record` records a `contract:` for a manifest that already exists
+  (`@archstone/cli`).** Until now only `archstone init --probe` recorded one, and only while
+  writing a new manifest. `archstone record <dir>` sends ONE live request per `read` REST binding
+  without a contract, using the input in `fixtures/<capabilityId>.golden.json`, and writes the
+  `contract:` block into the binding without touching its other lines. `--rerecord <id>` replaces
+  an existing contract's fingerprint, shape and `verifiedAt`. Every request and every write is a
+  y/N a person answers: there is no `--yes`, and with stdin closed it sends and writes nothing.
+  `write` and `irreversible` capabilities are never recorded, and `sql` bindings are left to
+  `archstone init --probe`.
+
 ## [0.35.0]
 
 ### Added

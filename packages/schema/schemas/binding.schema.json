@@ -36,6 +36,39 @@
           "$ref": "#/$defs/decisionGate",
           "description": "ADD-393: the gate for a capability that declares policies:[consent-required] — the same grammar as `approval`, asked first."
         },
+        "failures": {
+          "type": "array",
+          "minItems": 1,
+          "description": "RFC-0011: an ordered list mapping a provider's 4xx error response to a business failure token the bound capability declares under `failures`. First match wins. Implementation, not CDL: status codes and response paths belong in a binding. The semantic pass checks that each token is declared, that the connector is `rest`, that `body.path` parses, and that no entry is shadowed.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["status", "failure"],
+            "properties": {
+              "status": {
+                "type": "integer",
+                "minimum": 400,
+                "maximum": 499,
+                "description": "One HTTP status, 400-499. No ranges and no 5xx: a 5xx says the backend may not know what it did (RFC-0011 D-6)."
+              },
+              "body": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["path", "equals"],
+                "description": "At most one test on the parsed JSON error body. A non-JSON body, a missing path or a non-scalar value is no match.",
+                "properties": {
+                  "path": { "type": "string", "minLength": 1, "description": "A JSONPath into the error body, e.g. $.error.code." },
+                  "equals": { "type": ["string", "number", "boolean"], "description": "The value the first match must equal." }
+                }
+              },
+              "failure": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]*$",
+                "description": "A failure token the bound capability declares under `failures`."
+              }
+            }
+          }
+        },
         "origins": {
           "type": "object",
           "additionalProperties": false,

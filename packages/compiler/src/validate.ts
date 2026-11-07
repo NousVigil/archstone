@@ -603,6 +603,10 @@ export function validateSemantics(model: LoadResult): Diagnostic[] {
   // 5b. Origin-bound output types (`web-page`). See `checkOriginBound` below for the rules.
   diags.push(...checkOriginBound(model, byId, index));
 
+  // 5c. RFC-0011 D-4 — binding `failures:` (a 4xx → declared failure token). See
+  // `checkFailureMappings` below for the rules.
+  diags.push(...checkFailureMappings(model, byId));
+
   // 6. Policy documents (#43 / ADD-43 §8.4). Every policy diagnostic lives here — the compiler
   // resolves scope and lowers verbatim, this pass decides what is authorable at all. Errors
   // block `apply`/`build`/`serve`; warnings inform and never block. Nothing here evaluates a
@@ -833,6 +837,108 @@ export function validateSemantics(model: LoadResult): Diagnostic[] {
   }
 
   return diags;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Binding failure mappings (RFC-0011)
+//
+// A binding may map a provider's 4xx error response to a failure token its capability declares
+// (`failures:`, D-1..D-3). At runtime a match becomes the token and the author's description, and
+// nothing from the provider's body. Each rule below is an error (D-4), because each describes a
+// mapping that would either name a token the capability never declared or could never match:
+//
+//   failure-mapping-without-failures  error  the capability declares no `failures` at all
+//   failure-mapping-unknown-token     error  the token is not one the capability declares
+//   failure-mapping-not-rest          error  only a `rest` connector has a status to map
+//   failure-mapping-bad-status        error  status outside 400–499 (5xx is never mappable, D-6)
+//   bad-failure-mapping-path          error  `body.path` does not parse (same check as `response:`)
+//   failure-mapping-shadowed          error  an earlier body-less entry for the same status wins
+//   failure-mapping-duplicate         error  an earlier entry has the same status and body test
+//
+// The tokens are read from the capability document, as the ADD-311 lint reads them: the IR
+// carries only the mapped ones. Pure and syntactic: no status is fetched, no body is parsed.
+// ---------------------------------------------------------------------------------------------
+
+function checkFailureMappings(model: LoadResult, byId: ReadonlyMap<string, CapabilityDoc>): Diagnostic[] {
+  const diags: Diagnostic[] = [];
+  for (const b of model.bindings) {
+    const entries = b.binding.failures;
+    if (!Array.isArray(entries) || entries.length === 0) continue;
+    const cid = b.binding.capabilityId;
+    const cap = byId.get(cid);
+    if (!cap) continue; // binding-without-capability already names this binding
+    const at = `binding ${b.file} (capability '${cid}')`;
+
+    const type = (b.binding.connector as { type?: unknown } | undefined)?.type;
+    if (type !== "rest") {
+      diags.push({
+        severity: "error",
+        code: "failure-mapping-not-rest",
+        message: `${at} declares failures:, but its connector is '${String(type)}' — only a rest connector has an HTTP status to map`,
+      });
+    }
+
+    const declared = cap.capability.failures;
+    const tokens = declared && typeof declared === "object" ? Object.keys(declared as Record<string, unknown>) : [];
+    if (tokens.length === 0) {
+      // One error, not one per entry: every entry would otherwise report the same missing list.
+      diags.push({
+        severity: "error",
+        code: "failure-mapping-without-failures",
+        message: `${at} declares failures:, but capability '${cid}' (${cap.file}) declares no failures — a mapping can only name a token the capability declares. Add the business outcome under the capability's failures: first`,
+      });
+    }
+
+    entries.forEach((entry, i) => {
+      const where = `${at} failures[${i}]`;
+      if (tokens.length > 0 && !tokens.includes(entry.failure)) {
+        diags.push({
+          severity: "error",
+          code: "failure-mapping-unknown-token",
+          message: `${where} maps to failure '${entry.failure}', which capability '${cid}' does not declare (declared: ${tokens.join(", ")})`,
+        });
+      }
+      if (!Number.isInteger(entry.status) || entry.status < 400 || entry.status > 499) {
+        diags.push({
+          severity: "error",
+          code: "failure-mapping-bad-status",
+          message: `${where} maps status ${String(entry.status)} — only one integer status in 400–499 is mappable; a 5xx says the backend may not know what it did`,
+        });
+      }
+      if (entry.body) {
+        const p = parsePath(entry.body.path);
+        if (!p.ok) diags.push({ severity: "error", code: "bad-failure-mapping-path", message: `${where} body has an invalid JSONPath '${entry.body.path}': ${p.error}` });
+      }
+      // Shadowing (first match wins): a body-less entry for status N matches every N response, so
+      // any later entry for N is unreachable. An earlier entry with the identical body test is
+      // likewise unreachable. One diagnostic per unreachable entry, naming the one that wins.
+      for (let j = 0; j < i; j++) {
+        const earlier = entries[j]!;
+        if (earlier.status !== entry.status) continue;
+        if (!earlier.body) {
+          diags.push({
+            severity: "error",
+            code: "failure-mapping-shadowed",
+            message: `${where} can never match: failures[${j}] already maps every ${entry.status} response (it has no body test), and the first match wins`,
+          });
+          break;
+        }
+        if (entry.body && sameBodyTest(earlier.body, entry.body)) {
+          diags.push({
+            severity: "error",
+            code: "failure-mapping-duplicate",
+            message: `${where} duplicates failures[${j}] (status ${entry.status}, the same body test) and can never match — the first match wins`,
+          });
+          break;
+        }
+      }
+    });
+  }
+  return diags;
+}
+
+function sameBodyTest(a: { path: string; equals: unknown }, b: { path: string; equals: unknown }): boolean {
+  return a.path.trim() === b.path.trim() && typeof a.equals === typeof b.equals && a.equals === b.equals;
 }
 
 // ---------------------------------------------------------------------------------------------

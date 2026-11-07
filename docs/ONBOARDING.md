@@ -1520,6 +1520,40 @@ drift gate. It's the only Archstone command that makes a live network call outsi
 tool invocation — on demand only, never triggered by `apply`/`serve`. Wiring it to a schedule
 (cron, a CI job) is your call, not Archstone's.
 
+#### Recording a contract for a manifest you already have
+
+`archstone init --probe` records a contract while it writes a new manifest. For a manifest that
+already exists — written by hand, or drafted without a probe — `archstone record` does the same
+thing in place:
+
+```bash
+archstone record ./my-manifest-dir
+archstone record ./my-manifest-dir --rerecord tourism.search   # replace one already recorded
+```
+
+For each binding without a `contract:`, it reads the input to send from
+`fixtures/<capabilityId>.golden.json` (the same convention `init` writes). You create that file;
+`request` is the capability's **input**, as an agent would pass it, not an HTTP request:
+
+```json
+{
+  "capabilityId": "tourism.search",
+  "request": { "destination": "Nice", "dates": { "from": "2026-08-01", "to": "2026-08-05" }, "travelers": { "adults": 2 } }
+}
+```
+
+It shows the method, path and fixture, asks before sending the ONE live request (and asks again
+if the method is not `GET`/`HEAD`), shows the fingerprint it recorded, and asks before writing
+the `contract:` block into the binding. Nothing else in the file changes, comments included, and
+the edit is compiled before it is kept. A red recording (a required field missing, a failed
+request) writes nothing and exits 1. The fixture file itself is never modified.
+
+What it will not do: send a request for a `write` or `irreversible` capability, record a `sql`
+binding (its contract needs the two isolation identities only `archstone init --probe` asks for),
+or replace an existing contract unless you name it with `--rerecord`. A re-record replaces the
+fingerprint and shape and moves `verifiedAt`. Like `adopt`, it needs a person: there is no
+`--yes`, and with stdin closed it sends nothing and writes nothing.
+
 #### Replaying write and irreversible capabilities safely
 
 A key discipline: **replaying a fixture is a real invocation.** A `write` capability that

@@ -124,6 +124,13 @@ export interface CapabilityDoc {
   };
 }
 
+/** One `binding.failures` entry, shape-valid (RFC-0011 D-1..D-3). */
+export interface BindingFailureMapping {
+  status: number;
+  body?: { path: string; equals: string | number | boolean };
+  failure: string;
+}
+
 export interface BindingDoc {
   file: string;
   binding: {
@@ -135,6 +142,8 @@ export interface BindingDoc {
     origins?: { pages?: string[]; images?: string[] }; // optional origin lists for origin-bound output types; entry syntax is the semantic pass's
     approval?: Record<string, unknown>; // optional decision gate for `human-approval` (ADD-393); rules are the semantic pass's, lowering is the compiler's
     consent?: Record<string, unknown>; // the same grammar for `consent-required` (ADD-393)
+    /** RFC-0011 D-1..D-3: optional ordered 4xx → failure-token mappings; token resolution, shadowing and path syntax are the semantic pass's. */
+    failures?: BindingFailureMapping[];
   };
 }
 

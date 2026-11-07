@@ -48,6 +48,9 @@ if (result.status === "ok") {
   console.log("Partial:", result.data, "Missing:", result.degraded);
 } else if (result.status === "violation") {
   console.log("Contract violation:", result.missing);
+} else if (result.status === "failure") {
+  // The binding mapped the backend's 4xx to a declared failure token (RFC-0011).
+  console.log("Business failure:", result.failure, result.description);
 } else {
   console.log("Error:", result.error);
 }

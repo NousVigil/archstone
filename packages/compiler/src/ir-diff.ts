@@ -44,7 +44,8 @@ export type IRDiffKind =
   | "policy-rate-limit-changed" // notable — tightened, loosened, added or removed
   | "policy-tokens-changed" // notable
   | "description-changed" // compatible
-  | "binding-changed"; // compatible, except a removed connector or decision gate — see `diffBinding`
+  | "binding-changed"; // compatible, except a removed connector, a removed decision gate, and a
+  // failure-mapping change on a write/irreversible capability (RFC-0011 D-5) — see `diffBinding`
 
 export interface IRDiffEntry {
   severity: IRDiffSeverity;
@@ -87,6 +88,7 @@ interface NormTool {
   origins: IRTool["origins"];
   approval: IRTool["approval"];
   consent: IRTool["consent"];
+  failures: NonNullable<IRTool["failures"]>;
 }
 
 function normalise(t: IRTool): NormTool {
@@ -106,6 +108,7 @@ function normalise(t: IRTool): NormTool {
     origins: t.origins,
     approval: t.approval,
     consent: t.consent,
+    failures: t.failures ?? [],
     // `contract` deliberately not copied (D-5).
   };
 }
@@ -155,7 +158,7 @@ function quoteList(xs: string[]): string {
 }
 
 /** The fixed severity of every kind but `resource-field-changed`, which takes the row it implies.
- *  `binding-changed` is `compatible` here; `diffBinding` overrides it for one case. */
+ *  `binding-changed` is `compatible` here; `diffBinding` overrides it for two cases. */
 const SEVERITY: Record<Exclude<IRDiffKind, "resource-field-changed">, IRDiffSeverity> = {
   "capability-removed": "breaking",
   "capability-added": "compatible",
@@ -422,6 +425,11 @@ function diffPolicyTokens(id: string, before: string[], after: string[], emit: E
 //
 // The response mapping, `extract`, `origins` and the capability's `provider` are binding-side facts the
 // agent never sees either, and are reported under the same kind rather than dropped.
+//
+// `failures` (RFC-0011 D-5) is the one binding-side fact the agent DOES see: a mapped token reaches
+// it as the result of a failed call, and it may branch on it. A change is `compatible` on a `read`
+// capability (a retry or a different message costs nothing) and `breaking` on a `write` or
+// `irreversible` one, where an agent deciding whether something happened reads the token.
 // ---------------------------------------------------------------------------------------------
 
 function diffBinding(id: string, b: NormTool, a: NormTool, emit: Emit): void {
@@ -466,6 +474,20 @@ function diffBinding(id: string, b: NormTool, a: NormTool, emit: Emit): void {
     } else {
       emit({ kind: "binding-changed", capabilityId: id, path: block, detail: `${block} gate changed` });
     }
+  }
+  if (canonical(b.failures) !== canonical(a.failures)) {
+    const consequential = b.effect !== "read" || a.effect !== "read";
+    emit({
+      kind: "binding-changed",
+      ...(consequential ? { severity: "breaking" as const } : {}),
+      capabilityId: id,
+      path: "failures",
+      before: b.failures.map((m) => m.failure),
+      after: a.failures.map((m) => m.failure),
+      detail: consequential
+        ? `binding failure mappings changed on a ${a.effect !== "read" ? a.effect : b.effect} capability — an agent may branch on the failure token`
+        : "binding failure mappings changed",
+    });
   }
   if (b.provider !== a.provider) {
     emit({ kind: "binding-changed", capabilityId: id, path: "provider", before: b.provider, after: a.provider, detail: `provider changed: ${b.provider} → ${a.provider}` });

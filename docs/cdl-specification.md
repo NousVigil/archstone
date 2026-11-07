@@ -155,6 +155,8 @@ of a **business** failure state.
 - A processor **MUST NOT** attach severities, numeric codes, or retry hints to a
   failure token; those are Execution-model concerns.
 - Per-item outcomes of a batch **MUST** be modeled as `output` data, not `failures`.
+- How a provider's response becomes one of these tokens is a binding concern (§5.4,
+  `failures`); the tokens themselves stay business-only.
 
 > *Non-normative.* `archstone apply` warns when an `irreversible` capability declares no
 > `failures`. The warning checks the declaration; it does not change what a processor accepts.
@@ -434,6 +436,43 @@ binding:
 - The lists are per binding, and are repeated in each binding of a provider by design: there is
   no provider-level document for it. A `web-page` field with no `origins.pages` or an `image`
   field with no `origins.images` is a compile error (`web-page-no-origins` / `image-no-origins`).
+
+A binding **MAY** declare `failures`: an ordered list that maps a provider's refusal to one of
+the capability's declared failure tokens (§4.4). Without it, every non-2xx response stays an
+opaque `backend returned <status>` error.
+
+```yaml
+binding:
+  capabilityId: games.prices
+  connector: { type: rest, ... }
+  failures:
+    - status: 404
+      body: { path: "$.error.code", equals: "game_not_found" }
+      failure: game-not-found
+    - status: 404
+      failure: game-not-found   # any other 404 body
+    - status: 409
+      failure: already-refunded
+```
+
+- `failures` is valid only on a `rest` connector, and only when the capability declares
+  `failures`. Each `failure` **MUST** name a token the capability declares.
+- `status` **MUST** be one integer in 400–499. A 5xx is never mappable: it says the backend may
+  not know what it did, and for an `irreversible` capability a token would wrongly say nothing
+  happened.
+- `body`, if present, is a single test: a JSONPath in the subset `response:` uses, and `equals`,
+  a string, number or boolean. It tests the parsed JSON body; a non-JSON body, a missing path
+  or a non-scalar value is no match. Two tests are two entries.
+- Entries are tried in order and the first match wins. An entry after a body-less entry for the
+  same status can never match and is an error (`failure-mapping-shadowed`), as is an exact
+  duplicate (`failure-mapping-duplicate`).
+- A matched response yields the token and its one-line description from the capability, never
+  anything from the response body — not the matched value, not a message field, and not the
+  status code. Over MCP it is an `isError` result whose text is `token: description`, with
+  `_meta["dev.archstone/business_failure"]` carrying `{ error, capability, failure }`.
+- `archstone diff` reports a change to a binding's `failures` as compatible on a `read`
+  capability and breaking on a `write` or `irreversible` one, because an agent may branch on
+  the token.
 
 ---
 

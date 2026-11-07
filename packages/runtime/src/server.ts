@@ -23,6 +23,7 @@ import {
   inputJsonSchema,
   objectJsonSchema,
   applyResponseMapping,
+  matchFailure,
   contractViolationMessage,
   passThroughRefusal,
   withheldNote,
@@ -255,6 +256,15 @@ export const POLICY_DENIED_META_KEY = "dev.archstone/policy_denied";
  *  arguments are caller-controlled text). At most 16 problems, `truncated: true` when more. */
 export const INPUT_INVALID_META_KEY = "dev.archstone/input_invalid";
 
+/** RFC-0011 D-8: the namespaced `_meta` key a mapped business failure is carried under — the
+ *  fifth use of the ADD-19 Rev 2 D-3′/D-6 precedent: never `structuredContent`, which the
+ *  reference SDK client validates against `outputSchema` unconditionally. A distinct key from the
+ *  denial keys, because this is the backend's answer, not Archstone's refusal. The object is
+ *  `{ error: "business_failure", capability, failure }`: every value in it is author-declared.
+ *  Nothing from the provider's response body is in it, not even the value that matched, and not
+ *  the status code either — the token replaces it (ADR-0008). */
+export const BUSINESS_FAILURE_META_KEY = "dev.archstone/business_failure";
+
 /** Route an MCP tool call to the REST provider and format the result as MCP content. */
 export async function callTool(
   registry: Registry,
@@ -472,6 +482,20 @@ export async function callTool(
 
   const result = await invokeConnectorRest(tool, args, opts);
   if (!result.ok) {
+    // RFC-0011 D-7/D-8: a 4xx the binding maps to a declared failure token becomes that token and
+    // its author-written description, never the provider's body. `matchFailure` never matches a
+    // `status: 0` (no response), a 5xx or an unmapped status, all of which fall through to the
+    // unchanged branch below. D-9: still `failed` + `reachedConnector: true` (a response was
+    // received); only the message changes, to the token.
+    const mapped = matchFailure(tool.failures, result.status, result.data);
+    if (mapped) {
+      audit({ phase: "failed", message: mapped.failure, reachedConnector: true });
+      return {
+        content: [{ type: "text", text: `${mapped.failure}: ${mapped.description}` }],
+        _meta: { [BUSINESS_FAILURE_META_KEY]: { error: "business_failure", capability: tool.id, failure: mapped.failure } },
+        isError: true,
+      };
+    }
     // #44: every attempt that never completed a usable round-trip — unbound capability, missing
     // env var, missing caller credential, no baseUrl, an allowlist rejection, a missing path
     // parameter, a network error, a non-2xx response — records `failed` carrying the shipped
